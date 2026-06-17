@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/folio/app/icons/scalable/apps">
+    <file preprocess="xml-stripblanks" alias="folio-annotate-symbolic.svg">icons/folio-annotate-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-annotations-symbolic.svg">icons/folio-annotations-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-binder-symbolic.svg">icons/folio-binder-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-brand-symbolic.svg">icons/folio-brand-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-character-symbolic.svg">icons/folio-character-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-characters-symbolic.svg">icons/folio-characters-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-clear-format-symbolic.svg">icons/folio-clear-format-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-focus-symbolic.svg">icons/folio-focus-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-format-symbolic.svg">icons/folio-format-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-group-symbolic.svg">icons/folio-group-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-hamburger-symbolic.svg">icons/folio-hamburger-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-inspector-symbolic.svg">icons/folio-inspector-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-invisibles-symbolic.svg">icons/folio-invisibles-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-line-numbers-symbolic.svg">icons/folio-line-numbers-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-link-symbolic.svg">icons/folio-link-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-manuscript-symbolic.svg">icons/folio-manuscript-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-place-symbolic.svg">icons/folio-place-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-places-symbolic.svg">icons/folio-places-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-reference-symbolic.svg">icons/folio-reference-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-references-symbolic.svg">icons/folio-references-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-ruler-symbolic.svg">icons/folio-ruler-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-scene-symbolic.svg">icons/folio-scene-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-show-links-symbolic.svg">icons/folio-show-links-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-snapshot-symbolic.svg">icons/folio-snapshot-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-sp-help-symbolic.svg">icons/folio-sp-help-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-spell-symbolic.svg">icons/folio-spell-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-style-mgr-symbolic.svg">icons/folio-style-mgr-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-tab-next-symbolic.svg">icons/folio-tab-next-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-tab-prev-symbolic.svg">icons/folio-tab-prev-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-template-leaf-symbolic.svg">icons/folio-template-leaf-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-template-symbolic.svg">icons/folio-template-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-tools-symbolic.svg">icons/folio-tools-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-trash-symbolic.svg">icons/folio-trash-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-typewriter-symbolic.svg">icons/folio-typewriter-symbolic.svg</file>
+  </gresource>
+</gresources>

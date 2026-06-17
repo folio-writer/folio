@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+     viewBox="0 0 96 96"
+     version="1.1"
+     id="svg4"
+     sodipodi:docname="reset-light.svg"
+     inkscape:version="1.4 (1:1.4+202410161351+e7c3feb100)"
+     inkscape:export-filename="down-light.png"
+     inkscape:export-xdpi="96"
+     inkscape:export-ydpi="96"
+     width="96"
+     height="96"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+     xmlns="http://www.w3.org/2000/svg"
+     xmlns:svg="http://www.w3.org/2000/svg"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:cc="http://creativecommons.org/ns#">
+    <defs
+         id="defs8" />
+    <sodipodi:namedview
+         id="namedview6"
+         pagecolor="#ffffff"
+         bordercolor="#000000"
+         borderopacity="0.25"
+         inkscape:showpageshadow="true"
+         inkscape:pageopacity="0.0"
+         inkscape:pagecheckerboard="true"
+         inkscape:deskcolor="#d1d1d1"
+         showgrid="true"
+         showguides="true"
+         inkscape:zoom="7.967892"
+         inkscape:cx="48.005169"
+         inkscape:cy="48.005169"
+         inkscape:window-width="1920"
+         inkscape:window-height="1002"
+         inkscape:window-x="0"
+         inkscape:window-y="0"
+         inkscape:window-maximized="1"
+         inkscape:current-layer="svg4"
+         inkscape:lockguides="false">
+        <sodipodi:guide
+             position="12,0"
+             orientation="1,0"
+             id="guide0200"
+             inkscape:locked="false"
+             inkscape:label="H2" />
+        <sodipodi:guide
+             position="48,0"
+             orientation="1,0"
+             id="guide0800"
+             inkscape:locked="false"
+             inkscape:label="H8" />
+        <sodipodi:guide
+             position="84,0"
+             orientation="1,0"
+             id="guide1400"
+             inkscape:locked="false"
+             inkscape:label="H14" />
+        <sodipodi:guide
+             position="0,12"
+             orientation="0,-1"
+             id="guide0020"
+             inkscape:locked="false"
+             inkscape:label="V2" />
+        <sodipodi:guide
+             position="0,48"
+             orientation="0,-1"
+             id="guide0008"
+             inkscape:locked="false"
+             inkscape:label="V8" />
+        <sodipodi:guide
+             position="0,84"
+             orientation="0,-1"
+             id="guide0014"
+             inkscape:locked="false"
+             inkscape:label="V14" />
+        <inkscape:grid
+             id="grid1"
+             units="px"
+             originx="0"
+             originy="0"
+             spacingx="1"
+             spacingy="1"
+             empcolor="#9a0036"
+             empopacity="0.30196078"
+             color="#0099e5"
+             opacity="0.14901961"
+             empspacing="5"
+             enabled="true"
+             visible="true" />
+    </sodipodi:namedview>
+    <metadata
+         id="metadata3816">
+        <rdf:RDF>
+            <cc:Work
+                 rdf:about="">
+                <cc:license
+                     rdf:resource="http://artlibre.org/licence/lal" />
+            </cc:Work>
+            <cc:License
+                 rdf:about="http://artlibre.org/licence/lal">
+                <cc:permits
+                     rdf:resource="http://creativecommons.org/ns#Reproduction" />
+                <cc:permits
+                     rdf:resource="http://creativecommons.org/ns#Distribution" />
+                <cc:permits
+                     rdf:resource="http://creativecommons.org/ns#DerivativeWorks" />
+                <cc:requires
+                     rdf:resource="http://creativecommons.org/ns#ShareAlike" />
+                <cc:requires
+                     rdf:resource="http://creativecommons.org/ns#Notice" />
+                <cc:requires
+                     rdf:resource="http://creativecommons.org/ns#Attribution" />
+            </cc:License>
+        </rdf:RDF>
+    </metadata>
+    <path
+         d="m 14.254044,50.67187 c 0.03507,2.759765 0.404284,5.554687 1.142575,8.314452 C 19.351696,73.716799 32.746233,84 48.004042,84 63.261856,84 76.656393,73.716799 80.593891,58.986322 84.548973,44.255858 78.080219,28.646484 64.879046,21.017576 l -4.499999,7.804687 c 9.7207,5.607423 14.431636,16.998049 11.531248,27.843752 -2.900387,10.828124 -12.691402,18.333987 -23.906253,18.333987 -11.232419,0 -21.00586,-7.505863 -23.906248,-18.333987 -2.900388,-10.845703 1.810548,-22.236329 11.531248,-27.843752 0.386749,-0.263677 0.738281,-0.562501 1.019531,-0.914066 l 0.0703,0.08789 0.03507,0.03507 0.04453,12.022784 h 9.000015 L 45.754042,12 H 18.754043 v 8.999998 h 12.093749 l 0.05288,0.0703 0.05288,0.05288 c -9.808547,5.748071 -15.837849,15.89065 -16.611281,26.789088 -0.07065,0.913905 -0.08823,1.827965 -0.08823,2.759604 z"
+         id="path2"
+         style="fill:#000000;fill-opacity:1;stroke-width:5.56634" />
+</svg>

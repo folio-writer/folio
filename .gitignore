@@ -1,0 +1,28 @@
+# ── Build output ──────────────────────────────────────────────
+build/
+build-*/
+cmake-build-*/
+
+# ── Generated GLib resources (regenerated from resources.xml) ──
+src/folio-resources.c
+include/folio-resources.h
+
+# ── Editor / IDE cruft ────────────────────────────────────────
+.vscode/
+*.code-workspace
+.idea/
+.cache/
+compile_commands.json
+
+# ── OS junk ───────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Backups / swap files ──────────────────────────────────────
+*~
+*.swp
+*.bak
+*.orig
+
+# ── Desktop entry (paths not finalized yet) ───────────────────
+folio.desktop
