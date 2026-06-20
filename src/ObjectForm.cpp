@@ -190,9 +190,16 @@ void ObjectForm::append_editable_richtext(const Folio::FormRow& row, const OnCha
 
 // The §7 "door you walk through only when you want more": a quiet affordance at
 // the bottom of the editable form that opens the template builder. Shown only
-// when editable and a handler is wired.
-void ObjectForm::append_edit_template_button() {
-    auto* btn = Gtk::make_managed<Gtk::Button>("Edit fields…");
+// when editable and a handler is wired. s35 — the label reflects state: a locked
+// built-in invites a CLONE ("Customize fields…"), an already-cloned template
+// edits in place ("Edit fields…"). Either way the click runs the same handler;
+// the Inspector decides whether to clone first.
+void ObjectForm::append_edit_template_button(bool builtin) {
+    auto* btn = Gtk::make_managed<Gtk::Button>(
+        builtin ? "Customize fields…" : "Edit fields…");
+    btn->set_tooltip_text(builtin
+        ? "Make an editable copy of this form and tailor its fields"
+        : "Add, rename, reorder, or remove this form's fields");
     btn->add_css_class("flat");
     btn->set_halign(Gtk::Align::START);
     btn->set_margin_start(12);
@@ -226,7 +233,7 @@ void ObjectForm::populate(const Folio::Template& tmpl, const Folio::Object& obj,
         }
     }
     if (editable && m_on_edit_template)
-        append_edit_template_button();                       // the §7 door (s33)
+        append_edit_template_button(tmpl.builtin);           // the §7 door (s33/s35)
 }
 
 }  // namespace Folio

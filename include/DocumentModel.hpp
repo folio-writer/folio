@@ -343,6 +343,12 @@ struct BinderNode {
     std::string   role;            // free-form role name (e.g. "Protagonist")
     std::string   description; // short one-liner
     std::string   image_path;
+    // s35: the object TEMPLATE this character/place has adopted. Empty = the
+    // section's built-in floor (Character/Place); a tpl_ id = a cloned, customized
+    // form. The object-store projection resolves object.type from this (falling
+    // back to the floor when empty / deleted / a built-in id). Serialised omit-
+    // when-empty so untouched leaves and all scenes stay clean.
+    std::string   template_id;
 
     // Reference fields
     std::string   url;             // optional URL for Reference nodes

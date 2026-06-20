@@ -938,11 +938,26 @@ void Inspector::populate_object_form(ObjectForm& form, const std::string& iid) {
           case Folio::ObjectIO::LeafField::ImagePath:   m_current_node->image_path  = s; break;
           case Folio::ObjectIO::LeafField::Description: m_current_node->description = s; break;
           case Folio::ObjectIO::LeafField::Role:        m_current_node->role        = s; break;
-          case Folio::ObjectIO::LeafField::None:
-            // Object-only field (a future custom-template field) — no projected
-            // leaf home this slice. Persisting it lands when objects become the
-            // durable store (template builder / authority flip).
-            return;
+          case Folio::ObjectIO::LeafField::None: {
+            // s35 — object-only (custom template) field: no projected leaf home,
+            // so write the value THROUGH to the STORE object, coerced against the
+            // field's schema. The merge reconcile restamps only leaf-owned fields
+            // and PRESERVES everything else, so this value survives the next
+            // rebuild. Resolved fresh each fire (the objects vector may have been
+            // re-projected since populate) — no held pointer. Raw value (not the
+            // string `s`) is handed to apply_field so non-text coercions are right.
+            Folio::ObjectStore& store = m_model.object_store();
+            Folio::Object* mo = store.find_object(iid);
+            if (!mo) return;
+            const Folio::Template* t = store.find_template(mo->type);
+            if (!t) return;
+            const Folio::FieldSchema* fs = t->find_field(field_id);
+            if (!fs) return;
+            Folio::apply_field(*mo, *fs, raw);
+            LOG_DEBUG("ObjectForm edit {} field={} -> store", iid, field_id);
+            m_model.mark_modified();
+            return;   // custom fields don't touch the leaf title -> no meta notify
+          }
         }
         LOG_DEBUG("ObjectForm edit {} field={} -> leaf", iid, field_id);
         m_model.mark_modified();
@@ -950,11 +965,14 @@ void Inspector::populate_object_form(ObjectForm& form, const std::string& iid) {
       });
 }
 
-// s33 — open the schema editor for the CURRENT object's template. Resolves the
-// template id from the selected leaf's object, hands the builder a copy, and on
-// Save commits the edited template into the store + repopulates the form ON AN
-// IDLE TICK (the s24 rule: never mutate the model / rebuild views from inside a
-// live modal handler — the dialog is still tearing down when apply fires).
+// s33/s35 — open the schema editor for the CURRENT object's template. Resolves
+// the template from the selected leaf's object. CLONE-TO-CUSTOMIZE (s35): a
+// built-in is locked, so the first "Customize fields…" clones it, assigns the
+// clone to the leaf (template_id), re-projects so the object renders through the
+// clone, and edits THAT — an already-customized form edits in place. Hands the
+// builder a copy; on Save commits + repopulates the form ON AN IDLE TICK (the
+// s24 rule: never mutate the model / rebuild views from inside a live modal
+// handler — the dialog is still tearing down when apply fires).
 void Inspector::open_template_builder_for_current() {
   if (!m_current_node) return;
   const std::string iid = m_current_node->iid;
@@ -964,7 +982,34 @@ void Inspector::open_template_builder_for_current() {
   if (!obj) return;
   const Folio::Template* tmpl = m_model.object_store().find_template(obj->type);
   if (!tmpl) return;
-  Folio::Template draft = *tmpl;   // copy — the dialog edits this, not the store
+
+  // Capture by value NOW: clone_template()'s push_back below can reallocate the
+  // templates vector and invalidate `tmpl`, so nothing past the clone may deref it.
+  const std::string src_id      = tmpl->id;
+  const bool        src_editable = Folio::template_is_editable(*tmpl);
+  std::string       edit_id      = src_id;
+
+  // Clone-to-customize: a locked built-in is never edited directly. Clone it,
+  // the leaf adopts the clone, re-project so the object now carries the clone
+  // type, and refresh the visible form before opening the builder on the clone.
+  if (!src_editable) {
+    const std::string clone_id = m_model.object_store().clone_template(src_id);
+    if (clone_id.empty()) return;
+    m_current_node->template_id = clone_id;     // the leaf adopts the clone
+    m_model.mark_modified();
+    m_model.rebuild_object_store();             // object.type resolves to the clone
+    edit_id = clone_id;
+    LOG_DEBUG("clone-to-customize {} {} -> {}", iid, src_id, clone_id);
+    if (m_current_node->kind == BinderKind::Character)
+      populate_object_form(m_char_object_form, iid);
+    else if (m_current_node->kind == BinderKind::Place)
+      populate_object_form(m_place_object_form, iid);
+    notify_meta_changed();
+  }
+
+  const Folio::Template* edit_tmpl = m_model.object_store().find_template(edit_id);
+  if (!edit_tmpl) return;
+  Folio::Template draft = *edit_tmpl;   // copy — the dialog edits this, not the store
 
   auto* root = dynamic_cast<Gtk::Window*>(get_root());
   if (!root) return;

@@ -74,7 +74,7 @@ private:
     void append_full_width(const FormRow& row);                  // richtext / list block
     void append_editable_text(const FormRow& row, const OnChange& on_change);     // text/image entry
     void append_editable_richtext(const FormRow& row, const OnChange& on_change); // the buffer (s32)
-    void append_edit_template_button();                          // the §7 door (s33)
+    void append_edit_template_button(bool builtin);             // the §7 door (s33/s35)
 };
 
 }  // namespace Folio

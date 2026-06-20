@@ -164,6 +164,27 @@ struct ObjectStore {
     // registers it. Returns the new id, or "" if src_id is unknown.
     std::string clone_template(const std::string& src_id);
 
+    // ── Type resolution (s35 — the leaf's template_id → object.type) ──────────
+    // A character/place leaf carries an optional `template_id` naming a CLONE it
+    // has adopted (empty = the section's built-in floor). Resolve it to the type
+    // the projected object should carry, per the s35 truth table:
+    //   empty                  -> floor (character / place)
+    //   set, editable clone     -> the clone id
+    //   set, missing (deleted)  -> floor   (orphan-and-keep: object retains its
+    //                                        hidden custom values; falls back)
+    //   set, a built-in id      -> floor   (built-ins are never a leaf's own type)
+    // The floor is chosen by `is_place`, so a stale cross-section id still lands
+    // on the right floor. seed_builtins() runs before the reconcile, so the floor
+    // template always resolves.
+    std::string resolve_leaf_type(bool is_place, const std::string& template_id) const {
+        const std::string floor = is_place ? "place" : "character";
+        if (template_id.empty()) return floor;
+        const Template* t = find_template(template_id);
+        if (!t)          return floor;   // deleted clone -> fall back to floor
+        if (t->builtin)  return floor;   // a built-in id is never an adopted type
+        return t->id;                    // the editable clone
+    }
+
     // ── Migration intake (the pure seam the binder walk feeds) ────────────────
     // Reconcile a legacy character/place leaf into the store. MERGE-PRESERVING
     // (s32): the leaf OWNS the floor fields (name<-title, description<-buffer,
@@ -174,25 +195,35 @@ struct ObjectStore {
     // the projection itself: it is what lets the relation picker's stored edges
     // and a user-added field persist across the rebuild instead of being clobbered
     // back to a bare leaf shape. A first-time iid is created fresh. Returns the iid.
+    //
+    // s35 — `template_id` is the leaf's adopted clone (empty = floor); the object
+    // carries the type resolve_leaf_type() produces, and is (idempotently)
+    // instantiated against that template so a clone's custom fields are seeded.
+    // The object is marked `projected` either way.
     std::string add_migrated_leaf(const std::string& iid,
                                   bool               is_place,
                                   const std::string& title,
                                   const std::string& buffer_html,
                                   const std::string& image_path,
                                   const std::string& legacy_tagline = "",
-                                  const std::string& legacy_role     = "");
+                                  const std::string& legacy_role     = "",
+                                  const std::string& template_id     = "");
 
     void clear_objects() { objects.clear(); }
 
-    // Prune projected-type (character/place) objects whose backing leaf is gone
-    // (iid not in `live_iids`). Store-owned objects (any other type) are never
-    // pruned — they have no leaf to vanish. Called after a reconcile pass with
-    // the current set of leaf iids, so a deleted character drops its object too.
+    // Prune leaf-backed (projected) objects whose backing leaf is gone (iid not in
+    // `live_iids`). Store-owned objects (projected == false) are never pruned —
+    // they have no leaf to vanish. Called after a reconcile pass with the current
+    // set of leaf iids, so a deleted character drops its object too.
+    //
+    // s35 — keyed on the explicit `projected` flag, not o.type: a leaf can now
+    // adopt a CLONE type (tpl_…), so the old is_projected_type(o.type) proxy
+    // would have wrongly spared a clone-typed character whose leaf was deleted.
     void prune_projected_except(const std::vector<std::string>& live_iids) {
         objects.erase(
             std::remove_if(objects.begin(), objects.end(),
                 [&](const Object& o) {
-                    if (!is_projected_type(o.type)) return false;          // store-owned: keep
+                    if (!o.projected) return false;                        // store-owned: keep
                     return std::find(live_iids.begin(), live_iids.end(), o.iid)
                            == live_iids.end();                             // leaf gone: drop
                 }),

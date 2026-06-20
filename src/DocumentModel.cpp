@@ -131,6 +131,8 @@ json BinderNode::to_json() const {
     j["role"]               = role;
     j["description"]        = description;
     j["image_path"]         = image_path;
+    if (!template_id.empty())
+        j["template_id"]    = template_id;      // s35: adopted clone (omit on floor)
     j["url"]                = url;
     if (!trash_origin_section.empty())
         j["trash_origin_section"]  = trash_origin_section;
@@ -207,6 +209,7 @@ void BinderNode::from_json(const json& j) {
     }
     description        = j.value("description", "");
     image_path         = j.value("image_path",  "");
+    template_id        = j.value("template_id", "");   // s35: adopted clone ("" = floor)
     url                = j.value("url",          "");
     trash_origin_section  = j.value("trash_origin_section",  "");
     trash_origin_path_str = j.value("trash_origin_path_str", "");
@@ -691,7 +694,8 @@ static void collect_object_leaves(const std::vector<BinderNode>& tree,
             collect_object_leaves(n.children, is_place, store, live_iids);
         } else {
             store.add_migrated_leaf(n.iid, is_place, n.title, n.content,
-                                    n.image_path, n.description, n.role);
+                                    n.image_path, n.description, n.role,
+                                    n.template_id);   // s35: adopted clone (or "")
             live_iids.push_back(n.iid);
         }
     }

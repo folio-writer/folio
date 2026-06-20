@@ -230,6 +230,16 @@ struct Object {
     std::string type;                   // which Template (its id) this instantiates
     json        values = json::object();// field_id → value (the field-map)
 
+    // s35 — leaf-backed marker. True for objects PROJECTED from a Characters/
+    // Places binder leaf (set by ObjectStore::add_migrated_leaf); false for store-
+    // owned objects (a user-defined type with no leaf, future). The reconcile
+    // prunes a projected object whose leaf has vanished but never touches a store-
+    // owned one. Was inferred from o.type ∈ {character,place} until s35 — but a
+    // leaf can now adopt a CLONE type (tpl_…), so the floor-type proxy broke and
+    // the fact has to be carried explicitly. Serialised omit-when-false so it
+    // survives a reload (a ghost whose leaf was deleted is still pruned next pass).
+    bool        projected = false;
+
     // Read a value with a fallback (tolerant; the renderer can assume presence
     // only after instantiate() below, but reads stay safe regardless).
     json value_or(const std::string& field_id, const json& fallback) const {

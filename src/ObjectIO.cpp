@@ -73,18 +73,21 @@ Template template_from_string(const std::string& text) {
 // ── Object (instance) ─────────────────────────────────────────────────────────
 json object_to_json(const Object& o) {
     // `values` is stored verbatim (orphan keys included) — see header.
-    return json{
+    json j{
         { "schema", 1 },
         { "iid",    o.iid },
         { "type",   o.type },
         { "values", o.values.is_object() ? o.values : json::object() },
     };
+    if (o.projected) j["projected"] = true;   // s35: omit when false (store-owned)
+    return j;
 }
 
 Object object_from_json(const json& j) {
     Object o;
-    o.iid  = j.value("iid", "");
-    o.type = j.value("type", "");
+    o.iid       = j.value("iid", "");
+    o.type      = j.value("type", "");
+    o.projected = j.value("projected", false);   // s35: leaf-backed marker
     if (j.contains("values") && j["values"].is_object())
         o.values = j["values"];
     else
