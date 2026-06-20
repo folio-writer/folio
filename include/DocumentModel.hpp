@@ -3,10 +3,11 @@
 // Folio — DocumentModel.hpp
 // No GTK dependency. All data lives here; UI is wired through callbacks.
 //
-// The binder is three parallel trees, each a std::vector<BinderNode>:
-//   model.manuscript  — Groups and Scenes
-//   model.characters  — Groups and Characters
-//   model.places      — Groups and Places
+// The binder is six parallel trees, each a std::vector<BinderNode>, reached
+// through the single door root(Section) — direct member access is closed (s22):
+//   model.root(Section::Manuscript)  — Groups and Scenes
+//   model.root(Section::Characters)  — Groups and Characters
+//   model.root(Section::Places)      — Groups and Places (+ References/Templates/Trash)
 //
 // All three trees share the same BinderNode type, distinguished by `kind`.
 // Path-based addressing works identically across all three sections.
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include "FolioPrefs.hpp"
+#include "ObjectStore.hpp"   // s31 — objects & templates registry + instances
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -313,6 +315,28 @@ struct BinderNode {
     NodeStatus   status             = NodeStatus::Untitled;
     std::string  pov_character_name;
     int          word_target        = 0;
+    // s23: the Key Point this scene serves (the structure mark; "" = untagged).
+    // Stamped by the pattern materializer, sticky through reshaping (split/
+    // combine/move keep the tag). The on-ramp to the Structure pillar — the
+    // coverage lens reads the body against its anatomy through this. (Was
+    // "signpost_id" in the unwired StoryGraph sketch; renamed — "signpost" is
+    // Bell's word, Folio uses its own "Key Point".)
+    std::string  kp_id;
+    // s23: human-readable KP tag, saved with the scene so it is self-describing
+    // and travels in the bundle independent of the module. Shown as the Tag row
+    // under Label in the inspector. kp_id is the stable machine key; kp_label is
+    // the display text ("" = untagged).
+    std::string  kp_label;
+    // s24: per-scene structure metadata stamped at materialization (s25 model).
+    // frenetic = pacing energy (KP baseline × the module pacing pattern, cycled
+    // across the told-line); arc = story-arc/tension (its KP's value). Both 0..1,
+    // 0 = unset. Sticky through reshaping like kp_id; the lens reads them later.
+    double       frenetic           = 0.0;
+    double       arc                = 0.0;
+    // s29: this scene is a pinned hinge — a single-scene Key Point the author
+    // reaches for and writes first; the rest of the arc is connective fill. Sticky
+    // through reshaping like kp_id; surfaced as a milestone marker.
+    bool         pin                = false;
     std::vector<Snapshot> snapshots;
 
     // Character / Place fields
@@ -464,13 +488,11 @@ public:
     Section     sidebar_selected_section = Section::Manuscript;
     std::string sidebar_selected_iid;   // s20: was a child-index path; empty = nothing selected
 
-    // The three binder trees
-    std::vector<BinderNode> manuscript;
-    std::vector<BinderNode> characters;
-    std::vector<BinderNode> places;
-    std::vector<BinderNode> references;  // Stage 1: research & web links
-    std::vector<BinderNode> templates;   // Stage 1: content templates
-    std::vector<BinderNode> trash;       // Stage 1: soft-deleted items
+    // s22: the six binder trees moved to the private section below — the body.
+    // External code reaches them through the single door root(Section); direct
+    // member access (model.manuscript …) no longer compiles. The members keep
+    // their names so the class's own serialiser/factories/walks are unchanged.
+    // (DESIGN §4.7a — one channel to the source of truth.)
 
     // Persistence
     bool        is_modified  = false;
@@ -547,6 +569,14 @@ public:
     // Returns a flat list of every leaf and group node across all three trees.
     std::vector<NodeRef> collect_all_nodes();
 
+    // Manuscript nodes (groups + scenes) in reading/DFS order, as a flat list
+    // of mutable pointers. Unlike compile_nodes(), this does NOT filter on
+    // include_in_export — navigation (e.g. FocusWindow's switcher / next-prev)
+    // must be able to reach a scene the author has excluded from export. The
+    // model owns reading order; callers ask for it rather than walking the raw
+    // vectors. Do not cache across tree mutations.
+    std::vector<BinderNode*> manuscript_in_reading_order();
+
     // File I/O
     void save();
     void save_to(const std::string& path);
@@ -568,6 +598,19 @@ public:
     // GTK-naming / log discipline keys off. Do not cache across mutations.
     BinderNode*       find_node_by_iid(const std::string& iid);
     const BinderNode* find_node_by_iid(const std::string& iid) const;
+
+    // ── Objects & templates (s31) ─────────────────────────────────────────────
+    // The object store is the durable form of characters/places (and any future
+    // user-defined type). This slice keeps it a PROJECTION of the live binder
+    // leaves: rebuilt from them at save time, serialised in the project blob,
+    // read back / migrated at load. The form renderer (next) reads this store;
+    // when it can edit objects, the binder leaves retire. See ObjectStore.hpp.
+    const ObjectStore& object_store() const { return m_object_store; }
+    ObjectStore&       object_store()       { return m_object_store; }
+    // Rebuild the store from the current Characters/Places binder leaves (seeds
+    // the built-in templates, then migrates every leaf to an Object). Called at
+    // save time and on loading a legacy project that has no stored object_store.
+    void rebuild_object_store();
 
     // Backlink index — maps target node IID → list of incoming link locations.
     // s20: keyed by the stable iid (was the int id), so it survives reorder/move
@@ -593,6 +636,22 @@ public:
     static DocumentModel make_demo();
 
 private:
+    // ── The body: the six binder trees (s22 — private behind root(Section)) ────
+    // The one ordered thing the lenses project (DESIGN §4.6). Reached only via
+    // root(Section); the named members serve the class's own internals. When the
+    // body is later extracted into its own Binder class, these six + the body
+    // ops + the graph index move together — the access door (root) stays put.
+    std::vector<BinderNode> manuscript;  // Groups and Scenes
+    std::vector<BinderNode> characters;  // Groups and Characters
+    std::vector<BinderNode> places;      // Groups and Places
+    std::vector<BinderNode> references;  // research & web links
+    std::vector<BinderNode> templates;   // content templates
+    std::vector<BinderNode> trash;       // soft-deleted items
+
+    // s31: objects & templates store — the durable/serialised form of the
+    // character/place leaves (projection this slice; editable surface later).
+    ObjectStore m_object_store;
+
     // s19: parse a full in-memory project blob (the shape save_to builds and
     // load paths reassemble) into the model. load_from obtains the blob (from a
     // v5 bundle via implode, or a legacy file via migrate_v4) then calls this.

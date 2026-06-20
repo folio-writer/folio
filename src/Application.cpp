@@ -15,6 +15,16 @@ extern "C" GResource *resources_get_resource(void);
 
 namespace Folio {
 
+DocumentModel* Application::s_document = nullptr;
+
+DocumentModel& Application::document() {
+  // The owner sets s_document in its ctor before any window or lens exists, so
+  // a null here means a caller reached the channel before the app was built —
+  // a programming error, not a runtime condition. Deref directly; a crash names
+  // the bug rather than masking it behind a silent fallback.
+  return *s_document;
+}
+
 Glib::RefPtr<Application> Application::create() {
   return Glib::make_refptr_for_instance<Application>(new Application());
 }
@@ -22,6 +32,7 @@ Glib::RefPtr<Application> Application::create() {
 Application::Application()
     : Gtk::Application("com.folio.writingstudio",
                        Gio::Application::Flags::NONE) {
+  s_document = &m_model;   // owner sets the one channel; borrowers read
   m_prefs.load();
   m_model.reset();
 }

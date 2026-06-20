@@ -36,9 +36,9 @@ static void scan_tree(const std::vector<BinderNode> &nodes,
 static std::vector<std::tuple<std::string, int, int>>
 collect_set_info(const DocumentModel &model) {
   std::map<std::string, SetInfo> info;
-  scan_tree(model.manuscript, info);
-  scan_tree(model.characters, info);
-  scan_tree(model.places, info);
+  scan_tree(model.root(Section::Manuscript), info);
+  scan_tree(model.root(Section::Characters), info);
+  scan_tree(model.root(Section::Places), info);
   std::vector<std::tuple<std::string, int, int>> result;
   for (const auto &[nm, si] : info)
     result.emplace_back(nm, si.node_count, si.snap_count);
@@ -827,9 +827,9 @@ void SnapshotDialog::delete_snapshot_set(const std::string &set_name) {
             purge(n.children);
         }
       };
-  purge(m_model.manuscript);
-  purge(m_model.characters);
-  purge(m_model.places);
+  purge(m_model.root(Section::Manuscript));
+  purge(m_model.root(Section::Characters));
+  purge(m_model.root(Section::Places));
 
   for (auto &r : m_rows) {
     if (r.last_lbl)

@@ -701,13 +701,96 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
     l->set_hexpand(true);
     l->set_halign(Gtk::Align::START);
     m_color_dropdown = build_color_dropdown([this](int idx) {
-      if (m_current_node)
-        m_current_node->color_idx = idx;
+      if (!m_current_node) return;
+      m_current_node->color_idx = idx;
+      // The palette IS the arc: a swatch is a named Key Point, so re-colouring a
+      // scene re-tags it. Sync the tag label off the swatch name (idx 0 = None →
+      // untagged) so tag and colour can't drift.
+      m_current_node->kp_label = m_prefs.color_name_for_idx(idx);
+      m_tag_value.set_text(m_current_node->kp_label.empty()
+                               ? "\u2014" : m_current_node->kp_label);
+      m_model.mark_modified();
+      notify_meta_changed();   // rebuild the binder so the swatch updates
     });
     rb->append(*l);
     rb->append(*m_color_dropdown);
     row->set_child(*rb);
     lb->append(*row);
+    // s23: Tag row — the scene's Key Point (set via the colour swatch above; the
+    // palette IS the arc). s30: a pin toggle sits inline — mark this scene a hinge
+    // (a write-first milestone) right where you set its metadata.
+    {
+      auto *trow = Gtk::make_managed<Gtk::ListBoxRow>();
+      auto *tb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+      tb->set_margin_start(12);
+      tb->set_margin_end(12);
+      tb->set_margin_top(8);
+      tb->set_margin_bottom(8);
+      auto *tl = Gtk::make_managed<Gtk::Label>("Tag");
+      tl->add_css_class("pref-row-label");
+      tl->set_hexpand(true);
+      tl->set_halign(Gtk::Align::START);
+      m_tag_value.set_halign(Gtk::Align::END);
+      m_tag_value.add_css_class("dim-label");
+      m_pin_toggle.set_icon_name("folio-pin-symbolic");
+      m_pin_toggle.add_css_class("pin-toggle");   // own class — bold on/off state
+      m_pin_toggle.set_valign(Gtk::Align::CENTER);
+      m_pin_toggle.set_tooltip_text(
+          "Pin this scene as a hinge — a turn the story rests on, and a "
+          "write-first milestone. Pinned scenes are the story's skeleton.");
+      m_pin_toggle.property_active().signal_changed().connect([this]() {
+        // Drive the visual from a class we control (not :checked — unreliable
+        // here). This runs on programmatic priming too, so the look always
+        // tracks state; the data write below is gated to real user toggles.
+        if (m_pin_toggle.get_active()) m_pin_toggle.add_css_class("pinned");
+        else                           m_pin_toggle.remove_css_class("pinned");
+        if (m_loading || !m_current_node) return;
+        m_current_node->pin = m_pin_toggle.get_active();
+        m_model.mark_modified();
+        notify_meta_changed();   // rebuild the binder so the pin marker updates
+      });
+      tb->append(*tl);
+      tb->append(m_tag_value);
+      tb->append(m_pin_toggle);
+      trow->set_child(*tb);
+      lb->append(*trow);
+    }
+    // s30 — per-scene energies, editable. Pacing (frenetic) + Tension (arc) as
+    // 0..100% sliders that write straight to the node — the scaffold's energies
+    // are clay you retune where you write, not a fixed stamp.
+    {
+      auto energy_row = [&](const char* name,
+                            Glib::RefPtr<Gtk::Adjustment>& adj,
+                            std::function<void(double)> setter) {
+        auto *r  = Gtk::make_managed<Gtk::ListBoxRow>();
+        auto *bx = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+        bx->set_margin_start(12); bx->set_margin_end(12);
+        bx->set_margin_top(8);    bx->set_margin_bottom(8);
+        auto *nl = Gtk::make_managed<Gtk::Label>(name);
+        nl->add_css_class("pref-row-label");
+        nl->set_halign(Gtk::Align::START);
+        adj = Gtk::Adjustment::create(0, 0, 100, 1, 10, 0);
+        auto *sc = Gtk::make_managed<Gtk::Scale>(adj, Gtk::Orientation::HORIZONTAL);
+        sc->set_draw_value(true);
+        sc->set_value_pos(Gtk::PositionType::RIGHT);
+        sc->set_digits(0);
+        sc->set_hexpand(true);
+        sc->set_size_request(150, -1);
+        adj->signal_value_changed().connect([this, adj, setter]{
+          if (m_loading || !m_current_node) return;
+          setter(adj->get_value() / 100.0);
+          m_model.mark_modified();
+        });
+        bx->append(*nl);
+        bx->append(*sc);
+        r->set_child(*bx);
+        lb->append(*r);
+      };
+      energy_row("Pacing", m_pacing_adj,
+                 [this](double v) { m_current_node->frenetic = v; });
+      energy_row("Tension", m_tension_adj,
+                 [this](double v) { m_current_node->arc = v; });
+    }
     m_meta_node_label_revealer.set_child(*lb);
     s.append(m_meta_node_label_revealer);
   }
@@ -1140,7 +1223,7 @@ void Inspector::refresh_pov_dropdown() {
             collect(n.children);
         }
       };
-  collect(m_model.characters);
+  collect(m_model.root(Section::Characters));
   m_pov_dropdown->set_model(sl);
   guint idx = 0;
   if (!m_current_node->pov_character_name.empty())
@@ -1378,6 +1461,13 @@ void Inspector::load_node(BinderNode *node) {
     m_status_dropdown->set_selected(sidx);
   }
   sync_color_dropdown(m_color_dropdown, node->color_idx);
+  m_tag_value.set_text(node->kp_label.empty() ? "\u2014" : node->kp_label);
+  // s30 — pin toggle + editable energy sliders, primed from the node. m_loading
+  // is already true here, so these programmatic sets don't echo back as edits.
+  m_pin_toggle.set_active(node->pin);
+  m_pin_toggle.set_sensitive(node->kind == BinderKind::Scene);
+  if (m_pacing_adj)  m_pacing_adj->set_value(std::lround(node->frenetic * 100.0));
+  if (m_tension_adj) m_tension_adj->set_value(std::lround(node->arc * 100.0));
   m_word_target_spin.set_value(node->word_target);
   bool inc = node->include_in_export;
   m_include_switch.set_active(inc);

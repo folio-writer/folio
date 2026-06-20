@@ -9,11 +9,13 @@
 #include "SnapshotDialog.hpp"
 #include "ExportDialog.hpp"
 #include "ImportDialog.hpp"
+#include "PatternDialog.hpp"   // s24 — Layer 3: pattern input dialog
 #include "PrintDialog.hpp"
 #include "ReportEngine.hpp"
 #include "SearchDialog.hpp"
 #include "EditorTabBar.hpp"
 #include "PomodoroDialog.hpp"
+#include "FocusWindow.hpp"
 #include <giomm/settings.h>
 #include <gtkmm.h>
 
@@ -42,6 +44,7 @@ private:
   std::unique_ptr<EditorTabBar> m_timeline;
   std::unique_ptr<Editor> m_editor;
   std::unique_ptr<Inspector> m_inspector;
+  std::unique_ptr<FocusWindow> m_focus_window;   // distraction-free window (lazy)
 
   // ── Layout ────────────────────────────────────────────────────────────────
   Gtk::Paned m_paned_left;  // sidebar | (center+inspector)
@@ -114,6 +117,7 @@ private:
 
   // ── File operations ───────────────────────────────────────────────────────
   void action_new();
+  void action_new_from_pattern();   // s23 — scaffold the manuscript from a module
   void action_open();
   void action_save();
   void action_save_as();
@@ -136,6 +140,7 @@ private:
   std::unique_ptr<SnapshotDialog>    m_snapshot_dialog;
   std::unique_ptr<ExportDialog>      m_export_dialog;
   std::unique_ptr<ImportDialog>      m_import_dialog;
+  std::unique_ptr<PatternDialog>     m_pattern_dialog;   // s24 — Layer 3
   std::unique_ptr<SearchDialog>      m_search_dialog;
   std::unique_ptr<PrintDialog>       m_print_dialog;
   Glib::RefPtr<Gtk::FileDialog>      m_report_file_dialog; // kept alive across async save

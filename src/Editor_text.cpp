@@ -721,10 +721,10 @@ void Editor::open_link_picker() {
       collect(n.children, sec);
     }
   };
-  collect(m_model.manuscript, "Manuscript");
-  collect(m_model.characters, "Characters");
-  collect(m_model.places, "Places");
-  collect(m_model.references, "References");
+  collect(m_model.root(Section::Manuscript), "Manuscript");
+  collect(m_model.root(Section::Characters), "Characters");
+  collect(m_model.root(Section::Places), "Places");
+  collect(m_model.root(Section::References), "References");
 
   // Helper: repopulate the list box for a given filter string.
   // Captures only `this` — entries are in m_link_picker_entries (member).

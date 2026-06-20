@@ -246,23 +246,23 @@ void PrintDialog::build_scene_list() {
     };
 
     add_section_divider("Manuscript");
-    add_nodes_recursive(m_model.manuscript, 0);
+    add_nodes_recursive(m_model.root(Section::Manuscript), 0);
 
-    if (!m_model.characters.empty()) {
+    if (!m_model.root(Section::Characters).empty()) {
         add_section_divider("Characters");
-        add_nodes_recursive(m_model.characters, 0);
+        add_nodes_recursive(m_model.root(Section::Characters), 0);
     }
-    if (!m_model.places.empty()) {
+    if (!m_model.root(Section::Places).empty()) {
         add_section_divider("Places");
-        add_nodes_recursive(m_model.places, 0);
+        add_nodes_recursive(m_model.root(Section::Places), 0);
     }
-    if (!m_model.references.empty()) {
+    if (!m_model.root(Section::References).empty()) {
         add_section_divider("References");
-        add_nodes_recursive(m_model.references, 0);
+        add_nodes_recursive(m_model.root(Section::References), 0);
     }
-    if (!m_model.templates.empty()) {
+    if (!m_model.root(Section::Templates).empty()) {
         add_section_divider("Templates");
-        add_nodes_recursive(m_model.templates, 0);
+        add_nodes_recursive(m_model.root(Section::Templates), 0);
     }
 
     update_sel_count();

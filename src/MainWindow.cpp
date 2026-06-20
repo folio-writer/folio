@@ -8,6 +8,10 @@
 #include "ExportDialog.hpp"
 #include "ImportDialog.hpp"
 #include "Inspector.hpp"
+#include "Module.hpp"            // s23 — built-in modules
+#include "ModuleIO.hpp"          // s23 — keypoint spectrum palette
+#include "ModulePlanner.hpp"    // s23 — scaffold planner
+#include "ModuleMaterializer.hpp" // s23 — plan -> BinderNodes
 #include "PomodoroDialog.hpp"
 #include "PrintDialog.hpp"
 #include "ReportEngine.hpp"
@@ -542,6 +546,7 @@ void MainWindow::setup_headerbar() {
   // ── Section 1: Project file operations ───────────────────────────────────
   auto project_sec = Gio::Menu::create();
   project_sec->append_item(make_item("New Project", "win.new", "<Ctrl>n"));
+  project_sec->append_item(make_item("New from Pattern…", "win.new-from-pattern", ""));
   project_sec->append_item(make_item("Open…", "win.open", "<Ctrl>o"));
 
   m_recent_menu = Gio::Menu::create();
@@ -1145,7 +1150,7 @@ void MainWindow::wire_callbacks() {
             collect_titles(n.children);
           }
         };
-    collect_titles(m_model.manuscript);
+    collect_titles(m_model.root(Section::Manuscript));
 
     // Return a title that does not exist in used_titles.
     // If `base` is already unique, return it as-is.
@@ -1550,6 +1555,52 @@ void MainWindow::action_new() {
   });
 }
 
+void MainWindow::action_new_from_pattern() {
+  confirm_discard_async([this]() {
+    // s24 (Layer 3): gather the author's inputs in a dialog, then scaffold.
+    // confirm_discard already cleared the way, so applying is unconditional.
+    m_pattern_dialog = std::make_unique<PatternDialog>(*this);
+
+    m_pattern_dialog->set_apply_callback([this](const Module& mod, const PlanInputs& in) {
+      if (m_timeline)
+        m_timeline->clear();
+      m_model = DocumentModel::new_project();
+      m_model.root(Section::Manuscript).clear();   // drop new_project's seed Part I/Chapter 1
+      m_model.daily_target = m_prefs.daily_word_goal;
+      m_model.on_node_changed = [this](BinderNode *n) { on_node_changed(n); };
+
+      // Scaffold the manuscript from the AUTHORED arc (s29 — the dialog's Key
+      // Points editor produced `mod`; the built-in is only its starting seed).
+      // s23: install the KP spectrum palette so tag and colour are one entry —
+      // each KP's color_idx (= its order) lands on a swatch named after it.
+      {
+        auto pal = ModuleIO::keypoint_palette(mod);
+        m_prefs.tag_colors.clear();
+        for (auto& e : pal) m_prefs.tag_colors.push_back({e.first, e.second});
+        m_prefs.save();   // persist so the KP swatches join the app colour list
+      }
+      ScaffoldPlan plan = ModulePlanner::plan(mod, in);
+      ModuleMaterializer::materialize(m_model, plan);
+
+      if (m_sidebar) {
+        m_sidebar->rebuild();
+        m_sidebar->refresh_session();
+      }
+      if (m_inspector) {
+        m_inspector->refresh_prefs_dropdowns(); // s23: pick up the new KP palette
+        m_inspector->load_project();
+      }
+      apply_selection({});
+      update_title_bar();
+    });
+
+    m_pattern_dialog->signal_hide().connect([this]() {
+      Glib::signal_idle().connect_once([this]() { m_pattern_dialog.reset(); });
+    });
+    m_pattern_dialog->present();
+  });
+}
+
 void MainWindow::action_open() {
   confirm_discard_async([this]() {
     // s19: a v5 project is a .folio BUNDLE DIRECTORY, so Open selects a folder.
@@ -1703,6 +1754,7 @@ void MainWindow::setup_actions() {
   };
 
   add("new", [this]() { action_new(); });
+  add("new-from-pattern", [this]() { action_new_from_pattern(); });
   add("open", [this]() { action_open(); });
   add("save", [this]() { action_save(); });
   add("save-as", [this]() { action_save_as(); });
@@ -1781,8 +1833,14 @@ void MainWindow::setup_actions() {
   });
 
   add("focus-mode", [this]() {
-    if (m_editor)
-      m_editor->enter_focus_mode();
+    if (!m_editor) return;
+    // Distraction-free is now a separate fullscreen window sharing the editor's
+    // live buffer — the editor's own geometry/typography is never swapped, so
+    // there is nothing to restore on return (and nothing to corrupt).
+    if (!m_focus_window)
+      m_focus_window =
+          std::make_unique<FocusWindow>(m_model, m_prefs, *m_editor);
+    m_focus_window->present_focus(m_editor->current_node());
   });
   add("toggle-binder",
       [this]() { m_btn_binder.set_active(!m_btn_binder.get_active()); });
@@ -2169,7 +2227,7 @@ void MainWindow::action_split_node(Section section,
           collect_titles(n.children);
         }
       };
-  collect_titles(m_model.manuscript);
+  collect_titles(m_model.root(Section::Manuscript));
 
   auto unique_title = [&](const std::string &base) -> std::string {
     if (!used_titles.count(base))
@@ -2347,7 +2405,7 @@ void MainWindow::action_preferences() {
             collect(n.children);
         }
       };
-      collect(m_model.templates);
+      collect(m_model.root(Section::Templates));
       // Also include global templates (prefixed so user can distinguish)
       for (const auto &n : m_prefs.global_templates_get())
         if (!n.title.empty())

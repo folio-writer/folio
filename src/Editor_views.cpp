@@ -134,7 +134,7 @@ void Editor::rebuild_outline() {
               collect_chars(n.children);
           }
         };
-    collect_chars(m_model.characters);
+    collect_chars(m_model.root(Section::Characters));
   }
   // Label: "—" + tag color names
   auto label_names = Gtk::StringList::create({"—"});

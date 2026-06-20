@@ -92,8 +92,9 @@ void Editor::build_font_controls() {
     if (sz > 0) {
       m_current_font_size = sz;
       apply_font_to_selection();
-      apply_base_font_tag(); // keep base tag in sync so untagged text uses new
-                             // size
+      apply_base_font_tag(); // base tag carries body size (CSS is ignored by
+                             // GtkTextView), so this resizes the body
+      apply_zoom_to_font_tags();
     }
   });
 
@@ -545,7 +546,10 @@ void Editor::build_toolbar() {
   focus_btn->add_css_class("fmt-btn");
   focus_btn->set_tooltip_text(
       "Distraction-free full-screen writing (Escape to exit)");
-  focus_btn->signal_clicked().connect([this]() { enter_focus_mode(); });
+  // Route through the window action so there is ONE entry point into focus mode
+  // (the separate FocusWindow), not the retired in-place enter_focus_mode path.
+  focus_btn->signal_clicked().connect(
+      [focus_btn]() { focus_btn->activate_action("win.focus-mode"); });
   m_toolbar.append(*focus_btn);
 
   append(m_toolbar);

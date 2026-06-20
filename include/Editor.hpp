@@ -62,6 +62,26 @@ public:
   // Load any BinderNode — flushes current content first.
   void load_node(BinderNode* node);
 
+  // ── Shared-buffer seam (FocusWindow) ──────────────────────────────────────
+  // The buffer is created once and reused for every node (load_node swaps
+  // content in place, never the object), so a second Gtk::TextView may bind to
+  // it and observe the same text/tags/undo without any sync. FocusWindow uses
+  // this to render a distraction-free view on the live document while owning its
+  // own view-level geometry/typography. current_node() lets the focus navigator
+  // anchor next/prev against what the editor is currently showing.
+  Glib::RefPtr<Gtk::TextBuffer> shared_buffer() const { return m_buffer; }
+  BinderNode*                   current_node()  const { return m_current_node; }
+
+  // Body font size (pt) and zoom. Body size is carried by the base font tag on
+  // the shared buffer (GtkTextView ignores CSS font-size for body text). There
+  // is no per-view body size, so FocusWindow gives itself an independent size by
+  // snapshotting the editor's size+zoom on enter, driving the tag while focus is
+  // open (the editor view is occluded behind the focus window), and restoring
+  // the snapshot on exit via a single synchronous re-stamp.
+  int    body_font_size() const { return m_current_font_size; }
+  double zoom_factor()    const { return m_zoom_factor; }
+  void   set_body_display(int size_pt, double zoom);
+
   // Load a character or place by index.
   
   

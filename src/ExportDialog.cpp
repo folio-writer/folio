@@ -181,7 +181,7 @@ void ExportDialog::build_scene_list() {
     m_list_toolbar.append(m_sel_count_lbl);
 
     // Scene rows
-    add_nodes_recursive(m_model.manuscript, 0);
+    add_nodes_recursive(m_model.root(Section::Manuscript), 0);
     update_sel_count();
 }
 

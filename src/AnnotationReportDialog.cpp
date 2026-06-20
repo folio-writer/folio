@@ -88,7 +88,7 @@ void AnnotationReportDialog::build() {
                         walk(node.children, depth + 1);
                 }
             };
-        walk(m_model.manuscript, 0);
+        walk(m_model.root(Section::Manuscript), 0);
         auto clipboard = get_clipboard();
         if (clipboard) clipboard->set_text(ss.str());
         set_title("Annotation Report  (copied to clipboard)");
@@ -209,7 +209,7 @@ void AnnotationReportDialog::rebuild_list() {
                     walk(node.children, depth + 1);
             }
         };
-    walk(m_model.manuscript, 0);
+    walk(m_model.root(Section::Manuscript), 0);
 
     // Sort if needed
     if (sort_sel == 1) {

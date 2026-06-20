@@ -126,7 +126,51 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
     }
     .icon-btn:hover { background-color: @adw_overlay; color: @tx1; }
     .icon-btn.active { background-color: @accent_dim; color: @accent; }
-    
+
+    /* ── General toggle "on" state ────────────────────────────────────────────
+       Flat and icon toggle buttons (e.g. the Inspector pin) had no checked-state
+       styling, so "on" was nearly invisible. Give every ungrouped toggle a clear
+       accent fill. More specific rules below (segmented groups, dropdowns,
+       inspector tabs, swatches, switches) still override this where intended. */
+    togglebutton:checked,
+    togglebutton.active,
+    togglebutton.flat:checked,
+    togglebutton.flat.active,
+    togglebutton.flat.circular:checked,
+    button.toggle:checked {
+        background-color: @accent_color;
+        color: white;
+        box-shadow: 0 1px 3px alpha(black, 0.25);
+    }
+    togglebutton:checked:hover,
+    togglebutton.flat:checked:hover,
+    togglebutton.flat.circular:checked:hover {
+        background-color: @accent_color;
+        filter: brightness(1.08);
+    }
+
+    /* Pin toggle (Inspector) — its own class so it doesn't collide with libadwaita's
+       .flat styling. The "on" look is driven by a .pinned class set from code (this
+       GTK build doesn't reliably put GtkToggleButton into the :checked CSS state).
+       The visible node is the child symbolic <image>, which takes `color` (it's a
+       mask), so we recolour the icon as well as filling the button. */
+    .pin-toggle {
+        min-width: 30px; min-height: 30px; padding: 4px;
+        border-radius: 9999px; border: none; box-shadow: none;
+        background: transparent;
+    }
+    .pin-toggle image { color: alpha(@tx1, 0.32); }    /* off — clearly ghosted */
+    .pin-toggle:hover { background-color: alpha(@tx1, 0.10); }
+    .pin-toggle:hover image { color: alpha(@tx1, 0.65); }
+    .pin-toggle.pinned {
+        background-color: @accent_color;
+        box-shadow: 0 1px 4px alpha(black, 0.30);
+    }
+    .pin-toggle.pinned image { color: white; }         /* on — white pin on accent */
+    .pin-toggle.pinned:hover {
+        background-color: @accent_color; filter: brightness(1.10);
+    }
+
     /* ── View toggle group (segmented control) ───────────────────────────────── */
     .view-toggle-group {
         background-color: @adw_surface_2; border-radius: 6px;

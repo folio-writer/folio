@@ -1130,7 +1130,7 @@ void Sidebar::show_template_picker(
         collect(n.children, is_global);
     }
   };
-  collect(m_model.templates, false);
+  collect(m_model.root(Section::Templates), false);
   auto globals = m_prefs.global_templates_get();
   collect(globals, true);
 
@@ -1208,10 +1208,10 @@ void Sidebar::show_section_ctx_menu(Section section, double x, double y,
       auto *win = dynamic_cast<Gtk::Window *>(get_root());
       if (!win)
         return;
-      if (m_model.trash.empty())
+      if (m_model.root(Section::Trash).empty())
         return;
       auto dlg = Gtk::AlertDialog::create("Empty Trash?");
-      dlg->set_detail("All " + std::to_string(m_model.trash.size()) +
+      dlg->set_detail("All " + std::to_string(m_model.root(Section::Trash).size()) +
                       " items in Trash will be permanently deleted. This "
                       "cannot be undone.");
       dlg->set_modal(true);
@@ -1271,7 +1271,7 @@ void Sidebar::show_section_ctx_menu(Section section, double x, double y,
 
   // "New from Template…" — only shown when templates exist
   bool has_templates =
-      !m_model.templates.empty() || !m_prefs.global_templates_json.empty();
+      !m_model.root(Section::Templates).empty() || !m_prefs.global_templates_json.empty();
   if (has_templates) {
     auto tpl_sec = Gio::Menu::create();
     tpl_sec->append_item(
@@ -1760,7 +1760,7 @@ void Sidebar::add_global_template_row(int global_idx, Gtk::Box *parent_box) {
           if (global_idx >= (int)globals.size())
             return;
           BinderNode copy = globals[global_idx];
-          m_model.templates.push_back(std::move(copy));
+          m_model.root(Section::Templates).push_back(std::move(copy));
           m_model.mark_modified();
           rebuild_section(Section::Templates);
         });
@@ -2230,6 +2230,21 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
     tbox->set_valign(Gtk::Align::CENTER);
     row->append(*ic);
     row->append(*tbox);
+
+    // Pin marker (scenes only) — a pinned hinge surfaced next to the colour
+    // swatch as a write-first milestone (BinderNode.pin, stamped at materialize).
+    if (node->kind == BinderKind::Scene && node->pin) {
+      auto *pin_img = Gtk::make_managed<Gtk::Image>();
+      pin_img->set_from_icon_name("folio-pin-symbolic");
+      pin_img->set_icon_size(Gtk::IconSize::NORMAL);
+      pin_img->set_size_request(14, 14);
+      pin_img->set_valign(Gtk::Align::CENTER);
+      pin_img->set_margin_end(2);
+      pin_img->add_css_class("scene-pin");
+      pin_img->set_tooltip_text(
+          "Pinned hinge — a turn the story rests on. Write this one first.");
+      row->append(*pin_img);
+    }
     if (swatch)
       row->append(*swatch);
 
@@ -2550,7 +2565,7 @@ void Sidebar::on_add_leaf(Section section,
       }
       return nullptr;
     };
-    tpl = find_tpl(m_model.templates);
+    tpl = find_tpl(m_model.root(Section::Templates));
 
     // If not found in doc templates, check global templates
     if (!tpl) {

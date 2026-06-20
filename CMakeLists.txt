@@ -151,6 +151,7 @@ set(SOURCES
     src/Application.cpp
     src/BackupManager.cpp
     src/MainWindow.cpp
+    src/FocusWindow.cpp           # s21 — distraction-free window on the shared editor buffer
     src/Sidebar.cpp
     src/EditorTabBar.cpp          # was SceneTimeline.cpp
     src/Editor.cpp                # s13 — CORE TU (lifecycle + glue)
@@ -170,6 +171,12 @@ set(SOURCES
     src/SnapshotDiff.cpp          # extracted from Inspector.cpp
     src/DocumentModel.cpp
     src/Iid.cpp                   # s19 — pure cross-layer part identity (GTK-free, tested)
+    src/ModuleIO.cpp              # s23 — pure (json<->Module) anatomy seam (GTK-free, tested)
+    src/ModulePlanner.cpp         # s23 — pure scaffold planner: module+inputs -> Part/Chapter/Scene plan
+    src/ModuleMaterializer.cpp    # s23 — Layer 2: materialise a plan into BinderNodes (kp_id stamped)
+    src/ModuleLibrary.cpp         # s27 — module persistence: global library (stamp) + bundle copy (instance)
+    src/ObjectIO.cpp              # s31 — pure (json<->Object/Template) seam + legacy migration (GTK-free, tested)
+    src/ObjectStore.cpp           # s31 — object registry + instances; binder-leaf projection, blob round-trip (GTK-free, tested)
     src/ProjectBundle.cpp         # s19 — pure v5 .folio bundle seam (blob<->bundle on disk;
                                   #        GTK-free, round-trip + (C)-hybrid reconcile tested)
     src/FolioPrefs.cpp
@@ -182,6 +189,8 @@ set(SOURCES
     src/ExportDialog.cpp
     src/Importer.cpp
     src/ImportDialog.cpp
+    src/PatternDialog.cpp         # s24 — Layer 3: pattern input dialog (PlanInputs over the pure planner)
+    src/ModuleBoard.cpp           # s28 — read-only mixing-board render
     src/SearchEngine.cpp
     src/SearchDialog.cpp
     src/ScreenplayHelpDialog.cpp

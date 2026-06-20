@@ -63,6 +63,20 @@ std::string Editor::buffer_to_html() const { return m_serializer->to_html(); }
 
 void Editor::html_to_buffer(const std::string &html) {
   m_serializer->from_html(html);
+
+  // s21 normalize-on-load: a font: tag whose family AND size equal the document
+  // default body font is redundant (the base tag governs default body). Drop it
+  // over the whole buffer so the base tag governs the body UNIFORMLY; genuine
+  // overrides (a run set to a different family/size) keep their tag. Without
+  // this, scattered default-tagged runs override the base tag and resize
+  // non-uniformly (the "scattered giant characters" bug).
+  {
+    std::string deftag =
+        "font:" + m_current_font + ":" + std::to_string(m_current_font_size);
+    if (auto t = m_buffer->get_tag_table()->lookup(deftag))
+      m_buffer->remove_tag(t, m_buffer->begin(), m_buffer->end());
+  }
+
   // Re-apply visual style to link: and anchor: tags the serializer created,
   // since tags created by from_html have no visual properties set.
   m_buffer->get_tag_table()->foreach (
@@ -96,11 +110,30 @@ void Editor::apply_indent() {
   m_line_number_gutter.queue_draw();
 }
 
+// Set displayed body size + zoom together, re-stamping the base tag and
+// rescaling override tags, then syncing the editor's own controls. FocusWindow
+// uses this to show its own size at zoom 1.0 while open (so focus size is the
+// literal size, not editor-size × editor-zoom), and to restore the editor's
+// pre-focus size+zoom on exit. This is a single synchronous re-stamp — no timed
+// restore — so the editor cannot end up disagreeing with the tag.
+void Editor::set_body_display(int size_pt, double zoom) {
+  int s = size_pt < 6 ? 6 : (size_pt > 72 ? 72 : size_pt);
+  m_current_font_size = s;
+  m_zoom_factor = zoom;
+  apply_base_font_tag();      // base = size × zoom
+  apply_zoom_to_font_tags();  // rescale genuine override runs by zoom
+  m_updating_font_controls = true;
+  if (m_font_size_spin) m_font_size_spin->set_value((double)m_current_font_size);
+  if (m_zoom_scale)     m_zoom_scale->set_value(zoom * 100.0);
+  m_updating_font_controls = false;
+}
+
 void Editor::apply_base_font_tag() {
-  // Update the tag properties to match current prefs, then apply over the
-  // whole buffer. Because this tag was created first in the tag table it has
-  // the lowest priority — any per-character font: tags will override it.
-  // Zoom is applied here so it takes effect even though tags outrank CSS.
+  // The base tag carries the body font family + size, applied over the whole
+  // buffer (lowest priority; per-run font: tags override it). It is the body
+  // size carrier — GtkTextView does not honor CSS font-size for body text, so
+  // this tag, not view CSS, governs size. (s21: normalize-on-load strips the
+  // redundant default font: tags so this governs the body UNIFORMLY.)
   m_tag_base_font->property_family() = m_current_font;
   m_tag_base_font->property_size_points() = m_current_font_size * m_zoom_factor;
   m_loading = true;

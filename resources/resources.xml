@@ -19,6 +19,7 @@
     <file preprocess="xml-stripblanks" alias="folio-manuscript-symbolic.svg">icons/folio-manuscript-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-place-symbolic.svg">icons/folio-place-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-places-symbolic.svg">icons/folio-places-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-pin-symbolic.svg">icons/folio-pin-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-reference-symbolic.svg">icons/folio-reference-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-references-symbolic.svg">icons/folio-references-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-ruler-symbolic.svg">icons/folio-ruler-symbolic.svg</file>

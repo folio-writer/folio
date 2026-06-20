@@ -265,7 +265,7 @@ ReportData ReportEngine::generate(const DocumentModel& model,
         out.days_remaining = days_between_today(out.due_date);
 
     // ── 2. Word Count & Progress ───────────────────────────────────────────────
-    for (const auto& n : model.manuscript)
+    for (const auto& n : model.root(Section::Manuscript))
         out.total_words += n.total_words();
 
     out.project_word_target = model.project_word_target;
@@ -301,24 +301,24 @@ ReportData ReportEngine::generate(const DocumentModel& model,
     out.longest_streak = compute_longest_streak(model.daily_history);
 
     // ── 3. Manuscript Structure ───────────────────────────────────────────────
-    walk_manuscript(model.manuscript, 0, out);
+    walk_manuscript(model.root(Section::Manuscript), 0, out);
 
     // ── 4–6. Already accumulated in walk_manuscript ────────────────────────────
 
     // ── 7. Characters ─────────────────────────────────────────────────────────
-    walk_characters(model.characters, out);
+    walk_characters(model.root(Section::Characters), out);
 
     // ── 8. Places ─────────────────────────────────────────────────────────────
-    walk_places(model.places, out);
+    walk_places(model.root(Section::Places), out);
 
     // ── 9. References ─────────────────────────────────────────────────────────
-    walk_references(model.references, out);
+    walk_references(model.root(Section::References), out);
 
     // ── 10. Templates ─────────────────────────────────────────────────────────
-    walk_templates(model.templates, out);
+    walk_templates(model.root(Section::Templates), out);
 
     // ── 11. Trash ─────────────────────────────────────────────────────────────
-    walk_trash(model.trash, out);
+    walk_trash(model.root(Section::Trash), out);
 
     // ── 12. Timeline ──────────────────────────────────────────────────────────
     out.open_tabs = (int)model.open_tabs.size();

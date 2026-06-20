@@ -451,15 +451,15 @@ std::vector<SearchResult> SearchEngine::search(
     }
 
     if (opts.sec_manuscript)
-        search_tree(model.manuscript,  Section::Manuscript, {}, query, opts, re, results);
+        search_tree(model.root(Section::Manuscript),  Section::Manuscript, {}, query, opts, re, results);
     if (opts.sec_characters)
-        search_tree(model.characters,  Section::Characters, {}, query, opts, re, results);
+        search_tree(model.root(Section::Characters),  Section::Characters, {}, query, opts, re, results);
     if (opts.sec_places)
-        search_tree(model.places,      Section::Places,     {}, query, opts, re, results);
+        search_tree(model.root(Section::Places),      Section::Places,     {}, query, opts, re, results);
     if (opts.sec_references)
-        search_tree(model.references,  Section::References, {}, query, opts, re, results);
+        search_tree(model.root(Section::References),  Section::References, {}, query, opts, re, results);
     if (opts.sec_templates)
-        search_tree(model.templates,   Section::Templates,  {}, query, opts, re, results);
+        search_tree(model.root(Section::Templates),   Section::Templates,  {}, query, opts, re, results);
 
     return results;
 }

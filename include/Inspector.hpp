@@ -120,6 +120,12 @@ private:
     Gtk::DropDown*    m_status_dropdown = nullptr;
     Gtk::DropDown*    m_pov_dropdown    = nullptr;
     Gtk::DropDown*    m_color_dropdown  = nullptr;
+    Gtk::Label        m_tag_value;        // s23: scene's KP tag, shown under Label
+    Gtk::ToggleButton m_pin_toggle;       // s30: per-scene pin (hinge), beside Tag
+    // s30 — per-scene energies are now editable sliders (Pacing=frenetic,
+    // Tension=arc). The adjustments are held so node-selection can prime them.
+    Glib::RefPtr<Gtk::Adjustment> m_pacing_adj;
+    Glib::RefPtr<Gtk::Adjustment> m_tension_adj;
     Gtk::SpinButton   m_word_target_spin;
     Gtk::Switch       m_include_switch;
     Gtk::LevelBar     m_target_bar;

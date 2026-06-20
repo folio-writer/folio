@@ -123,6 +123,11 @@ json BinderNode::to_json() const {
     j["status"]             = node_status_to_str(status);
     j["pov_character_name"] = pov_character_name;
     j["word_target"]        = word_target;
+    j["kp_id"]              = kp_id;            // s23: structure mark
+    j["kp_label"]           = kp_label;         // s23: readable tag, saved with scene
+    j["frenetic"]           = frenetic;         // s24: per-scene pacing energy
+    j["arc"]                = arc;              // s24: per-scene story-arc/tension
+    j["pin"]                = pin;              // s29: pinned-hinge milestone
     j["role"]               = role;
     j["description"]        = description;
     j["image_path"]         = image_path;
@@ -186,6 +191,11 @@ void BinderNode::from_json(const json& j) {
     status             = node_status_from_str(j.value("status", "untitled"));
     pov_character_name = j.value("pov_character_name", "");
     word_target        = j.value("word_target", 0);
+    kp_id              = j.value("kp_id", "");   // s23: structure mark ("" = untagged)
+    kp_label           = j.value("kp_label", "");// s23: readable tag
+    frenetic           = j.value("frenetic", 0.0); // s24: per-scene pacing energy
+    arc                = j.value("arc", 0.0);      // s24: per-scene story-arc/tension
+    pin                = j.value("pin", false);    // s29: pinned-hinge milestone
     {   // Migrate legacy enum role strings to display names
         std::string r = j.value("role", "");
         if      (r == "protagonist") role = "Protagonist";
@@ -608,6 +618,22 @@ std::vector<const BinderNode*> DocumentModel::compile_nodes() const {
     return out;
 }
 
+// Reading-order walk for navigation (FocusWindow). No include_in_export filter:
+// the author can navigate to an excluded scene even though it won't compile.
+static void collect_reading_order(std::vector<BinderNode>& nodes,
+                                  std::vector<BinderNode*>& out) {
+    for (auto& n : nodes) {
+        out.push_back(&n);
+        collect_reading_order(n.children, out);
+    }
+}
+
+std::vector<BinderNode*> DocumentModel::manuscript_in_reading_order() {
+    std::vector<BinderNode*> out;
+    collect_reading_order(manuscript, out);
+    return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DocumentModel — reset
 // ─────────────────────────────────────────────────────────────────────────────
@@ -649,6 +675,29 @@ void DocumentModel::reset() {
 // ─────────────────────────────────────────────────────────────────────────────
 // DocumentModel — file I/O
 // ─────────────────────────────────────────────────────────────────────────────
+
+// s31: project the Characters/Places binder leaves into the object store. Groups
+// are containers only (they become first-class objects in a later slice — §5/§6
+// of the objects design); only leaves migrate here. Re-projection is idempotent
+// (objects keep their leaf iid), so calling this repeatedly is stable.
+static void collect_object_leaves(const std::vector<BinderNode>& tree,
+                                  bool is_place, ObjectStore& store) {
+    for (const auto& n : tree) {
+        if (n.kind == BinderKind::Group) {
+            collect_object_leaves(n.children, is_place, store);
+        } else {
+            store.add_migrated_leaf(n.iid, is_place, n.title, n.content,
+                                    n.image_path, n.description, n.role);
+        }
+    }
+}
+
+void DocumentModel::rebuild_object_store() {
+    m_object_store.clear_objects();
+    m_object_store.seed_builtins();
+    collect_object_leaves(characters, /*is_place=*/false, m_object_store);
+    collect_object_leaves(places,     /*is_place=*/true,  m_object_store);
+}
 
 void DocumentModel::save() {
     if (current_path.empty())
@@ -748,6 +797,12 @@ void DocumentModel::save_to(const std::string& path) {
         }
         j["pomodoro_log"] = plog;
     }
+
+    // s31: project the binder leaves into the object store and carry it in the
+    // blob. explode() copies the whole blob and only rewrites the tree keys, so
+    // this non-tree top-level key survives the bundle round-trip untouched.
+    rebuild_object_store();
+    j["object_store"] = m_object_store.to_json();
 
     // s19: write the v5 bundle. The blob `j` carries an iid on every node
     // (minted at creation / on migrate); ProjectBundle::explode strips each
@@ -889,6 +944,17 @@ void DocumentModel::parse_blob(const json& j) {
     for (auto& n : places)     fix_leaf_kind(n, BinderKind::Place);
     for (auto& n : references) fix_leaf_kind(n, BinderKind::Reference);
     for (auto& n : templates)  fix_leaf_kind(n, BinderKind::Template);
+
+    // s31: load the object store from the blob, or migrate it from the just-
+    // loaded character/place leaves if the project predates it (legacy file, or
+    // a v5 bundle saved before this slice). Either way ensure the floor
+    // templates exist. The leaves above are now kind-correct, so the projection
+    // routes characters vs places to the right built-in template.
+    if (j.contains("object_store") && j["object_store"].is_object())
+        m_object_store.from_json(j["object_store"]);
+    else
+        rebuild_object_store();
+    m_object_store.seed_builtins();
 
     active_section = Section::Manuscript;
     active_path.clear();
