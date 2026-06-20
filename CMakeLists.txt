@@ -168,6 +168,7 @@ set(SOURCES
     src/SpellCheckHighlighter.cpp # buffer tag management + squiggle rendering
     src/UnicodePickerPopover.cpp  # reusable unicode character picker popover
     src/Inspector.cpp
+    src/ObjectForm.cpp            # s31 — template-driven object form widget (renders a FormPlan)
     src/SnapshotDiff.cpp          # extracted from Inspector.cpp
     src/DocumentModel.cpp
     src/Iid.cpp                   # s19 — pure cross-layer part identity (GTK-free, tested)

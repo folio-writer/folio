@@ -4,6 +4,7 @@
 #include "Inspector.hpp"
 #include "BarcodeDialog.hpp"
 #include "BarcodeGenerator.hpp"
+#include "ObjectIO.hpp"   // s32 — floor_field_to_leaf: editable form write-through
 #include "FolioLog.hpp"
 #include "Iid.hpp"
 #include <librsvg/rsvg.h>
@@ -898,6 +899,51 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
   }
 }
 
+// s31/s32: resolve the object + its template from the model's store and render
+// them into `form`. The store is a save-time projection of the binder leaves, so
+// rebuild it first to reflect any edits since load (and to cover freshly-created
+// characters/places not yet saved).
+//
+// s32 — the form is now the EDITING surface for the floor fields. Each editable
+// widget reports its raw value through on_change; we coerce it and write it
+// THROUGH to the backing leaf via the pure ObjectIO::floor_field_to_leaf inverse
+// mapping (the exact reverse of migration), so the projection stays the single
+// source of truth — the next rebuild re-derives the same object instead of
+// clobbering the edit. notify_meta_changed() keeps the Sidebar (which reads the
+// leaf title) live. m_loading guards the set_text() the builders fire while
+// populating, so priming the widgets does not write spurious edits.
+void Inspector::populate_object_form(ObjectForm& form, const std::string& iid) {
+  m_model.rebuild_object_store();
+  const Folio::ObjectStore& store = m_model.object_store();
+  const Folio::Object* obj = store.find_object(iid);
+  if (!obj) { form.clear(); return; }
+  const Folio::Template* tmpl = store.find_template(obj->type);
+  if (!tmpl) { form.clear(); return; }
+
+  form.populate(*tmpl, *obj, /*editable=*/true,
+      [this, iid](const std::string& field_id, const Folio::json& raw) {
+        if (m_loading || !m_current_node || m_current_node->iid != iid)
+          return;
+        const std::string s = raw.is_string() ? raw.get<std::string>()
+                                               : std::string{};
+        switch (Folio::ObjectIO::floor_field_to_leaf(field_id)) {
+          case Folio::ObjectIO::LeafField::Title:       m_current_node->title       = s; break;
+          case Folio::ObjectIO::LeafField::Content:     m_current_node->content     = s; break;
+          case Folio::ObjectIO::LeafField::ImagePath:   m_current_node->image_path  = s; break;
+          case Folio::ObjectIO::LeafField::Description: m_current_node->description = s; break;
+          case Folio::ObjectIO::LeafField::Role:        m_current_node->role        = s; break;
+          case Folio::ObjectIO::LeafField::None:
+            // Object-only field (a future custom-template field) — no projected
+            // leaf home this slice. Persisting it lands when objects become the
+            // durable store (template builder / authority flip).
+            return;
+        }
+        LOG_DEBUG("ObjectForm edit {} field={} -> leaf", iid, field_id);
+        m_model.mark_modified();
+        notify_meta_changed();
+      });
+}
+
 void Inspector::build_character_meta_section(Gtk::Box &s) {
   // ── Identity ────────────────────────────────────────────────────────────
   s.append(*make_disclosure_hdr("Identity",
@@ -905,32 +951,8 @@ void Inspector::build_character_meta_section(Gtk::Box &s) {
       m_prefs.inspector_meta_char_identity_expanded));
   {
     auto *lb = make_listbox();
-    { // Name
-      auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
-      auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-      rb->set_margin_start(12);
-      rb->set_margin_end(12);
-      rb->set_margin_top(8);
-      rb->set_margin_bottom(8);
-      auto *l = Gtk::make_managed<Gtk::Label>("Name");
-      l->add_css_class("pref-row-label");
-      l->set_hexpand(true);
-      l->set_halign(Gtk::Align::START);
-      m_char_name_entry.set_placeholder_text("Character name");
-      m_char_name_entry.set_size_request(120, -1);
-      m_char_name_entry.set_halign(Gtk::Align::END);
-      m_char_name_entry.signal_changed().connect([this]() {
-        if (m_loading || !m_current_node)
-          return;
-        m_current_node->title = std::string(m_char_name_entry.get_text());
-        m_model.mark_modified();
-        notify_meta_changed();
-      });
-      rb->append(*l);
-      rb->append(m_char_name_entry);
-      row->set_child(*rb);
-      lb->append(*row);
-    }
+    // Name retired (s32) — the object form now owns name -> title editing, so a
+    // second Name entry here would double-bind. Identity keeps the non-floor Role.
     { // Role
       auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
       auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
@@ -1018,45 +1040,21 @@ void Inspector::build_character_meta_section(Gtk::Box &s) {
     m_meta_char_colour_revealer.set_child(*lb);
     s.append(m_meta_char_colour_revealer);
   }
+
+  // ── Template fields (s32 — the editable object form: name / image / buffer) ──
+  s.append(m_char_object_form);
 }
 
 void Inspector::build_place_meta_section(Gtk::Box &s) {
-  // ── Identity ────────────────────────────────────────────────────────────
-  s.append(*make_disclosure_hdr("Identity",
-      m_meta_place_identity_revealer, m_meta_place_identity_arrow,
-      m_prefs.inspector_meta_place_identity_expanded));
-  {
-    auto *lb = make_listbox();
-    auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
-    auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    rb->set_margin_start(12);
-    rb->set_margin_end(12);
-    rb->set_margin_top(8);
-    rb->set_margin_bottom(8);
-    auto *l = Gtk::make_managed<Gtk::Label>("Name");
-    l->add_css_class("pref-row-label");
-    l->set_hexpand(true);
-    l->set_halign(Gtk::Align::START);
-    m_place_name_entry.set_placeholder_text("Place name");
-    m_place_name_entry.set_size_request(120, -1);
-    m_place_name_entry.set_halign(Gtk::Align::END);
-    m_place_name_entry.signal_changed().connect([this]() {
-      if (m_loading || !m_current_node)
-        return;
-      m_current_node->title = std::string(m_place_name_entry.get_text());
-      m_model.mark_modified();
-      notify_meta_changed();
-    });
-    rb->append(*l);
-    rb->append(m_place_name_entry);
-    row->set_child(*rb);
-    lb->append(*row);
-    m_meta_place_identity_revealer.set_child(*lb);
-    s.append(m_meta_place_identity_revealer);
-  }
+  // Identity (Name) retired (s32) — the object form now owns name -> title, so a
+  // second Name entry here would double-bind. The place panel keeps only its
+  // non-floor fields (Tagline, Colour); the form supplies name / image / buffer.
 
-  // ── Description ─────────────────────────────────────────────────────────
-  s.append(*make_disclosure_hdr("Description",
+  // ── Tagline ─────────────────────────────────────────────────────────────
+  // (Was "Description": relabelled to kill the same-label/different-meaning clash
+  // with the object form's "Description" buffer. This edits the one-liner
+  // node->description; the form's Description edits the long-form node->content.)
+  s.append(*make_disclosure_hdr("Tagline",
       m_meta_place_description_revealer, m_meta_place_description_arrow,
       m_prefs.inspector_meta_place_description_expanded));
   {
@@ -1105,6 +1103,9 @@ void Inspector::build_place_meta_section(Gtk::Box &s) {
     m_meta_place_colour_revealer.set_child(*lb);
     s.append(m_meta_place_colour_revealer);
   }
+
+  // ── Template fields (s32 — the editable object form: name / image / buffer) ──
+  s.append(m_place_object_form);
 }
 
 void Inspector::build_reference_meta_section(Gtk::Box &s) {
@@ -1346,7 +1347,6 @@ void Inspector::load_node(BinderNode *node) {
   if (node->kind == BinderKind::Character) {
     m_mode = InspectorMode::Character;
     show_meta_section("char-meta");
-    m_char_name_entry.set_text(node->title);
     m_char_desc_entry.set_text(node->description);
     m_char_notes_buffer->set_text(node->synopsis);
     if (m_char_role_dropdown) {
@@ -1364,6 +1364,8 @@ void Inspector::load_node(BinderNode *node) {
     sync_color_dropdown(m_char_color_dropdown, node->color_idx);
     m_tab_history.set_sensitive(true);
 
+    populate_object_form(m_char_object_form, node->iid);
+
     m_loading = false;
     refresh_notes();
     refresh_history();
@@ -1374,11 +1376,12 @@ void Inspector::load_node(BinderNode *node) {
   if (node->kind == BinderKind::Place) {
     m_mode = InspectorMode::Place;
     show_meta_section("place-meta");
-    m_place_name_entry.set_text(node->title);
     m_place_desc_entry.set_text(node->description);
     m_place_notes_buffer->set_text(node->synopsis);
     sync_color_dropdown(m_place_color_dropdown, node->color_idx);
     m_tab_history.set_sensitive(true);
+
+    populate_object_form(m_place_object_form, node->iid);
 
     m_loading = false;
     refresh_notes();

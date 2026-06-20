@@ -13,13 +13,24 @@ std::string ObjectStore::add_migrated_leaf(const std::string& iid,
                                            const std::string& image_path,
                                            const std::string& legacy_tagline,
                                            const std::string& legacy_role) {
+    if (Object* existing = find_object(iid)) {
+        // MERGE-PRESERVING: restamp ONLY the leaf-owned fields from the leaf;
+        // every other value (custom fields, relation iids) is left untouched, so
+        // it survives the projection rebuild. Floor + orphan fields are restamped
+        // unconditionally (incl. clears) so the object tracks the leaf's truth.
+        existing->type = is_place ? "place" : "character";
+        if (!existing->values.is_object()) existing->values = json::object();
+        existing->set_value("name",        title);
+        existing->set_value("description", buffer_html);
+        existing->set_value("image",       image_path);
+        existing->set_value("tagline",     legacy_tagline);
+        existing->set_value("role",        legacy_role);
+        return iid;
+    }
+    // First sighting of this iid — create the object fresh from the leaf.
     Object o = ObjectIO::migrate_legacy_leaf(iid, is_place, title, buffer_html,
                                              image_path, legacy_tagline, legacy_role);
-    // Idempotent re-projection: replace an existing object with the same iid.
-    if (Object* existing = find_object(iid))
-        *existing = std::move(o);
-    else
-        objects.push_back(std::move(o));
+    objects.push_back(std::move(o));
     return iid;
 }
 

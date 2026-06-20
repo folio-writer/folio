@@ -68,5 +68,34 @@ Object migrate_legacy_leaf(const std::string& iid,
                            const std::string& legacy_tagline = "",
                            const std::string& legacy_role    = "");
 
+// ── Write-back: the INVERSE of the §8 floor mapping (s32) ────────────────────
+// The editable object form (s32) flips editing authority toward objects, but the
+// store is still a PROJECTION of the binder leaves this slice — so an edit to a
+// floor field must be written THROUGH to the backing leaf, or rebuild_object_store
+// would overwrite it on the next selection/save. That write-through must be the
+// EXACT inverse of migrate_legacy_leaf's mapping, or an edit lands in the wrong
+// leaf field. Encoding the inverse ONCE here, pure and tested, makes that drift
+// structurally impossible (the same instinct as KP-as-tag-as-colour): the form's
+// on_change resolves a floor field id to the leaf field it owns, and nowhere does
+// the GTK code re-derive the mapping by hand.
+//
+// migrate (leaf -> object):  title->name, content->description, image_path->image,
+//                            node.description->tagline(orphan), node.role->role(orphan)
+// inverse (object field id -> leaf field), exactly reversed below.
+//
+// LeafField::None marks a field with no floor->leaf home this slice — a value
+// that lives only in the object store (a future custom-template field), not a
+// projected leaf field. The caller leaves the leaf untouched for None.
+enum class LeafField { None, Title, Content, ImagePath, Description, Role };
+
+inline LeafField floor_field_to_leaf(const std::string& field_id) {
+    if (field_id == "name")        return LeafField::Title;        // <- title
+    if (field_id == "description") return LeafField::Content;      // <- the buffer
+    if (field_id == "image")       return LeafField::ImagePath;    // <- image_path
+    if (field_id == "tagline")     return LeafField::Description;  // <- one-liner (orphan)
+    if (field_id == "role")        return LeafField::Role;         // <- role (orphan)
+    return LeafField::None;                                        // object-only field
+}
+
 }  // namespace ObjectIO
 }  // namespace Folio

@@ -5,6 +5,7 @@
 // Tabs: Metadata | Notes | History | Project
 // ─────────────────────────────────────────────────────────────────────────────
 #include "DocumentModel.hpp"
+#include "ObjectForm.hpp"   // s31/s32 — template-driven object form (editable: name/image/buffer)
 #include "BarcodeGenerator.hpp"
 #include "FolioPrefs.hpp"
 #include "AnnotationReportDialog.hpp"
@@ -148,12 +149,19 @@ private:
     Gtk::Label     m_meta_node_scene_arrow;
 
     // Character fields
-    Gtk::Entry        m_char_name_entry;
+    // m_char_name_entry retired (s32) — name editing moved to the object form.
     Gtk::Entry        m_char_desc_entry;
     Gtk::DropDown*    m_char_role_dropdown  = nullptr;
     Gtk::DropDown*    m_char_color_dropdown = nullptr;
     Gtk::TextView     m_char_notes_view;
     Glib::RefPtr<Gtk::TextBuffer> m_char_notes_buffer;
+
+    // s31: template-driven object form (read-only preview this slice). One per
+    // panel — a widget can be parented only once, so character and place each
+    // own their instance. Populated on node load from the model's object store.
+    ObjectForm        m_char_object_form;
+    ObjectForm        m_place_object_form;
+    void populate_object_form(ObjectForm& form, const std::string& iid);
 
     // Metadata tab disclosure — character
     Gtk::Revealer  m_meta_char_identity_revealer;
@@ -164,15 +172,14 @@ private:
     Gtk::Label     m_meta_char_colour_arrow;
 
     // Place fields
-    Gtk::Entry        m_place_name_entry;
+    // m_place_name_entry retired (s32) — name editing moved to the object form.
     Gtk::Entry        m_place_desc_entry;
     Gtk::DropDown*    m_place_color_dropdown = nullptr;
     Gtk::TextView     m_place_notes_view;
     Glib::RefPtr<Gtk::TextBuffer> m_place_notes_buffer;
 
     // Metadata tab disclosure — place
-    Gtk::Revealer  m_meta_place_identity_revealer;
-    Gtk::Label     m_meta_place_identity_arrow;
+    // (Identity disclosure retired s32 — Name moved to the object form.)
     Gtk::Revealer  m_meta_place_description_revealer;
     Gtk::Label     m_meta_place_description_arrow;
     Gtk::Revealer  m_meta_place_colour_revealer;

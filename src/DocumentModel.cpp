@@ -676,27 +676,36 @@ void DocumentModel::reset() {
 // DocumentModel — file I/O
 // ─────────────────────────────────────────────────────────────────────────────
 
-// s31: project the Characters/Places binder leaves into the object store. Groups
-// are containers only (they become first-class objects in a later slice — §5/§6
-// of the objects design); only leaves migrate here. Re-projection is idempotent
-// (objects keep their leaf iid), so calling this repeatedly is stable.
+// s31/s32: project the Characters/Places binder leaves into the object store.
+// Groups are containers only (they become first-class objects in a later slice —
+// §5/§6 of the objects design); only leaves migrate here. The reconcile is
+// MERGE-PRESERVING (s32): add_migrated_leaf restamps only the leaf-owned fields
+// and preserves the object's other values, so a custom field or a relation iid
+// survives the rebuild. Each visited leaf's iid is recorded so vanished leaves
+// can be pruned afterwards.
 static void collect_object_leaves(const std::vector<BinderNode>& tree,
-                                  bool is_place, ObjectStore& store) {
+                                  bool is_place, ObjectStore& store,
+                                  std::vector<std::string>& live_iids) {
     for (const auto& n : tree) {
         if (n.kind == BinderKind::Group) {
-            collect_object_leaves(n.children, is_place, store);
+            collect_object_leaves(n.children, is_place, store, live_iids);
         } else {
             store.add_migrated_leaf(n.iid, is_place, n.title, n.content,
                                     n.image_path, n.description, n.role);
+            live_iids.push_back(n.iid);
         }
     }
 }
 
 void DocumentModel::rebuild_object_store() {
-    m_object_store.clear_objects();
+    // Do NOT clear objects — the reconcile merges into the existing set so that
+    // store-owned values (custom fields, relation edges) persist. Templates also
+    // persist (seed_builtins is idempotent and only adds missing built-ins).
     m_object_store.seed_builtins();
-    collect_object_leaves(characters, /*is_place=*/false, m_object_store);
-    collect_object_leaves(places,     /*is_place=*/true,  m_object_store);
+    std::vector<std::string> live_iids;
+    collect_object_leaves(characters, /*is_place=*/false, m_object_store, live_iids);
+    collect_object_leaves(places,     /*is_place=*/true,  m_object_store, live_iids);
+    m_object_store.prune_projected_except(live_iids);
 }
 
 void DocumentModel::save() {
