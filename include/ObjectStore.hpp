@@ -48,6 +48,10 @@ inline bool is_projected_type(const std::string& type_id) {
     return type_id == "character" || type_id == "place";
 }
 
+// A template is editable iff it is NOT a locked built-in. The builder opens only
+// on editable types; a built-in must be cloned first (s34).
+inline bool template_is_editable(const Template& t) { return !t.builtin; }
+
 struct ObjectStore {
     std::vector<Template> templates;   // the type registry
     std::vector<Object>   objects;     // the instances
@@ -132,14 +136,33 @@ struct ObjectStore {
         return out;
     }
 
-    // ── Seeding ───────────────────────────────────────────────────────────────
-    // Ensure the two built-in floor templates (Character, Place) are present.
-    // Idempotent: only adds a template id the registry lacks, so a project that
-    // already carries user-edited Character/Place templates is left untouched.
+    // Ensure the two built-in floor templates (Character, Place) are present AND
+    // pristine. RESEEDS (overwrites) them from the code definition every pass, so
+    // a built-in is always the locked, current floor shape — built-ins are
+    // immutable (clone to edit, s34), so there is never user data in them to lose,
+    // and a future floor-schema change migrates for free. User types (tpl_ ids)
+    // are never touched.
     void seed_builtins() {
-        if (!has_template("character")) templates.push_back(built_in_character_template());
-        if (!has_template("place"))     templates.push_back(built_in_place_template());
+        upsert_template(built_in_character_template());
+        upsert_template(built_in_place_template());
     }
+
+    // Install or update a template by id (the template builder's commit, s33).
+    // Replaces an existing template with the same id in place (preserving its
+    // registry position) or appends a new one. Pure; the GTK dialog edits a copy
+    // and hands the finished schema here. Objects of this type keep their values
+    // (orphan-and-keep handles any field the edit removed).
+    void upsert_template(const Template& t) {
+        for (auto& existing : templates)
+            if (existing.id == t.id) { existing = t; return; }
+        templates.push_back(t);
+    }
+
+    // Clone a template into a new, EDITABLE user type (s34). Built-ins are locked;
+    // the only authoring path is clone-then-edit. Mints a fresh tpl_ id, copies
+    // the schema + icon, names it "Copy of <name>", clears the builtin flag, and
+    // registers it. Returns the new id, or "" if src_id is unknown.
+    std::string clone_template(const std::string& src_id);
 
     // ── Migration intake (the pure seam the binder walk feeds) ────────────────
     // Reconcile a legacy character/place leaf into the store. MERGE-PRESERVING

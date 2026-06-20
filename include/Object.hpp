@@ -205,6 +205,7 @@ struct Template {
     std::string              type_name; // "Character", "Species", "House", "Sector"…
     std::string              icon;      // folio-*-symbolic
     std::vector<FieldSchema> fields;    // ORDERED
+    bool                     builtin = false;  // locked floor/seed type — clone to edit (s34)
 
     const FieldSchema* find_field(const std::string& field_id) const {
         for (const auto& f : fields)
@@ -311,6 +312,7 @@ inline Template built_in_character_template() {
     t.type_name = "Character";
     t.icon      = "folio-character-symbolic";
     t.fields    = default_floor_fields();
+    t.builtin   = true;     // locked floor type — clone to customize (s34)
     return t;
 }
 
@@ -320,6 +322,7 @@ inline Template built_in_place_template() {
     t.type_name = "Place";
     t.icon      = "folio-place-symbolic";
     t.fields    = default_floor_fields();
+    t.builtin   = true;     // locked floor type — clone to customize (s34)
     return t;
 }
 

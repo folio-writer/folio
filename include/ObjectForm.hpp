@@ -46,6 +46,10 @@ public:
     // by the caller (Inspector) via apply_field() and synced to the backing leaf.
     using OnChange = std::function<void(const std::string& field_id, const json& raw)>;
 
+    // Fired when the user clicks the "Edit fields…" affordance (the §7 door).
+    // The Inspector opens the template builder for the current object's template.
+    using OnEditTemplate = std::function<void()>;
+
     ObjectForm();
 
     // Render `obj` through `tmpl`. editable=false (this slice) renders read-only;
@@ -54,18 +58,23 @@ public:
     void populate(const Folio::Template& tmpl, const Folio::Object& obj,
                   bool editable = false, OnChange on_change = {});
 
+    // Wire the "Edit fields…" affordance (shown at the bottom when editable).
+    void set_on_edit_template(OnEditTemplate cb) { m_on_edit_template = std::move(cb); }
+
     // Show an empty state (no object selected / no template resolved).
     void clear();
 
 private:
     Gtk::Box   m_body;      // the rebuilt content column
     Gtk::Label m_heading;   // type_name heading
+    OnEditTemplate m_on_edit_template;
 
     void clear_body();
     void append_compact_row(const FormRow& row);                 // label / value
     void append_full_width(const FormRow& row);                  // richtext / list block
     void append_editable_text(const FormRow& row, const OnChange& on_change);     // text/image entry
     void append_editable_richtext(const FormRow& row, const OnChange& on_change); // the buffer (s32)
+    void append_edit_template_button();                          // the §7 door (s33)
 };
 
 }  // namespace Folio

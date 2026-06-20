@@ -188,6 +188,22 @@ void ObjectForm::append_editable_richtext(const Folio::FormRow& row, const OnCha
     m_body.append(*frame);
 }
 
+// The §7 "door you walk through only when you want more": a quiet affordance at
+// the bottom of the editable form that opens the template builder. Shown only
+// when editable and a handler is wired.
+void ObjectForm::append_edit_template_button() {
+    auto* btn = Gtk::make_managed<Gtk::Button>("Edit fields…");
+    btn->add_css_class("flat");
+    btn->set_halign(Gtk::Align::START);
+    btn->set_margin_start(12);
+    btn->set_margin_top(4);
+    btn->set_margin_bottom(8);
+    btn->signal_clicked().connect([this]() {
+        if (m_on_edit_template) m_on_edit_template();
+    });
+    m_body.append(*btn);
+}
+
 void ObjectForm::populate(const Folio::Template& tmpl, const Folio::Object& obj,
                           bool editable, OnChange on_change) {
     clear_body();
@@ -209,6 +225,8 @@ void ObjectForm::populate(const Folio::Template& tmpl, const Folio::Object& obj,
             append_compact_row(row);                         // read-only label/value
         }
     }
+    if (editable && m_on_edit_template)
+        append_edit_template_button();                       // the §7 door (s33)
 }
 
 }  // namespace Folio

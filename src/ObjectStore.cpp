@@ -3,8 +3,25 @@
 // ─────────────────────────────────────────────────────────────────────────────
 #include "ObjectStore.hpp"
 #include "ObjectIO.hpp"
+#include "Iid.hpp"   // s34 — make_iid(IidKind::Template) for cloned type ids
 
 namespace Folio {
+
+// s34 — clone-to-edit: built-ins are locked, so authoring a custom type means
+// copying an existing template into a fresh, editable user type. Mints a unique
+// tpl_ id (loops on the astronomically-unlikely collision), copies schema + icon,
+// names it "Copy of <name>", and clears the builtin flag.
+std::string ObjectStore::clone_template(const std::string& src_id) {
+    const Template* src = find_template(src_id);
+    if (!src) return "";
+
+    Template copy = *src;
+    do { copy.id = make_iid(IidKind::Template); } while (has_template(copy.id));
+    copy.type_name = "Copy of " + src->type_name;
+    copy.builtin   = false;
+    templates.push_back(copy);
+    return copy.id;
+}
 
 std::string ObjectStore::add_migrated_leaf(const std::string& iid,
                                            bool               is_place,

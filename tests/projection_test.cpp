@@ -14,9 +14,9 @@
 // PURE: ObjectStore.hpp / ObjectIO / Object / nlohmann::json — sandbox-compilable.
 // ─────────────────────────────────────────────────────────────────────────────
 /*
-g++ -std=c++20 -Wall -Wextra -Werror -I include -I /home/claude/sbox tests/projection_test.cpp src/ObjectStore.cpp src/ObjectIO.cpp -o /tmp/projection_test
+g++ -std=c++20 -Wall -Wextra -Werror -I include -I /home/claude/sbox tests/projection_test.cpp src/ObjectStore.cpp src/ObjectIO.cpp src/Iid.cpp -o /tmp/projection_test
 /tmp/projection_test
-clang++ -std=c++20 -Wall -Wextra -Werror -I include tests/projection_test.cpp src/ObjectStore.cpp src/ObjectIO.cpp -o /tmp/projection_test
+clang++ -std=c++20 -Wall -Wextra -Werror -I include tests/projection_test.cpp src/ObjectStore.cpp src/ObjectIO.cpp src/Iid.cpp -o /tmp/projection_test
 /tmp/projection_test
 */
 
@@ -91,6 +91,24 @@ int main() {
     store.prune_projected_except({});   // no live leaves at all
     check(store.find_object("chr_ana") == nullptr, "empty-live prunes all projected");
     check(store.find_object("hse_x")   != nullptr, "store-owned still safe with empty live");
+
+    // ── upsert_template: replace-in-place by id, or append (the builder commit) ─
+    {
+        ObjectStore s2;
+        s2.seed_builtins();
+        const std::size_t base = s2.templates.size();   // character + place
+        // Edit the existing character template in place (same id) — count steady.
+        Template ch = *s2.find_template("character");
+        ch.type_name = "Hero";
+        s2.upsert_template(ch);
+        check(s2.templates.size() == base, "upsert existing id replaces in place");
+        check(s2.find_template("character")->type_name == "Hero", "upsert applied the edit");
+        // A new id appends.
+        Template sp; sp.id = "species"; sp.type_name = "Species";
+        s2.upsert_template(sp);
+        check(s2.templates.size() == base + 1, "upsert new id appends");
+        check(s2.find_template("species") != nullptr, "new template registered");
+    }
 
     std::cout << "projection_test: all " << checks << " checks passed\n";
     return 0;

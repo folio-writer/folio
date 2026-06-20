@@ -5,6 +5,7 @@
 #include "BarcodeDialog.hpp"
 #include "BarcodeGenerator.hpp"
 #include "ObjectIO.hpp"   // s32 — floor_field_to_leaf: editable form write-through
+#include "TemplateBuilderDialog.hpp"  // s33 — schema editor opened from the form
 #include "FolioLog.hpp"
 #include "Iid.hpp"
 #include <librsvg/rsvg.h>
@@ -60,6 +61,11 @@ Inspector::Inspector(DocumentModel &model, FolioPrefs &prefs)
   build_history_tab();
   build_project_tab();
   build_annotations_tab();
+
+  // s33 — both object forms open the template builder for the current object's
+  // template through the same handler (the form supplies no template itself).
+  m_char_object_form.set_on_edit_template([this]() { open_template_builder_for_current(); });
+  m_place_object_form.set_on_edit_template([this]() { open_template_builder_for_current(); });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -942,6 +948,49 @@ void Inspector::populate_object_form(ObjectForm& form, const std::string& iid) {
         m_model.mark_modified();
         notify_meta_changed();
       });
+}
+
+// s33 — open the schema editor for the CURRENT object's template. Resolves the
+// template id from the selected leaf's object, hands the builder a copy, and on
+// Save commits the edited template into the store + repopulates the form ON AN
+// IDLE TICK (the s24 rule: never mutate the model / rebuild views from inside a
+// live modal handler — the dialog is still tearing down when apply fires).
+void Inspector::open_template_builder_for_current() {
+  if (!m_current_node) return;
+  const std::string iid = m_current_node->iid;
+
+  m_model.rebuild_object_store();
+  const Folio::Object* obj = m_model.object_store().find_object(iid);
+  if (!obj) return;
+  const Folio::Template* tmpl = m_model.object_store().find_template(obj->type);
+  if (!tmpl) return;
+  Folio::Template draft = *tmpl;   // copy — the dialog edits this, not the store
+
+  auto* root = dynamic_cast<Gtk::Window*>(get_root());
+  if (!root) return;
+
+  m_template_builder = std::make_unique<TemplateBuilderDialog>(*root);
+  m_template_builder->set_apply_callback([this](const Folio::Template& edited) {
+    if (!Folio::template_is_editable(edited)) return;  // built-ins are locked (s34) — clone to edit
+    Folio::Template t = edited;   // capture by value — survives the dialog teardown
+    Glib::signal_idle().connect_once([this, t]() {
+      m_model.object_store().upsert_template(t);
+      m_model.mark_modified();
+      // Re-render whichever form is showing the affected object.
+      if (m_current_node) {
+        if (m_current_node->kind == BinderKind::Character)
+          populate_object_form(m_char_object_form, m_current_node->iid);
+        else if (m_current_node->kind == BinderKind::Place)
+          populate_object_form(m_place_object_form, m_current_node->iid);
+      }
+      notify_meta_changed();
+    });
+  });
+  m_template_builder->signal_hide().connect([this]() {
+    Glib::signal_idle().connect_once([this]() { m_template_builder.reset(); });
+  });
+  m_template_builder->open_for(draft);
+  m_template_builder->present();
 }
 
 void Inspector::build_character_meta_section(Gtk::Box &s) {

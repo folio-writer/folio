@@ -169,6 +169,7 @@ set(SOURCES
     src/UnicodePickerPopover.cpp  # reusable unicode character picker popover
     src/Inspector.cpp
     src/ObjectForm.cpp            # s31 — template-driven object form widget (renders a FormPlan)
+    src/TemplateBuilderDialog.cpp # s33 — schema editor dialog (thin GTK over TemplateEdit)
     src/SnapshotDiff.cpp          # extracted from Inspector.cpp
     src/DocumentModel.cpp
     src/Iid.cpp                   # s19 — pure cross-layer part identity (GTK-free, tested)

@@ -40,13 +40,15 @@ static FieldSchema field_from_json(const json& j) {
 json template_to_json(const Template& t) {
     json fields = json::array();
     for (const auto& f : t.fields) fields.push_back(field_to_json(f));
-    return json{
+    json j{
         { "schema",    1 },
         { "id",        t.id },
         { "type_name", t.type_name },
         { "icon",      t.icon },
         { "fields",    fields },
     };
+    if (t.builtin) j["builtin"] = true;   // omit when false to keep user types clean
+    return j;
 }
 
 Template template_from_json(const json& j) {
@@ -54,6 +56,7 @@ Template template_from_json(const json& j) {
     t.id        = j.value("id", "");
     t.type_name = j.value("type_name", "");
     t.icon      = j.value("icon", "");
+    t.builtin   = j.value("builtin", false);
     if (j.contains("fields") && j["fields"].is_array())
         for (const auto& fj : j["fields"])
             t.fields.push_back(field_from_json(fj));

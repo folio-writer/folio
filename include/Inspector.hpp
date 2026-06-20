@@ -18,6 +18,7 @@
 
 namespace Folio {
 class BarcodeDialog; // forward declaration — defined in BarcodeDialog.hpp
+class TemplateBuilderDialog; // forward declaration — defined in TemplateBuilderDialog.hpp
 
 using MetaChangedCallback    = std::function<void(BinderNode*)>;
 using ContentChangedCallback = std::function<void(BinderNode*)>;
@@ -162,6 +163,12 @@ private:
     ObjectForm        m_char_object_form;
     ObjectForm        m_place_object_form;
     void populate_object_form(ObjectForm& form, const std::string& iid);
+
+    // s33 — the template builder (schema editor), owned once (persistent-window
+    // rule), opened from the object form's "Edit fields…" affordance for the
+    // current object's template. Commits on idle (s24 modal rule).
+    std::unique_ptr<TemplateBuilderDialog> m_template_builder;
+    void open_template_builder_for_current();
 
     // Metadata tab disclosure — character
     Gtk::Revealer  m_meta_char_identity_revealer;
