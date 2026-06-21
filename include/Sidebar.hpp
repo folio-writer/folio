@@ -146,8 +146,13 @@ public:
     void add_group_to_places();
 
     // Template picker popover — anchored to `anchor`, calls on_chosen with selected template
+    // s39/slice3 — `category` (character/place/reference) filters the picker to
+    // that category's templates and, when set, to DOC-LOCAL templates only (the
+    // instance path; globals are cross-project boilerplate, reconciled later).
+    // Empty category = legacy behavior (all doc + global templates).
     void show_template_picker(Gtk::Widget* anchor,
-                              std::function<void(const BinderNode&)> on_chosen);
+                              std::function<void(const BinderNode&)> on_chosen,
+                              const std::string& category = "");
 
 private:
     // ── Build / rebuild ───────────────────────────────────────────────────────

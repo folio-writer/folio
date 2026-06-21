@@ -1109,30 +1109,42 @@ void Sidebar::popup_menu(Glib::RefPtr<Gio::Menu> menu,
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Sidebar::show_template_picker(
-    Gtk::Widget *anchor, std::function<void(const BinderNode &)> on_chosen) {
-  // Collect all available templates: doc first, then globals
+    Gtk::Widget *anchor, std::function<void(const BinderNode &)> on_chosen,
+    const std::string &category) {
+  // Collect available templates: doc first, then globals. When `category` is set
+  // (the instance path), filter to template nodes of that category and skip
+  // globals (cross-project boilerplate — reconciled later).
   struct Entry {
     std::string label;
     BinderNode node;
   };
   std::vector<Entry> entries;
 
+  auto node_category = [](const BinderNode &n) -> std::string {
+    return n.form_schema.is_object() ? n.form_schema.value("category", std::string{})
+                                     : std::string{};
+  };
+
   std::function<void(const std::vector<BinderNode> &, bool)> collect;
   collect = [&](const std::vector<BinderNode> &nodes, bool is_global) {
     for (const auto &n : nodes) {
       if (n.kind == BinderKind::Template) {
-        std::string lbl = n.title.empty() ? "Untitled" : n.title;
-        if (is_global)
-          lbl = "[Global]  " + lbl;
-        entries.push_back({lbl, n});
+        if (category.empty() || node_category(n) == category) {
+          std::string lbl = n.title.empty() ? "Untitled" : n.title;
+          if (is_global)
+            lbl = "[Global]  " + lbl;
+          entries.push_back({lbl, n});
+        }
       }
       if (!n.children.empty())
         collect(n.children, is_global);
     }
   };
   collect(m_model.root(Section::Templates), false);
-  auto globals = m_prefs.global_templates_get();
-  collect(globals, true);
+  if (category.empty()) {                       // globals only in the legacy path
+    auto globals = m_prefs.global_templates_get();
+    collect(globals, true);
+  }
 
   if (entries.empty())
     return; // nothing to show
@@ -1281,17 +1293,30 @@ void Sidebar::show_section_ctx_menu(Section section, double x, double y,
       if (m_ctx_popover)
         m_ctx_popover->popdown();
       Glib::signal_idle().connect_once([this, section, anchor]() {
+        const std::string cat =
+            section == Section::Characters ? "character"
+          : section == Section::Places     ? "place"
+          : section == Section::References ? "reference"
+                                           : std::string{};   // Manuscript etc → legacy
         show_template_picker(anchor, [this, section](const BinderNode &tpl) {
-          // Create new leaf then apply template fields
           auto new_path = m_model.add_leaf(section, {}, "");
           BinderNode *n = m_model.node_at(section, new_path);
           if (n) {
-            n->content = tpl.content;
-            n->title = tpl.title;
-            n->color_idx = tpl.color_idx;
-            n->status = tpl.status;
-            if (tpl.word_target > 0)
-              n->word_target = tpl.word_target;
+            if (tpl.form_schema.is_object() && !tpl.form_schema.empty()) {
+              // slice3 — a FORM template: the new leaf adopts it by id (the
+              // template node's iid). rebuild_object_store instantiates the
+              // object against it; the author titles the instance.
+              n->template_id = tpl.iid;
+            } else {
+              // schema-less BOILERPLATE template: copy the starting content (the
+              // buffer-only case, preserved from the legacy "New from Template").
+              n->content = tpl.content;
+              n->title = tpl.title;
+              n->color_idx = tpl.color_idx;
+              n->status = tpl.status;
+              if (tpl.word_target > 0)
+                n->word_target = tpl.word_target;
+            }
             m_model.mark_modified();
           }
           m_model.set_active(section, new_path);
@@ -1301,7 +1326,7 @@ void Sidebar::show_section_ctx_menu(Section section, double x, double y,
           fire_board_selection();
           if (m_on_selected)
             m_on_selected(section, new_path);
-        });
+        }, cat);
       });
     });
     gm->append_section({}, tpl_sec);
