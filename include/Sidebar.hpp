@@ -50,11 +50,14 @@ public:
     using CombineNodesCallback   = std::function<void(Section, std::vector<std::vector<int>>)>;
     // Fired when user escalates sidebar filter to global search dialog.
     using GlobalSearchCallback   = std::function<void(const std::string& query)>;
+    // s38 — request the schema builder for a Template binder node (by iid).
+    using EditTemplateCallback   = std::function<void(const std::string& tpl_iid)>;
 
     explicit Sidebar(DocumentModel& model, FolioPrefs& prefs);
 
     void set_node_selected_callback(NodeSelectedCallback cb)   { m_on_selected   = std::move(cb); }
     void set_node_opened_callback(NodeOpenedCallback cb)       { m_on_opened     = std::move(cb); }
+    void set_edit_template_callback(EditTemplateCallback cb)   { m_on_edit_template = std::move(cb); }
     void set_board_selection_callback(BoardSelectionCallback cb){ m_on_board_sel = std::move(cb); }
     // s20: the internal set is positional (SelPath); convert to iid-keyed
     // BoardItems at the edge. A row whose node no longer resolves is dropped.
@@ -292,6 +295,7 @@ private:
     // ── Callbacks ─────────────────────────────────────────────────────────────
     NodeSelectedCallback   m_on_selected;
     NodeOpenedCallback     m_on_opened;
+    EditTemplateCallback   m_on_edit_template;   // s38
     BoardSelectionCallback m_on_board_sel;
     NodesMovedCallback     m_on_nodes_moved;
     SplitNodeCallback      m_on_split_node;

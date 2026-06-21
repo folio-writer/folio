@@ -23,6 +23,21 @@ std::string ObjectStore::clone_template(const std::string& src_id) {
     return copy.id;
 }
 
+// s38 — the merge projection: a Template binder node's schema enters the registry,
+// the node's iid serving as the template's stable id (binder node = truth, registry
+// = derived). builtin is forced false (node-backed templates are always editable).
+// category is preserved as-authored; an empty category is a read-time fallback
+// concern (the picker treats it as the floor), not mutated here.
+bool ObjectStore::adopt_template_node(const std::string& node_iid,
+                                      const json& form_schema) {
+    if (node_iid.empty() || !form_schema.is_object()) return false;
+    Template t = ObjectIO::template_from_json(form_schema);
+    t.id      = node_iid;   // identity from the node
+    t.builtin = false;      // node-backed templates are editable
+    upsert_template(t);
+    return true;
+}
+
 std::string ObjectStore::add_migrated_leaf(const std::string& iid,
                                            bool               is_place,
                                            const std::string& title,

@@ -1039,6 +1039,12 @@ void MainWindow::wire_callbacks() {
         on_node_opened(section, path);
       });
 
+  // s38 — Templates section "Edit Form…" → open the schema builder on that node.
+  m_sidebar->set_edit_template_callback([this](const std::string &tpl_iid) {
+    if (m_inspector)
+      m_inspector->open_template_builder_for_template_node(tpl_iid);
+  });
+
   // Sidebar: nodes moved (DnD or keyboard) → update timeline tab paths.
   // s20: no selection re-apply here. Selection identity is the iid, which the
   // move does not change, and the sidebar's own drop tail broadcasts the final

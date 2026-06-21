@@ -52,6 +52,12 @@ public:
     void set_progress_disclosure_callback(std::function<void(bool)> cb);
     void set_toast_callback(ToastCallback cb);
 
+    // s38 — open the schema builder on a TEMPLATE BINDER NODE (the merge's authoring
+    // entry; called from MainWindow's Sidebar "Edit Form…" wire). Seeds from the
+    // node's form_schema (or the Character floor when empty/new); on commit writes
+    // the edited schema back to the node and re-projects the store.
+    void open_template_builder_for_template_node(const std::string& node_iid);
+
     // Annotations — called by Editor when annotations change
     void notify_annotations_changed();
 

@@ -350,6 +350,15 @@ struct BinderNode {
     // when-empty so untouched leaves and all scenes stay clean.
     std::string   template_id;
 
+    // s38 — TEMPLATE NODES ONLY (BinderKind::Template): the form schema this
+    // template defines, as a serialized Folio::Template (type_name, icon, fields[],
+    // category). The binder node is the truth; rebuild_object_store projects it into
+    // the ObjectStore registry under this node's iid (ObjectStore::adopt_template_
+    // node). Empty on every other kind; serialised omit-when-empty so the whole tree
+    // stays byte-clean. The node's own `content` buffer is the template's
+    // description, distinct from the schema here.
+    nlohmann::json form_schema;
+
     // Reference fields
     std::string   url;             // optional URL for Reference nodes
 

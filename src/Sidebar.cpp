@@ -1418,9 +1418,15 @@ void Sidebar::show_node_ctx_menu(Section section, const std::vector<int> &path,
     }
     gm->append_section({}, open_sec);
 
-    // Section 2 (Templates only): Make Global
+    // Section 2 (Templates only): Edit Form + Make Global
     if (section == Section::Templates && !is_group) {
       auto tpl_sec = Gio::Menu::create();
+      tpl_sec->append_item(mi("Edit Form\xE2\x80\xA6", "ctx.tpl-edit-form"));
+      ag->add_action("tpl-edit-form", [this, section, path]() {
+        BinderNode *n = m_model.node_at(section, path);
+        if (n && m_on_edit_template)
+          m_on_edit_template(n->iid);   // → Inspector::open_template_builder_for_template_node
+      });
       tpl_sec->append_item(mi("Make Global", "ctx.tpl-make-global"));
       ag->add_action("tpl-make-global", [this, section, path]() {
         BinderNode *n = m_model.node_at(section, path);

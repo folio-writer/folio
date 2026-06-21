@@ -133,6 +133,8 @@ json BinderNode::to_json() const {
     j["image_path"]         = image_path;
     if (!template_id.empty())
         j["template_id"]    = template_id;      // s35: adopted clone (omit on floor)
+    if (form_schema.is_object() && !form_schema.empty())
+        j["form_schema"]    = form_schema;      // s38: Template-node schema (omit elsewhere)
     j["url"]                = url;
     if (!trash_origin_section.empty())
         j["trash_origin_section"]  = trash_origin_section;
@@ -210,6 +212,8 @@ void BinderNode::from_json(const json& j) {
     description        = j.value("description", "");
     image_path         = j.value("image_path",  "");
     template_id        = j.value("template_id", "");   // s35: adopted clone ("" = floor)
+    if (j.contains("form_schema") && j["form_schema"].is_object())
+        form_schema = j["form_schema"];                // s38: Template-node schema
     url                = j.value("url",          "");
     trash_origin_section  = j.value("trash_origin_section",  "");
     trash_origin_path_str = j.value("trash_origin_path_str", "");
@@ -701,11 +705,31 @@ static void collect_object_leaves(const std::vector<BinderNode>& tree,
     }
 }
 
+// s38 — recursively project Template binder nodes into the registry. Free static
+// recursion (the file's idiom, cf. collect_nodes_recursive) so no std::function /
+// <functional> dependency. adopt_template_node skips a node with no form_schema.
+static void adopt_template_nodes_recursive(Folio::ObjectStore& store,
+                                           const std::vector<BinderNode>& nodes) {
+    for (const auto& n : nodes) {
+        if (n.kind == BinderKind::Template)
+            store.adopt_template_node(n.iid, n.form_schema);
+        if (!n.children.empty())
+            adopt_template_nodes_recursive(store, n.children);
+    }
+}
+
 void DocumentModel::rebuild_object_store() {
     // Do NOT clear objects — the reconcile merges into the existing set so that
     // store-owned values (custom fields, relation edges) persist. Templates also
     // persist (seed_builtins is idempotent and only adds missing built-ins).
     m_object_store.seed_builtins();
+
+    // s38 — project Template binder nodes into the registry (binder node = truth,
+    // registry = derived). After seed_builtins so a node template supplements the
+    // floors; BEFORE the leaf projection so a character's template_id resolves to
+    // its node template.
+    adopt_template_nodes_recursive(m_object_store, templates);
+
     std::vector<std::string> live_iids;
     collect_object_leaves(characters, /*is_place=*/false, m_object_store, live_iids);
     collect_object_leaves(places,     /*is_place=*/true,  m_object_store, live_iids);

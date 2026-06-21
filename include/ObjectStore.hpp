@@ -164,6 +164,14 @@ struct ObjectStore {
     // registers it. Returns the new id, or "" if src_id is unknown.
     std::string clone_template(const std::string& src_id);
 
+    // s38 — adopt a Template BINDER NODE's schema into the registry (the merge's
+    // projection seam). The node is the truth; its `iid` becomes the template's
+    // stable id, so a leaf's `template_id` and a relation `target_type` resolve to
+    // it. Deserializes `form_schema`, stamps id = node_iid + builtin = false, and
+    // upserts. A null/empty schema is ignored (no junk type). Returns true if a
+    // template was adopted. Defined in ObjectStore.cpp (needs ObjectIO).
+    bool adopt_template_node(const std::string& node_iid, const json& form_schema);
+
     // ── Type resolution (s35 — the leaf's template_id → object.type) ──────────
     // A character/place leaf carries an optional `template_id` naming a CLONE it
     // has adopted (empty = the section's built-in floor). Resolve it to the type

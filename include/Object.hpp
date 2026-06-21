@@ -206,6 +206,12 @@ struct Template {
     std::string              icon;      // folio-*-symbolic
     std::vector<FieldSchema> fields;    // ORDERED
     bool                     builtin = false;  // locked floor/seed type — clone to edit (s34)
+    // s38 — which binder section this template stamps instances into: "character",
+    // "place", or "reference". The create-from-template submenu filters by it; the
+    // built-in floors set it. Empty on a legacy/untyped template (treated as
+    // "character" by the floor fallback). Stored now; the filtered picker is a
+    // later slice.
+    std::string              category;
 
     const FieldSchema* find_field(const std::string& field_id) const {
         for (const auto& f : fields)
@@ -335,6 +341,7 @@ inline Template built_in_character_template() {
     t.icon      = "folio-character-symbolic";
     t.fields    = default_floor_fields();
     t.builtin   = true;     // locked floor type — clone to customize (s34)
+    t.category  = "character";
     return t;
 }
 
@@ -345,6 +352,7 @@ inline Template built_in_place_template() {
     t.icon      = "folio-place-symbolic";
     t.fields    = default_floor_fields();
     t.builtin   = true;     // locked floor type — clone to customize (s34)
+    t.category  = "place";
     return t;
 }
 

@@ -1052,6 +1052,51 @@ void Inspector::open_template_builder_for_current() {
   m_template_builder->present();
 }
 
+// s38 — author a Template binder node's form. Unlike the character-driven path
+// above, there is no Object here: the node carries the schema directly in
+// form_schema. Seed the draft from it (or the Character floor when the node is
+// freshly added and empty), pin the draft id to the node iid (identity from the
+// node, § unified-model §4), and on commit write the schema BACK to the node and
+// re-project the registry — all on an idle tick, never inside the live modal
+// (the s24 rule).
+void Inspector::open_template_builder_for_template_node(const std::string& node_iid) {
+  if (node_iid.empty()) return;
+  BinderNode* node = m_model.find_node_by_iid(node_iid);
+  if (!node || node->kind != BinderKind::Template) return;
+
+  Folio::Template draft;
+  if (node->form_schema.is_object() && !node->form_schema.empty())
+    draft = Folio::ObjectIO::template_from_json(node->form_schema);
+  else
+    draft = Folio::built_in_character_template();   // floor fallback for a new node
+  draft.id      = node_iid;   // identity from the node
+  draft.builtin = false;      // node-backed templates are editable
+
+  auto* root = dynamic_cast<Gtk::Window*>(get_root());
+  if (!root) return;
+
+  m_template_builder = std::make_unique<TemplateBuilderDialog>(*root);
+  m_template_builder->set_apply_callback([this, node_iid](const Folio::Template& edited) {
+    Folio::Template t = edited;   // capture by value — survives the dialog teardown
+    t.id      = node_iid;         // keep identity pinned to the node
+    t.builtin = false;
+    Glib::signal_idle().connect_once([this, node_iid, t]() {
+      BinderNode* n = m_model.find_node_by_iid(node_iid);   // re-resolve (no held ptr)
+      if (!n) return;
+      n->form_schema = Folio::ObjectIO::template_to_json(t);
+      if (!t.type_name.empty()) n->title = t.type_name;     // the binder shows the form's name
+      m_model.mark_modified();
+      m_model.rebuild_object_store();   // re-project so the registry reflects the edit
+      notify_meta_changed();            // refresh the binder/sidebar
+    });
+  });
+  m_template_builder->signal_hide().connect([this]() {
+    Glib::signal_idle().connect_once([this]() { m_template_builder.reset(); });
+  });
+  m_template_builder->open_for(draft);
+  m_template_builder->present();
+}
+
 void Inspector::build_character_meta_section(Gtk::Box &s) {
   // ── Identity ────────────────────────────────────────────────────────────
   s.append(*make_disclosure_hdr("Identity",
