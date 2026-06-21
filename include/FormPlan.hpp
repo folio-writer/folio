@@ -55,7 +55,8 @@ struct FormPlan {
 inline bool field_is_full_width(FieldType t) {
     return t == FieldType::RichText
         || t == FieldType::List
-        || t == FieldType::MultiSelect;
+        || t == FieldType::MultiSelect
+        || t == FieldType::Heading;   // s39 — a section header spans the row
 }
 
 // Build the plan: walk the template's ORDERED fields, resolve each against the
@@ -111,6 +112,8 @@ inline json coerce_field_value(const FieldSchema& f, const json& raw) {
         case FieldType::Date:
         case FieldType::Unknown:
             return json(raw.is_string() ? raw.get<std::string>() : std::string{});
+        case FieldType::Heading:
+            return json(nullptr);   // s39 — a marker is never written
     }
     return json(raw.is_string() ? raw.get<std::string>() : std::string{});
 }
@@ -250,6 +253,8 @@ inline std::string field_display_string(FieldType t, const json& v) {
         case FieldType::Relation:
         case FieldType::Unknown:
             return v.is_string() ? v.get<std::string>() : std::string{};
+        case FieldType::Heading:
+            return std::string{};   // s39 — no value text; the label renders as a header
     }
     return v.is_string() ? v.get<std::string>() : std::string{};
 }

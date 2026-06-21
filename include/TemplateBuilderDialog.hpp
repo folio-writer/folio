@@ -50,6 +50,7 @@ private:
     // Chrome
     Gtk::Box            m_root{Gtk::Orientation::VERTICAL, 0};
     Gtk::Entry          m_type_name_entry;
+    Gtk::DropDown*      m_category_dd = nullptr;   // s39 — character/place/reference
     Gtk::ScrolledWindow m_scroll;
     Gtk::Box            m_field_list{Gtk::Orientation::VERTICAL, 0};
     Gtk::Label          m_error_label;
@@ -58,6 +59,7 @@ private:
     void rebuild_field_rows();
     void append_field_row(const Folio::FieldSchema& f, bool is_buffer);
     void on_add_field();
+    void on_add_section();   // s39 — append a Heading marker
     void on_save();
 
     // s36 — per-type CONFIG sub-editors, hosted under each field row. Routed by

@@ -88,6 +88,29 @@ void TemplateBuilderDialog::build_chrome() {
         m_root.append(*row);
     }
 
+    // ── Category ──────────────────────────────────────────────────────────────
+    // Which binder section this template stamps into (the create-from picker filters
+    // by it). character / place / reference, in this fixed order.
+    {
+        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+        auto* l = Gtk::make_managed<Gtk::Label>("Category");
+        l->add_css_class("pref-row-label");
+        l->set_halign(Gtk::Align::START);
+        l->set_hexpand(true);
+        auto model = Gtk::StringList::create(
+            std::vector<Glib::ustring>{ "Character", "Place", "Reference" });
+        m_category_dd = Gtk::make_managed<Gtk::DropDown>(model);
+        m_category_dd->set_halign(Gtk::Align::END);
+        m_category_dd->property_selected().signal_changed().connect([this]() {
+            static const char* cats[] = { "character", "place", "reference" };
+            guint i = m_category_dd->get_selected();
+            if (i < 3) m_draft.category = cats[i];
+        });
+        row->append(*l);
+        row->append(*m_category_dd);
+        m_root.append(*row);
+    }
+
     // ── Fields heading ─────────────────────────────────────────────────────────
     {
         auto* hdr = Gtk::make_managed<Gtk::Label>("Fields");
@@ -105,12 +128,18 @@ void TemplateBuilderDialog::build_chrome() {
     m_scroll.set_has_frame(true);
     m_root.append(m_scroll);
 
-    // ── Add field ────────────────────────────────────────────────────────────────
+    // ── Add field / Add section ────────────────────────────────────────────────
     {
+        auto* bar = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+        bar->set_halign(Gtk::Align::START);
         auto* add = Gtk::make_managed<Gtk::Button>("+ Add field");
-        add->set_halign(Gtk::Align::START);
         add->signal_clicked().connect(sigc::mem_fun(*this, &TemplateBuilderDialog::on_add_field));
-        m_root.append(*add);
+        bar->append(*add);
+        auto* sec = Gtk::make_managed<Gtk::Button>("+ Add section");
+        sec->set_tooltip_text("A heading that groups the fields beneath it");
+        sec->signal_clicked().connect(sigc::mem_fun(*this, &TemplateBuilderDialog::on_add_section));
+        bar->append(*sec);
+        m_root.append(*bar);
     }
 
     // ── Error line ───────────────────────────────────────────────────────────────
@@ -141,6 +170,12 @@ void TemplateBuilderDialog::open_for(const Folio::Template& tmpl) {
     m_draft = tmpl;
     m_error_label.set_text("");
     m_type_name_entry.set_text(m_draft.type_name);
+    if (m_category_dd) {
+        guint idx = m_draft.category == "place"     ? 1
+                  : m_draft.category == "reference" ? 2
+                                                    : 0;   // default → character
+        m_category_dd->set_selected(idx);
+    }
     rebuild_field_rows();
 }
 
@@ -161,6 +196,60 @@ void TemplateBuilderDialog::rebuild_field_rows() {
 // never removed; its type stays Rich text (and carries no config).
 void TemplateBuilderDialog::append_field_row(const Folio::FieldSchema& f, bool is_buffer) {
     const std::string field_id = f.id;
+
+    // s39 — a Heading is a section divider, not a data field: a title entry plus the
+    // reorder/remove controls, with no type dropdown and no config sub-editor. (A
+    // heading is never the floor buffer, so is_buffer is always false here.)
+    if (f.type == Folio::FieldType::Heading) {
+        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+        row->set_margin_start(6);
+        row->set_margin_end(6);
+        row->set_margin_top(10);   // sets the section apart from the field above
+        row->set_margin_bottom(2);
+        row->set_name(std::string("tpl-section-row-") + field_id);
+
+        auto* tag = Gtk::make_managed<Gtk::Label>("Section");
+        tag->add_css_class("dim-label");
+        tag->set_valign(Gtk::Align::CENTER);
+        row->append(*tag);
+
+        auto* title = Gtk::make_managed<Gtk::Entry>();
+        title->set_text(f.label);
+        title->set_hexpand(true);
+        title->set_placeholder_text("Section heading");
+        title->add_css_class("inspector-section-label");
+        title->signal_changed().connect([this, field_id, title]() {
+            TemplateEdit::rename_field(m_draft, field_id, std::string(title->get_text()));
+        });
+        row->append(*title);
+
+        auto* up = Gtk::make_managed<Gtk::Button>();
+        up->set_icon_name("go-up-symbolic");
+        up->add_css_class("flat");
+        up->signal_clicked().connect([this, field_id]() {
+            if (TemplateEdit::move_field(m_draft, field_id, -1)) rebuild_field_rows();
+        });
+        row->append(*up);
+
+        auto* down = Gtk::make_managed<Gtk::Button>();
+        down->set_icon_name("go-down-symbolic");
+        down->add_css_class("flat");
+        down->signal_clicked().connect([this, field_id]() {
+            if (TemplateEdit::move_field(m_draft, field_id, +1)) rebuild_field_rows();
+        });
+        row->append(*down);
+
+        auto* del = Gtk::make_managed<Gtk::Button>();
+        del->set_icon_name("user-trash-symbolic");
+        del->add_css_class("flat");
+        del->signal_clicked().connect([this, field_id]() {
+            if (TemplateEdit::remove_field(m_draft, field_id)) rebuild_field_rows();
+        });
+        row->append(*del);
+
+        m_field_list.append(*row);
+        return;
+    }
 
     auto* outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
     outer->set_name(std::string("tpl-field-") + field_id);
@@ -396,6 +485,13 @@ void TemplateBuilderDialog::on_add_field() {
     // New fields default to Text with a generic label; the author renames/retypes
     // inline. add_field keeps the floor buffer at the bottom (§4).
     TemplateEdit::add_field(m_draft, Folio::FieldType::Text, "New field");
+    rebuild_field_rows();
+}
+
+void TemplateBuilderDialog::on_add_section() {
+    // s39 — a section heading is a Heading-typed marker field; it groups the fields
+    // beneath it in the form. add_field keeps it above the trailing floor buffer.
+    TemplateEdit::add_field(m_draft, Folio::FieldType::Heading, "Section");
     rebuild_field_rows();
 }
 

@@ -84,6 +84,7 @@ enum class FieldType {
     Color,
     Date,
     Relation,
+    Heading,    // s39 — layout marker (a section divider); carries no value
     Unknown,    // fallback for forward-compat / malformed schemas
 };
 
@@ -101,6 +102,7 @@ inline const char* field_type_to_str(FieldType t) {
         case FieldType::Color:       return "color";
         case FieldType::Date:        return "date";
         case FieldType::Relation:    return "relation";
+        case FieldType::Heading:     return "heading";
         case FieldType::Unknown:     return "unknown";
     }
     return "unknown";
@@ -119,6 +121,7 @@ inline FieldType field_type_from_str(const std::string& s) {
     if (s == "color")       return FieldType::Color;
     if (s == "date")        return FieldType::Date;
     if (s == "relation")    return FieldType::Relation;
+    if (s == "heading")     return FieldType::Heading;
     return FieldType::Unknown;
 }
 
@@ -149,6 +152,7 @@ inline json field_default_value(FieldType t) {
         case FieldType::Date:
         case FieldType::Relation:
         case FieldType::Unknown:     return json("");
+        case FieldType::Heading:     return json(nullptr);   // s39 — a marker, no value
     }
     return json("");
 }
@@ -306,9 +310,11 @@ inline std::string object_display_name(const Object& o) {
 inline void instantiate_against(Object& obj, const Template& tmpl) {
     if (!obj.values.is_object()) obj.values = json::object();
     obj.type = tmpl.id;
-    for (const auto& f : tmpl.fields)
+    for (const auto& f : tmpl.fields) {
+        if (f.type == FieldType::Heading) continue;   // s39 — layout marker, no value
         if (!obj.has_value(f.id))
             obj.values[f.id] = field_default_value(f);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

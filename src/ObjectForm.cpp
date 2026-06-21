@@ -659,6 +659,21 @@ void ObjectForm::populate(const Folio::Template& tmpl, const Folio::Object& obj,
     for (const auto& row : plan.rows) {
         const bool can_edit = editable && !row.read_only;
 
+        // ── Heading (s39): a section divider. Renders as a standalone header; the
+        // fields after it group under it visually until the next heading. Carries
+        // no value — never editable, intercepted before any value routing.
+        if (row.type == FieldType::Heading) {
+            auto* h = Gtk::make_managed<Gtk::Label>(
+                row.label.empty() ? "Section" : row.label);
+            h->add_css_class("inspector-section-label");
+            h->set_halign(Gtk::Align::START);
+            h->set_margin_start(12);
+            h->set_margin_top(12);     // extra top gap sets the section apart
+            h->set_margin_bottom(2);
+            m_body.append(*h);
+            continue;
+        }
+
         // ── Relation (s37): config decides single (dropdown) vs multi (card).
         // Bypasses the full_width flag — a multi relation wants the card width,
         // a single relation a compact row, regardless of field_is_full_width.
