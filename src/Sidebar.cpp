@@ -1279,6 +1279,30 @@ void Sidebar::show_section_ctx_menu(Section section, double x, double y,
   sec->append_item(mi(leaf_label, "ctx.add-leaf", leaf_accel));
   ag->add_action("add-group", [this, section] { on_add_group(section, {}); });
   ag->add_action("add-leaf", [this, section] { on_add_leaf(section, {}); });
+  // s43 — "New Form": the front door. Create the template node AND drop straight
+  // into the builder, named and ready — one verb, not the old two-step (add bare
+  // node → right-click → Edit Form…).
+  if (section == Section::Templates) {
+    sec->append_item(mi("New Form\xE2\x80\xA6", "ctx.tpl-new-form", ""));
+    ag->add_action("tpl-new-form", [this]() {
+      if (m_ctx_popover)
+        m_ctx_popover->popdown();
+      // Off the live popover handler: create the node, rebuild, then open the
+      // builder for the fresh node's iid (its empty form_schema is seeded with
+      // the Character floor by open_template_builder_for_template_node).
+      Glib::signal_idle().connect_once([this]() {
+        auto new_path = m_model.add_leaf(Section::Templates, {}, "");
+        BinderNode *n = m_model.node_at(Section::Templates, new_path);
+        if (!n)
+          return;
+        const std::string iid = n->iid;   // capture before any rebuild
+        m_model.mark_modified();
+        rebuild_section(Section::Templates);
+        if (m_on_edit_template)
+          m_on_edit_template(iid);
+      });
+    });
+  }
   gm->append_section({}, sec);
 
   // "New from Template…" — only shown when templates exist

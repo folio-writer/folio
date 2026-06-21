@@ -58,10 +58,10 @@ Object      object_from_string(const std::string& text);
 // are preserved as ORPHAN values under keys "tagline"/"role", so a template that
 // later adds those fields restores them — orphan-and-keep applied to migration.
 //
-// `is_place` selects the Place vs Character built-in default; `iid` carries the
+// `floor_type` ("character"/"place"/"reference") selects the built-in default; `iid` carries the
 // node's existing stable id forward unchanged (the object IS the same part).
 Object migrate_legacy_leaf(const std::string& iid,
-                           bool               is_place,
+                           const std::string& floor_type,
                            const std::string& title,
                            const std::string& buffer_html,
                            const std::string& image_path,

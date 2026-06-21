@@ -35,8 +35,8 @@ Gtk::Box& compact_scaffold(Gtk::Box& body, const Glib::ustring& label) {
     auto* rb  = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
     rb->set_margin_start(12);
     rb->set_margin_end(12);
-    rb->set_margin_top(8);
-    rb->set_margin_bottom(8);
+    rb->set_margin_top(3);
+    rb->set_margin_bottom(3);
 
     auto* l = Gtk::make_managed<Gtk::Label>(label);
     l->add_css_class("pref-row-label");
@@ -104,7 +104,7 @@ ObjectForm::ObjectForm()
     m_heading.add_css_class("inspector-section-label");
     m_heading.set_halign(Gtk::Align::START);
     m_heading.set_margin_start(12);
-    m_heading.set_margin_top(8);
+    m_heading.set_margin_top(3);
     m_heading.set_margin_bottom(4);
     append(m_heading);
     append(m_body);
@@ -130,8 +130,8 @@ void ObjectForm::append_compact_row(const Folio::FormRow& row) {
     auto* rb  = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
     rb->set_margin_start(12);
     rb->set_margin_end(12);
-    rb->set_margin_top(8);
-    rb->set_margin_bottom(8);
+    rb->set_margin_top(3);
+    rb->set_margin_bottom(3);
 
     auto* l = Gtk::make_managed<Gtk::Label>(row.label);
     l->add_css_class("pref-row-label");
@@ -175,7 +175,7 @@ void ObjectForm::append_full_width(const Folio::FormRow& row) {
         auto* frame = Gtk::make_managed<Gtk::Frame>();
         frame->set_margin_start(12);
         frame->set_margin_end(12);
-        frame->set_margin_bottom(8);
+        frame->set_margin_bottom(3);
         frame->set_child(*tv);
         m_body.append(*frame);
     } else {
@@ -183,7 +183,7 @@ void ObjectForm::append_full_width(const Folio::FormRow& row) {
         card->add_css_class("pomo-tile-card");
         card->set_margin_start(12);
         card->set_margin_end(12);
-        card->set_margin_bottom(8);
+        card->set_margin_bottom(3);
         auto* l = Gtk::make_managed<Gtk::Label>(text.empty() ? "—" : text);
         l->set_halign(Gtk::Align::START);
         l->set_wrap(true);
@@ -209,8 +209,8 @@ void ObjectForm::append_editable_text(const Folio::FormRow& row, const OnChange&
     auto* rb  = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
     rb->set_margin_start(12);
     rb->set_margin_end(12);
-    rb->set_margin_top(8);
-    rb->set_margin_bottom(8);
+    rb->set_margin_top(3);
+    rb->set_margin_bottom(3);
 
     auto* l = Gtk::make_managed<Gtk::Label>(row.label);
     l->add_css_class("pref-row-label");
@@ -267,7 +267,7 @@ void ObjectForm::append_editable_richtext(const Folio::FormRow& row, const OnCha
     auto* frame = Gtk::make_managed<Gtk::Frame>();
     frame->set_margin_start(12);
     frame->set_margin_end(12);
-    frame->set_margin_bottom(8);
+    frame->set_margin_bottom(3);
     frame->set_child(*tv);
     m_body.append(*frame);
 }
@@ -407,7 +407,7 @@ void ObjectForm::append_editable_multiselect(const Folio::FormRow& row, const On
     card->add_css_class("pomo-tile-card");
     card->set_margin_start(12);
     card->set_margin_end(12);
-    card->set_margin_bottom(8);
+    card->set_margin_bottom(3);
     card->set_margin_top(2);
 
     auto options = config_options(row.config);
@@ -511,7 +511,7 @@ void ObjectForm::append_editable_relation_multi(const Folio::FormRow& row, const
     card->add_css_class("pomo-tile-card");
     card->set_margin_start(12);
     card->set_margin_end(12);
-    card->set_margin_bottom(8);
+    card->set_margin_bottom(3);
     card->set_margin_top(2);
 
     std::set<std::string> checked;
@@ -570,7 +570,7 @@ void ObjectForm::append_editable_list(const Folio::FormRow& row, const OnChange&
     card->add_css_class("pomo-tile-card");
     card->set_margin_start(12);
     card->set_margin_end(12);
-    card->set_margin_bottom(8);
+    card->set_margin_bottom(3);
     card->set_margin_top(2);
 
     auto state = std::make_shared<std::vector<std::string>>();
@@ -643,7 +643,7 @@ void ObjectForm::append_edit_template_button(bool builtin) {
     btn->set_halign(Gtk::Align::START);
     btn->set_margin_start(12);
     btn->set_margin_top(4);
-    btn->set_margin_bottom(8);
+    btn->set_margin_bottom(3);
     btn->signal_clicked().connect([this]() {
         if (m_on_edit_template) m_on_edit_template();
     });

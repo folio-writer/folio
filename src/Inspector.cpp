@@ -62,24 +62,10 @@ Inspector::Inspector(DocumentModel &model, FolioPrefs &prefs)
   build_project_tab();
   build_annotations_tab();
 
-  // s33 — both object forms open the template builder for the current object's
-  // template through the same handler (the form supplies no template itself).
-  m_char_object_form.set_on_edit_template([this]() { open_template_builder_for_current(); });
-  m_place_object_form.set_on_edit_template([this]() { open_template_builder_for_current(); });
-
-  // s37 — the relation picker's candidate source: every object of the target type,
-  // as {iid, display-name}. Resolved LIVE against the store on each call (the store
-  // is rebuilt before populate, and may re-project between renders) — never a held
-  // snapshot. Empty target_type ("any") yields all objects.
-  auto relation_provider = [this](const std::string& target_type) {
-    std::vector<Folio::FieldChoice> out;
-    const Folio::ObjectStore& store = m_model.object_store();
-    for (const Folio::Object* o : store.objects_of_type(target_type))
-      out.push_back({ o->iid, Folio::object_display_name(*o) });
-    return out;
-  };
-  m_char_object_form.set_relation_provider(relation_provider);
-  m_place_object_form.set_relation_provider(relation_provider);
+  // s41 — the object form (and its relation provider + "Edit fields…" door) moved
+  // to the Editor (the inversion). The Inspector keeps only the template builder
+  // it owns, reached from the Editor form's door via
+  // open_template_builder_for_current().
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -126,8 +112,8 @@ void Inspector::build_tab_bar() {
   // ── Progress footer — fixed at bottom, visible only for node-meta ────────
   m_progress_footer.set_orientation(Gtk::Orientation::VERTICAL);
   m_progress_footer.add_css_class("inspector-progress-footer");
-  m_progress_footer.set_margin_start(12);
-  m_progress_footer.set_margin_end(12);
+  m_progress_footer.set_margin_start(8);
+  m_progress_footer.set_margin_end(8);
   m_progress_footer.set_margin_top(4);
   m_progress_footer.set_margin_bottom(12);
 
@@ -218,10 +204,10 @@ Gtk::ListBox *Inspector::make_listbox() {
 Gtk::Box *Inspector::make_pref_row(const std::string &label,
                                    Gtk::Widget &widget) {
   auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-  rb->set_margin_start(12);
-  rb->set_margin_end(12);
-  rb->set_margin_top(8);
-  rb->set_margin_bottom(8);
+  rb->set_margin_start(8);
+  rb->set_margin_end(8);
+  rb->set_margin_top(3);
+  rb->set_margin_bottom(3);
   auto *l = Gtk::make_managed<Gtk::Label>(label);
   l->add_css_class("pref-row-label");
   l->set_hexpand(true);
@@ -533,10 +519,10 @@ void Inspector::build_meta_tab() {
 
   m_meta_scroll.set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
   m_meta_scroll.set_vexpand(true);
-  m_meta_box.set_margin_top(12);
-  m_meta_box.set_margin_start(12);
-  m_meta_box.set_margin_end(12);
-  m_meta_box.set_margin_bottom(12);
+  m_meta_box.set_margin_top(8);
+  m_meta_box.set_margin_start(8);
+  m_meta_box.set_margin_end(8);
+  m_meta_box.set_margin_bottom(8);
 
   auto *ns = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 12);
   ns->set_name("node-meta");
@@ -590,10 +576,10 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
     { // Title
       auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
       auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-      rb->set_margin_start(12);
-      rb->set_margin_end(12);
-      rb->set_margin_top(8);
-      rb->set_margin_bottom(8);
+      rb->set_margin_start(8);
+      rb->set_margin_end(8);
+      rb->set_margin_top(3);
+      rb->set_margin_bottom(3);
       auto *l = Gtk::make_managed<Gtk::Label>("Title");
       l->add_css_class("pref-row-label");
       l->set_hexpand(true);
@@ -653,10 +639,10 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
     auto *lb = make_listbox();
     auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
     auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    rb->set_margin_start(12);
-    rb->set_margin_end(12);
-    rb->set_margin_top(8);
-    rb->set_margin_bottom(8);
+    rb->set_margin_start(8);
+    rb->set_margin_end(8);
+    rb->set_margin_top(3);
+    rb->set_margin_bottom(3);
     auto *l = Gtk::make_managed<Gtk::Label>("Status");
     l->add_css_class("pref-row-label");
     l->set_hexpand(true);
@@ -713,10 +699,10 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
     auto *lb = make_listbox();
     auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
     auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    rb->set_margin_start(12);
-    rb->set_margin_end(12);
-    rb->set_margin_top(8);
-    rb->set_margin_bottom(8);
+    rb->set_margin_start(8);
+    rb->set_margin_end(8);
+    rb->set_margin_top(3);
+    rb->set_margin_bottom(3);
     auto *l = Gtk::make_managed<Gtk::Label>("Color");
     l->add_css_class("pref-row-label");
     l->set_hexpand(true);
@@ -743,10 +729,10 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
     {
       auto *trow = Gtk::make_managed<Gtk::ListBoxRow>();
       auto *tb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-      tb->set_margin_start(12);
-      tb->set_margin_end(12);
-      tb->set_margin_top(8);
-      tb->set_margin_bottom(8);
+      tb->set_margin_start(8);
+      tb->set_margin_end(8);
+      tb->set_margin_top(3);
+      tb->set_margin_bottom(3);
       auto *tl = Gtk::make_managed<Gtk::Label>("Tag");
       tl->add_css_class("pref-row-label");
       tl->set_hexpand(true);
@@ -785,8 +771,8 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
                             std::function<void(double)> setter) {
         auto *r  = Gtk::make_managed<Gtk::ListBoxRow>();
         auto *bx = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-        bx->set_margin_start(12); bx->set_margin_end(12);
-        bx->set_margin_top(8);    bx->set_margin_bottom(8);
+        bx->set_margin_start(8); bx->set_margin_end(8);
+        bx->set_margin_top(3);    bx->set_margin_bottom(3);
         auto *nl = Gtk::make_managed<Gtk::Label>(name);
         nl->add_css_class("pref-row-label");
         nl->set_halign(Gtk::Align::START);
@@ -825,10 +811,10 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
     { // POV
       auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
       auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-      rb->set_margin_start(12);
-      rb->set_margin_end(12);
-      rb->set_margin_top(8);
-      rb->set_margin_bottom(8);
+      rb->set_margin_start(8);
+      rb->set_margin_end(8);
+      rb->set_margin_top(3);
+      rb->set_margin_bottom(3);
       auto *tb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 2);
       auto *rl = Gtk::make_managed<Gtk::Label>("POV Character");
       rl->add_css_class("pref-row-label");
@@ -864,10 +850,10 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
     { // Include in export
       auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
       auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-      rb->set_margin_start(12);
-      rb->set_margin_end(12);
-      rb->set_margin_top(8);
-      rb->set_margin_bottom(8);
+      rb->set_margin_start(8);
+      rb->set_margin_end(8);
+      rb->set_margin_top(3);
+      rb->set_margin_bottom(3);
       auto *l = Gtk::make_managed<Gtk::Label>("Include in Export");
       l->add_css_class("pref-row-label");
       l->set_hexpand(true);
@@ -887,10 +873,10 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
     { // Word target
       auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
       auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-      rb->set_margin_start(12);
-      rb->set_margin_end(12);
-      rb->set_margin_top(8);
-      rb->set_margin_bottom(8);
+      rb->set_margin_start(8);
+      rb->set_margin_end(8);
+      rb->set_margin_top(3);
+      rb->set_margin_bottom(3);
       auto *l = Gtk::make_managed<Gtk::Label>("Word Target");
       l->add_css_class("pref-row-label");
       l->set_hexpand(true);
@@ -919,65 +905,9 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
   }
 }
 
-// s31/s32: resolve the object + its template from the model's store and render
-// them into `form`. The store is a save-time projection of the binder leaves, so
-// rebuild it first to reflect any edits since load (and to cover freshly-created
-// characters/places not yet saved).
-//
-// s32 — the form is now the EDITING surface for the floor fields. Each editable
-// widget reports its raw value through on_change; we coerce it and write it
-// THROUGH to the backing leaf via the pure ObjectIO::floor_field_to_leaf inverse
-// mapping (the exact reverse of migration), so the projection stays the single
-// source of truth — the next rebuild re-derives the same object instead of
-// clobbering the edit. notify_meta_changed() keeps the Sidebar (which reads the
-// leaf title) live. m_loading guards the set_text() the builders fire while
-// populating, so priming the widgets does not write spurious edits.
-void Inspector::populate_object_form(ObjectForm& form, const std::string& iid) {
-  m_model.rebuild_object_store();
-  const Folio::ObjectStore& store = m_model.object_store();
-  const Folio::Object* obj = store.find_object(iid);
-  if (!obj) { form.clear(); return; }
-  const Folio::Template* tmpl = store.find_template(obj->type);
-  if (!tmpl) { form.clear(); return; }
-
-  form.populate(*tmpl, *obj, /*editable=*/true,
-      [this, iid](const std::string& field_id, const Folio::json& raw) {
-        if (m_loading || !m_current_node || m_current_node->iid != iid)
-          return;
-        const std::string s = raw.is_string() ? raw.get<std::string>()
-                                               : std::string{};
-        switch (Folio::ObjectIO::floor_field_to_leaf(field_id)) {
-          case Folio::ObjectIO::LeafField::Title:       m_current_node->title       = s; break;
-          case Folio::ObjectIO::LeafField::Content:     m_current_node->content     = s; break;
-          case Folio::ObjectIO::LeafField::ImagePath:   m_current_node->image_path  = s; break;
-          case Folio::ObjectIO::LeafField::Description: m_current_node->description = s; break;
-          case Folio::ObjectIO::LeafField::Role:        m_current_node->role        = s; break;
-          case Folio::ObjectIO::LeafField::None: {
-            // s35 — object-only (custom template) field: no projected leaf home,
-            // so write the value THROUGH to the STORE object, coerced against the
-            // field's schema. The merge reconcile restamps only leaf-owned fields
-            // and PRESERVES everything else, so this value survives the next
-            // rebuild. Resolved fresh each fire (the objects vector may have been
-            // re-projected since populate) — no held pointer. Raw value (not the
-            // string `s`) is handed to apply_field so non-text coercions are right.
-            Folio::ObjectStore& store = m_model.object_store();
-            Folio::Object* mo = store.find_object(iid);
-            if (!mo) return;
-            const Folio::Template* t = store.find_template(mo->type);
-            if (!t) return;
-            const Folio::FieldSchema* fs = t->find_field(field_id);
-            if (!fs) return;
-            Folio::apply_field(*mo, *fs, raw);
-            LOG_DEBUG("ObjectForm edit {} field={} -> store", iid, field_id);
-            m_model.mark_modified();
-            return;   // custom fields don't touch the leaf title -> no meta notify
-          }
-        }
-        LOG_DEBUG("ObjectForm edit {} field={} -> leaf", iid, field_id);
-        m_model.mark_modified();
-        notify_meta_changed();
-      });
-}
+// s41 — populate_object_form() moved to the Editor (the inversion). The Editor
+// now resolves object + template from the store and renders the form as its
+// document, running the same floor->leaf / custom->store write-through.
 
 // s33/s35 — open the schema editor for the CURRENT object's template. Resolves
 // the template from the selected leaf's object. CLONE-TO-CUSTOMIZE (s35): a
@@ -1014,10 +944,7 @@ void Inspector::open_template_builder_for_current() {
     m_model.rebuild_object_store();             // object.type resolves to the clone
     edit_id = clone_id;
     LOG_DEBUG("clone-to-customize {} {} -> {}", iid, src_id, clone_id);
-    if (m_current_node->kind == BinderKind::Character)
-      populate_object_form(m_char_object_form, iid);
-    else if (m_current_node->kind == BinderKind::Place)
-      populate_object_form(m_place_object_form, iid);
+    if (m_on_object_form_dirty) m_on_object_form_dirty();   // s41 — Editor re-renders
     notify_meta_changed();
   }
 
@@ -1035,13 +962,9 @@ void Inspector::open_template_builder_for_current() {
     Glib::signal_idle().connect_once([this, t]() {
       m_model.object_store().upsert_template(t);
       m_model.mark_modified();
-      // Re-render whichever form is showing the affected object.
-      if (m_current_node) {
-        if (m_current_node->kind == BinderKind::Character)
-          populate_object_form(m_char_object_form, m_current_node->iid);
-        else if (m_current_node->kind == BinderKind::Place)
-          populate_object_form(m_place_object_form, m_current_node->iid);
-      }
+      // s41 — the Editor hosts the form now: ask it to re-render the affected
+      // object through the edited schema.
+      if (m_on_object_form_dirty) m_on_object_form_dirty();
       notify_meta_changed();
     });
   });
@@ -1109,10 +1032,10 @@ void Inspector::build_character_meta_section(Gtk::Box &s) {
     { // Role
       auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
       auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-      rb->set_margin_start(12);
-      rb->set_margin_end(12);
-      rb->set_margin_top(8);
-      rb->set_margin_bottom(8);
+      rb->set_margin_start(8);
+      rb->set_margin_end(8);
+      rb->set_margin_top(3);
+      rb->set_margin_bottom(3);
       auto *l = Gtk::make_managed<Gtk::Label>("Role");
       l->add_css_class("pref-row-label");
       l->set_hexpand(true);
@@ -1172,10 +1095,10 @@ void Inspector::build_character_meta_section(Gtk::Box &s) {
     auto *lb = make_listbox();
     auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
     auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    rb->set_margin_start(12);
-    rb->set_margin_end(12);
-    rb->set_margin_top(8);
-    rb->set_margin_bottom(8);
+    rb->set_margin_start(8);
+    rb->set_margin_end(8);
+    rb->set_margin_top(3);
+    rb->set_margin_bottom(3);
     auto *l = Gtk::make_managed<Gtk::Label>("Color");
     l->add_css_class("pref-row-label");
     l->set_hexpand(true);
@@ -1194,8 +1117,9 @@ void Inspector::build_character_meta_section(Gtk::Box &s) {
     s.append(m_meta_char_colour_revealer);
   }
 
-  // ── Template fields (s32 — the editable object form: name / image / buffer) ──
-  s.append(m_char_object_form);
+  // s41 — the editable object form moved to the Editor (the inversion). This
+  // panel is now chrome: status / colour / snapshots / notes live elsewhere in
+  // the inspector; the form is the Editor document.
 }
 
 void Inspector::build_place_meta_section(Gtk::Box &s) {
@@ -1235,10 +1159,10 @@ void Inspector::build_place_meta_section(Gtk::Box &s) {
     auto *lb = make_listbox();
     auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
     auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    rb->set_margin_start(12);
-    rb->set_margin_end(12);
-    rb->set_margin_top(8);
-    rb->set_margin_bottom(8);
+    rb->set_margin_start(8);
+    rb->set_margin_end(8);
+    rb->set_margin_top(3);
+    rb->set_margin_bottom(3);
     auto *l = Gtk::make_managed<Gtk::Label>("Color");
     l->add_css_class("pref-row-label");
     l->set_hexpand(true);
@@ -1257,8 +1181,8 @@ void Inspector::build_place_meta_section(Gtk::Box &s) {
     s.append(m_meta_place_colour_revealer);
   }
 
-  // ── Template fields (s32 — the editable object form: name / image / buffer) ──
-  s.append(m_place_object_form);
+  // s41 — the editable object form moved to the Editor (the inversion). Chrome
+  // only here now.
 }
 
 void Inspector::build_reference_meta_section(Gtk::Box &s) {
@@ -1268,41 +1192,17 @@ void Inspector::build_reference_meta_section(Gtk::Box &s) {
       m_prefs.inspector_meta_ref_reference_expanded));
   {
     auto *lb_id = make_listbox();
-    // Title row
-    {
-      auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
-      auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-      rb->set_margin_start(12);
-      rb->set_margin_end(12);
-      rb->set_margin_top(8);
-      rb->set_margin_bottom(8);
-      auto *l = Gtk::make_managed<Gtk::Label>("Title");
-      l->add_css_class("pref-row-label");
-      l->set_hexpand(true);
-      l->set_halign(Gtk::Align::START);
-      m_ref_name_entry.set_placeholder_text("Reference title");
-      m_ref_name_entry.set_size_request(140, -1);
-      m_ref_name_entry.set_halign(Gtk::Align::END);
-      m_ref_name_entry.signal_changed().connect([this]() {
-        if (m_loading || !m_current_node)
-          return;
-        m_current_node->title = std::string(m_ref_name_entry.get_text());
-        m_model.mark_modified();
-        notify_meta_changed();
-      });
-      rb->append(*l);
-      rb->append(m_ref_name_entry);
-      row->set_child(*rb);
-      lb_id->append(*row);
-    }
+    // s42 — Title moved into the Editor form (name -> title). This chrome keeps
+    // the Reference's orphan field (URL, with its open-in-browser affordance);
+    // Notes follow below. Same pattern as Character/Place after the inversion.
     // URL row
     {
       auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
       auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-      rb->set_margin_start(12);
-      rb->set_margin_end(12);
-      rb->set_margin_top(8);
-      rb->set_margin_bottom(8);
+      rb->set_margin_start(8);
+      rb->set_margin_end(8);
+      rb->set_margin_top(3);
+      rb->set_margin_bottom(3);
       auto *l = Gtk::make_managed<Gtk::Label>("URL");
       l->add_css_class("pref-row-label");
       l->set_hexpand(true);
@@ -1517,8 +1417,6 @@ void Inspector::load_node(BinderNode *node) {
     sync_color_dropdown(m_char_color_dropdown, node->color_idx);
     m_tab_history.set_sensitive(true);
 
-    populate_object_form(m_char_object_form, node->iid);
-
     m_loading = false;
     refresh_notes();
     refresh_history();
@@ -1534,8 +1432,6 @@ void Inspector::load_node(BinderNode *node) {
     sync_color_dropdown(m_place_color_dropdown, node->color_idx);
     m_tab_history.set_sensitive(true);
 
-    populate_object_form(m_place_object_form, node->iid);
-
     m_loading = false;
     refresh_notes();
     refresh_history();
@@ -1546,7 +1442,7 @@ void Inspector::load_node(BinderNode *node) {
   if (node->kind == BinderKind::Reference) {
     m_mode = InspectorMode::Reference;
     show_meta_section("ref-meta");
-    m_ref_name_entry.set_text(node->title);
+    // s42 — Title now lives in the Editor form (name -> title); chrome keeps URL + Notes.
     m_ref_url_entry.set_text(node->url);
     m_ref_notes_buffer->set_text(node->synopsis);
     m_tab_history.set_sensitive(true);
@@ -1724,7 +1620,7 @@ void Inspector::refresh_notes() {
       auto *node_lbl = Gtk::make_managed<Gtk::Label>(node->title);
       node_lbl->add_css_class("pref-group-title");
       node_lbl->set_halign(Gtk::Align::START);
-      node_lbl->set_margin_top(8);
+      node_lbl->set_margin_top(3);
       node_lbl->set_margin_start(4);
       node_lbl->set_margin_bottom(2);
       m_notes_list.append(*node_lbl);
@@ -2002,8 +1898,8 @@ void Inspector::build_notes_tab() {
   // ── Top pane: Notes ───────────────────────────────────────────────────────
   m_notes_outer.set_orientation(Gtk::Orientation::VERTICAL);
   m_notes_outer.set_margin_top(12);
-  m_notes_outer.set_margin_start(12);
-  m_notes_outer.set_margin_end(12);
+  m_notes_outer.set_margin_start(8);
+  m_notes_outer.set_margin_end(8);
   m_notes_outer.set_margin_bottom(6);
   m_notes_ctx_label.add_css_class("pref-group-title");
   m_notes_ctx_label.set_halign(Gtk::Align::START);
@@ -2015,7 +1911,7 @@ void Inspector::build_notes_tab() {
   m_notes_outer.append(m_notes_scroll);
   m_notes_add_row.set_orientation(Gtk::Orientation::VERTICAL);
   m_notes_add_row.set_spacing(6);
-  m_notes_add_row.set_margin_top(8);
+  m_notes_add_row.set_margin_top(3);
 
   // Multi-line note entry — 3 lines tall
   m_notes_entry_buf = Gtk::TextBuffer::create();
@@ -2072,9 +1968,9 @@ void Inspector::build_notes_tab() {
   // ── Bottom pane: Annotations ──────────────────────────────────────────────
   // Header with label + Report button
   auto *ann_hdr = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 4);
-  ann_hdr->set_margin_start(12);
-  ann_hdr->set_margin_end(12);
-  ann_hdr->set_margin_top(8);
+  ann_hdr->set_margin_start(8);
+  ann_hdr->set_margin_end(8);
+  ann_hdr->set_margin_top(3);
   ann_hdr->set_margin_bottom(4);
   auto *ann_lbl = Gtk::make_managed<Gtk::Label>("Annotations");
   ann_lbl->add_css_class("pref-group-title");
@@ -2134,8 +2030,8 @@ void Inspector::build_notes_tab() {
 
 void Inspector::build_history_tab() {
   m_history_outer.set_margin_top(12);
-  m_history_outer.set_margin_start(12);
-  m_history_outer.set_margin_end(12);
+  m_history_outer.set_margin_start(8);
+  m_history_outer.set_margin_end(8);
   auto *hdr = Gtk::make_managed<Gtk::Label>("Snapshots");
   hdr->add_css_class("pref-group-title");
   hdr->set_halign(Gtk::Align::START);
@@ -2480,9 +2376,9 @@ void Inspector::show_snapshot_diff(int snap_idx) {
       std::to_string(n_ins) + " words added");
   stats->add_css_class("snap-date");
   stats->set_halign(Gtk::Align::START);
-  stats->set_margin_start(12);
+  stats->set_margin_start(8);
   stats->set_margin_top(6);
-  stats->set_margin_bottom(8);
+  stats->set_margin_bottom(3);
 
   auto *outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
   outer->append(*scroll);
@@ -2631,17 +2527,17 @@ void Inspector::build_project_tab() {
   m_proj_outer.set_orientation(Gtk::Orientation::VERTICAL);
   m_proj_outer.set_spacing(16);
   m_proj_outer.set_margin_top(12);
-  m_proj_outer.set_margin_start(12);
-  m_proj_outer.set_margin_end(12);
+  m_proj_outer.set_margin_start(8);
+  m_proj_outer.set_margin_end(8);
   m_proj_outer.set_margin_bottom(12);
 
   auto row = [](const std::string &label, Gtk::Widget &w) {
     auto *r = Gtk::make_managed<Gtk::ListBoxRow>();
     auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    rb->set_margin_start(12);
-    rb->set_margin_end(12);
-    rb->set_margin_top(8);
-    rb->set_margin_bottom(8);
+    rb->set_margin_start(8);
+    rb->set_margin_end(8);
+    rb->set_margin_top(3);
+    rb->set_margin_bottom(3);
     auto *l = Gtk::make_managed<Gtk::Label>(label);
     l->add_css_class("pref-row-label");
     l->set_hexpand(true);
@@ -2764,8 +2660,8 @@ void Inspector::build_project_tab() {
     {
       auto* r   = Gtk::make_managed<Gtk::ListBoxRow>();
       auto* rb  = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-      rb->set_margin_start(12); rb->set_margin_end(12);
-      rb->set_margin_top(8);    rb->set_margin_bottom(8);
+      rb->set_margin_start(8); rb->set_margin_end(8);
+      rb->set_margin_top(3);    rb->set_margin_bottom(3);
       auto* lbl = Gtk::make_managed<Gtk::Label>("ISBN");
       lbl->add_css_class("pref-row-label");
       lbl->set_hexpand(true);
@@ -2854,8 +2750,8 @@ void Inspector::build_project_tab() {
     // Thumbnail drawing area — 96×144 px (4:6 ratio at screen size)
     m_cover_thumbnail_area.set_size_request(96, 144);
     m_cover_thumbnail_area.set_halign(Gtk::Align::CENTER);
-    m_cover_thumbnail_area.set_margin_top(8);
-    m_cover_thumbnail_area.set_margin_bottom(8);
+    m_cover_thumbnail_area.set_margin_top(3);
+    m_cover_thumbnail_area.set_margin_bottom(3);
     m_cover_thumbnail_area.set_cursor(Gdk::Cursor::create("pointer"));
     m_cover_thumbnail_area.set_tooltip_text("Click to view cover");
     m_cover_thumbnail_area.set_draw_func([this](const Cairo::RefPtr<Cairo::Context>& cr,
@@ -3010,7 +2906,7 @@ void Inspector::build_project_tab() {
   stats_btn->add_css_class("pill-btn");
   stats_btn->add_css_class("pill-btn-primary");
   stats_btn->set_halign(Gtk::Align::CENTER);
-  stats_btn->set_margin_top(8);
+  stats_btn->set_margin_top(3);
   stats_btn->set_margin_bottom(12);
   stats_btn->signal_clicked().connect([this]() {
     auto *top = dynamic_cast<Gtk::Window *>(get_root());
@@ -3328,7 +3224,7 @@ void Inspector::refresh_annotations() {
       auto *node_lbl = Gtk::make_managed<Gtk::Label>(node->title);
       node_lbl->add_css_class("pref-group-title");
       node_lbl->set_halign(Gtk::Align::START);
-      node_lbl->set_margin_top(8);
+      node_lbl->set_margin_top(3);
       node_lbl->set_margin_start(8);
       node_lbl->set_margin_bottom(2);
       m_ann_box.append(*node_lbl);
@@ -3431,7 +3327,7 @@ void Inspector::refresh_annotations() {
             Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
         edit_box->set_margin_start(8);
         edit_box->set_margin_end(8);
-        edit_box->set_margin_bottom(8);
+        edit_box->set_margin_bottom(3);
 
         auto *edit_tv = Gtk::make_managed<Gtk::TextView>();
         edit_tv->set_wrap_mode(Gtk::WrapMode::WORD_CHAR);
@@ -3616,7 +3512,7 @@ void Inspector::refresh_annotations() {
     auto *edit_box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
     edit_box->set_margin_start(8);
     edit_box->set_margin_end(8);
-    edit_box->set_margin_bottom(8);
+    edit_box->set_margin_bottom(3);
 
     auto *edit_tv = Gtk::make_managed<Gtk::TextView>();
     edit_tv->set_wrap_mode(Gtk::WrapMode::WORD_CHAR);

@@ -691,13 +691,13 @@ void DocumentModel::reset() {
 // survives the rebuild. Each visited leaf's iid is recorded so vanished leaves
 // can be pruned afterwards.
 static void collect_object_leaves(const std::vector<BinderNode>& tree,
-                                  bool is_place, ObjectStore& store,
+                                  const std::string& floor_type, ObjectStore& store,
                                   std::vector<std::string>& live_iids) {
     for (const auto& n : tree) {
         if (n.kind == BinderKind::Group) {
-            collect_object_leaves(n.children, is_place, store, live_iids);
+            collect_object_leaves(n.children, floor_type, store, live_iids);
         } else {
-            store.add_migrated_leaf(n.iid, is_place, n.title, n.content,
+            store.add_migrated_leaf(n.iid, floor_type, n.title, n.content,
                                     n.image_path, n.description, n.role,
                                     n.template_id);   // s35: adopted clone (or "")
             live_iids.push_back(n.iid);
@@ -731,8 +731,9 @@ void DocumentModel::rebuild_object_store() {
     adopt_template_nodes_recursive(m_object_store, templates);
 
     std::vector<std::string> live_iids;
-    collect_object_leaves(characters, /*is_place=*/false, m_object_store, live_iids);
-    collect_object_leaves(places,     /*is_place=*/true,  m_object_store, live_iids);
+    collect_object_leaves(characters, "character", m_object_store, live_iids);
+    collect_object_leaves(places,     "place",     m_object_store, live_iids);
+    collect_object_leaves(references, "reference", m_object_store, live_iids);   // s42
     m_object_store.prune_projected_except(live_iids);
 }
 

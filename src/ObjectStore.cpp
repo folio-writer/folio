@@ -39,7 +39,7 @@ bool ObjectStore::adopt_template_node(const std::string& node_iid,
 }
 
 std::string ObjectStore::add_migrated_leaf(const std::string& iid,
-                                           bool               is_place,
+                                           const std::string& floor_type,
                                            const std::string& title,
                                            const std::string& buffer_html,
                                            const std::string& image_path,
@@ -49,7 +49,7 @@ std::string ObjectStore::add_migrated_leaf(const std::string& iid,
     // s35 — the leaf's adopted clone resolves to the object's type (floor when
     // empty / missing / a built-in). seed_builtins() ran before this, so the floor
     // template is always present; a clone is present once loaded or freshly cloned.
-    const std::string  resolved = resolve_leaf_type(is_place, template_id);
+    const std::string  resolved = resolve_leaf_type(floor_type, template_id);
     const Template*    tmpl     = find_template(resolved);
 
     if (Object* existing = find_object(iid)) {
@@ -74,7 +74,7 @@ std::string ObjectStore::add_migrated_leaf(const std::string& iid,
     // First sighting of this iid — create the object fresh from the leaf (seeds the
     // FLOOR fields under the built-in default), then adopt the resolved type and
     // seed its custom fields. projected marks it leaf-backed for the prune pass.
-    Object o = ObjectIO::migrate_legacy_leaf(iid, is_place, title, buffer_html,
+    Object o = ObjectIO::migrate_legacy_leaf(iid, floor_type, title, buffer_html,
                                              image_path, legacy_tagline, legacy_role);
     o.projected = true;
     o.type      = resolved;

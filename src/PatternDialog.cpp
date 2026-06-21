@@ -383,6 +383,16 @@ void PatternDialog::rebuild_kp_list() {
         row->add_css_class("pat-kp-row");
         row->set_hexpand(true);
 
+        // s43 — drag handle (replaces the up/down arrows). DragSource lives on the
+        // grip (these rows are entry-dominated, so a dedicated handle is the
+        // reliable drag spot); the DropTarget is the whole row.
+        auto* grip = Gtk::make_managed<Gtk::Image>();
+        grip->set_from_icon_name("list-drag-handle-symbolic");
+        grip->add_css_class("dim-label");
+        grip->set_valign(Gtk::Align::CENTER);
+        grip->set_tooltip_text("Drag to reorder");
+        row->append(*grip);
+
         // Order number.
         auto* ord = Gtk::make_managed<Gtk::Label>(std::to_string(m_arc[i].order));
         ord->set_name(std::string("pattern-kp-ord-") + std::to_string(i));
@@ -444,24 +454,6 @@ void PatternDialog::rebuild_kp_list() {
         });
         ctl->append(*pin);
 
-        auto* up = Gtk::make_managed<Gtk::Button>();
-        up->set_icon_name("go-up-symbolic");
-        up->add_css_class("flat");
-        up->add_css_class("circular");
-        up->set_tooltip_text("Move earlier");
-        up->set_sensitive(i > 0);
-        up->signal_clicked().connect([this, i]{ move_kp(i, -1); });
-        ctl->append(*up);
-
-        auto* down = Gtk::make_managed<Gtk::Button>();
-        down->set_icon_name("go-down-symbolic");
-        down->add_css_class("flat");
-        down->add_css_class("circular");
-        down->set_tooltip_text("Move later");
-        down->set_sensitive(i + 1 < m_arc.size());
-        down->signal_clicked().connect([this, i]{ move_kp(i, +1); });
-        ctl->append(*down);
-
         auto* rm = Gtk::make_managed<Gtk::Button>();
         rm->set_icon_name("window-close-symbolic");
         rm->add_css_class("flat");
@@ -472,6 +464,9 @@ void PatternDialog::rebuild_kp_list() {
         ctl->append(*rm);
 
         row->append(*ctl);
+
+        // s43 — wire DnD now that the row + grip exist (grip = source, row = target).
+        attach_kp_dnd(*row, *grip, i);
         m_kp_list.append(*row);
     }
 }
@@ -518,6 +513,104 @@ void PatternDialog::move_kp(size_t idx, int dir) {
     renumber_kps();
     rebuild_kp_list();
     refresh_arc_views();
+}
+
+// s43 — arbitrary drag-and-drop reorder (same vector-rebuild shape as the
+// template builder's move_field_relative). Move the KP at `src` to sit just
+// before/after the KP at `tgt`, then renumber so order/colour follow the new
+// position (palette = arc) and refresh the board + preview.
+void PatternDialog::move_kp_relative(size_t src, size_t tgt, bool after) {
+    if (src >= m_arc.size() || tgt >= m_arc.size() || src == tgt) return;
+    KeyPoint moved = m_arc[src];   // capture before the rebuild
+    std::vector<KeyPoint> out;
+    out.reserve(m_arc.size());
+    for (size_t k = 0; k < m_arc.size(); ++k) {
+        if (k == src) continue;
+        if (k == tgt) {
+            if (!after) out.push_back(moved);
+            out.push_back(m_arc[k]);
+            if (after)  out.push_back(moved);
+        } else {
+            out.push_back(m_arc[k]);
+        }
+    }
+    if (out.size() != m_arc.size()) return;   // safety — never drop a KP
+    m_arc = std::move(out);
+    renumber_kps();
+    rebuild_kp_list();
+    refresh_arc_views();
+}
+
+void PatternDialog::attach_kp_dnd(Gtk::Widget& row, Gtk::Widget& grip, size_t index) {
+    auto alive = std::make_shared<bool>(true);
+    row.signal_destroy().connect([alive]{ *alive = false; });
+    Gtk::Widget* rowp = &row;
+
+    // ── Drag source (on the grip) ────────────────────────────────────────────
+    auto src = Gtk::DragSource::create();
+    src->set_actions(Gdk::DragAction::MOVE);
+    src->signal_prepare().connect(
+        [this, index](double, double) -> Glib::RefPtr<Gdk::ContentProvider> {
+            m_drag_kp = static_cast<int>(index);
+            Glib::Value<int> val;
+            val.init(G_TYPE_INT);
+            val.set(static_cast<int>(index));
+            return Gdk::ContentProvider::create(val);
+        },
+        false);
+    src->signal_drag_begin().connect(
+        [rowp, alive](const Glib::RefPtr<Gdk::Drag>&) {
+            if (*alive) rowp->add_css_class("binder-drag-source");
+        },
+        false);
+    src->signal_drag_end().connect(
+        [this, rowp, alive](const Glib::RefPtr<Gdk::Drag>&, bool) {
+            m_drag_kp = -1;
+            if (*alive) rowp->remove_css_class("binder-drag-source");
+        },
+        false);
+    grip.add_controller(src);
+
+    // ── Drop target (the whole row) ──────────────────────────────────────────
+    auto dst = Gtk::DropTarget::create(G_TYPE_INT, Gdk::DragAction::MOVE);
+
+    auto clear_hl = [rowp, alive]{
+        if (!*alive) return;
+        rowp->remove_css_class("binder-drop-before");
+        rowp->remove_css_class("binder-drop-after");
+    };
+
+    dst->signal_motion().connect(
+        [this, index, rowp, alive, clear_hl](double, double y) -> Gdk::DragAction {
+            if (!*alive || m_drag_kp < 0 || m_drag_kp == static_cast<int>(index))
+                return Gdk::DragAction{};
+            bool after = (y > rowp->get_height() * 0.5);
+            clear_hl();
+            rowp->add_css_class(after ? "binder-drop-after" : "binder-drop-before");
+            return Gdk::DragAction::MOVE;
+        },
+        false);
+
+    dst->signal_leave().connect([clear_hl]{ clear_hl(); }, false);
+
+    dst->signal_drop().connect(
+        [this, index, rowp, alive, clear_hl](const Glib::ValueBase&, double, double y) -> bool {
+            if (!*alive) return false;
+            clear_hl();
+            const int src_idx = m_drag_kp;   // still set: drop fires before drag_end
+            if (src_idx < 0 || src_idx == static_cast<int>(index)) return false;
+            bool after = (y > rowp->get_height() * 0.5);
+            // Defer off the live drop handler (the idle rule) — move_kp_relative
+            // rebuilds the row list, destroying this very widget.
+            Glib::signal_idle().connect_once(
+                [this, src_idx, index, after]{
+                    move_kp_relative(static_cast<size_t>(src_idx), index, after);
+                });
+            return true;
+        },
+        false);
+
+    row.add_controller(dst);
 }
 
 void PatternDialog::remove_kp(size_t idx) {

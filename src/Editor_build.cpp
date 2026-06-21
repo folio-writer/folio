@@ -2361,6 +2361,46 @@ void Editor::build_editor_area() {
 
   m_view_stack.add(m_scroll_overlay, "write");
 
+  // ── s41 — Form view (the inversion) ─────────────────────────────────────────
+  // A Character/Place draws its template form here, as the Editor document. The
+  // form card mirrors the write paper card (folio-paper, centred, 680px). The
+  // relation provider and the "Edit fields…" door are wired ONCE (the form's rows
+  // are rebuilt per object by populate(), but these sinks are set-once).
+  m_form_card.set_orientation(Gtk::Orientation::VERTICAL);
+  m_form_card.add_css_class("folio-paper");
+  m_form_card.set_margin_top(28);
+  m_form_card.set_margin_bottom(28);
+  m_form_card.set_margin_start(28);
+  m_form_card.set_margin_end(28);
+  m_form_card.set_hexpand(false);
+  m_form_card.set_halign(Gtk::Align::CENTER);
+  m_form_card.set_size_request(680, -1);
+  m_object_form.set_margin_top(16);
+  m_object_form.set_margin_bottom(20);
+  m_object_form.set_margin_start(20);
+  m_object_form.set_margin_end(20);
+  m_form_card.append(m_object_form);
+
+  // Relation picker candidate source — resolved LIVE against the store on each
+  // call (rebuilt before each populate; never a held snapshot). Empty type = any.
+  m_object_form.set_relation_provider([this](const std::string& target_type) {
+    std::vector<Folio::FieldChoice> out;
+    const Folio::ObjectStore& store = m_model.object_store();
+    for (const Folio::Object* o : store.objects_of_type(target_type))
+      out.push_back({ o->iid, Folio::object_display_name(*o) });
+    return out;
+  });
+  // "Edit fields…" door → MainWindow routes to the Inspector-owned builder.
+  m_object_form.set_on_edit_template([this]() {
+    if (m_on_edit_template) m_on_edit_template();
+  });
+
+  m_form_scroll.set_policy(Gtk::PolicyType::AUTOMATIC, Gtk::PolicyType::AUTOMATIC);
+  m_form_scroll.set_vexpand(true);
+  m_form_scroll.set_hexpand(true);
+  m_form_scroll.set_child(m_form_card);
+  m_view_stack.add(m_form_scroll, "form");
+
   // Heading outline navigator (WritingMode::Outline within Editor view)
   m_houtline_scroll.set_policy(Gtk::PolicyType::NEVER,
                                Gtk::PolicyType::AUTOMATIC);

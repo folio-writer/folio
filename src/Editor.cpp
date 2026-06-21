@@ -11,6 +11,7 @@
 #include <EditorHtmlSerializer.hpp>
 #include <FolioLog.hpp>
 #include <Iid.hpp>
+#include <ObjectIO.hpp>   // s41 — floor_field_to_leaf for the form write-through
 #include <SpellCheckHighlighter.hpp>
 #include <TextSubstitution.hpp>
 #include <algorithm>
@@ -393,6 +394,13 @@ void Editor::load_node(BinderNode *node) {
     }
     break;
 
+  case BinderKind::Reference:   // s42 — draws its form as the Editor document
+    m_editor_mode = EditorMode::Reference;
+    m_chapter_tag.set_text("Reference");
+    m_title_label.set_text(node->title.empty() ? "Unnamed" : node->title);
+    html_to_buffer(node->content);   // hidden; the form owns the description field
+    break;
+
   default: { // Scene, Group, or Template
     m_editor_mode = EditorMode::Node;
     const char *prefix = node->kind == BinderKind::Template ? "Template  ·  "
@@ -453,6 +461,9 @@ void Editor::load_node(BinderNode *node) {
   m_backtrace_gutter.queue_draw();
   m_invis_overlay.queue_draw();
   set_editor_mode(m_editor_mode);
+  // s41: a Character/Place draws its template form as the Editor document.
+  if (node_is_form_kind(m_current_node))
+    populate_object_form();
   update_word_count();
 
   // Re-enable substitutions and spell check now that the buffer is fully loaded
@@ -563,16 +574,83 @@ void Editor::load_empty() { load_node(nullptr); }
 
 void Editor::set_editor_mode(EditorMode mode) {
   m_editor_mode = mode;
-  bool char_or_place =
-      (mode == EditorMode::Character || mode == EditorMode::Place);
-  m_avatar_strip.set_visible(char_or_place);
+  bool is_form_mode =
+      (mode == EditorMode::Character || mode == EditorMode::Place ||
+       mode == EditorMode::Reference);   // s42 — all three draw forms
+  m_avatar_strip.set_visible(is_form_mode);
   m_btn_snapshot.set_visible(m_current_node != nullptr);
   bool is_empty = (mode == EditorMode::Empty);
   // Show the hint overlay when nothing is loaded in Write mode
   m_write_placeholder.set_visible(is_empty && m_view_mode == ViewMode::Write);
-  // Only switch to write view if we're not in board or outline mode
-  if (m_view_mode == ViewMode::Write || m_view_mode == ViewMode::Joined)
-    m_view_stack.set_visible_child(m_scroll_overlay);
+  // s41/s42: in Write/Joined, a form-kind (Character/Place/Reference) shows its
+  // FORM as the document; every other kind shows the prose write view.
+  if (m_view_mode == ViewMode::Write || m_view_mode == ViewMode::Joined) {
+    if (is_form_mode)
+      m_view_stack.set_visible_child(m_form_scroll);
+    else
+      m_view_stack.set_visible_child(m_scroll_overlay);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// s41 — the inversion: render the current node's template form as the document.
+// Mirrors the write-through the Inspector ran before the form moved here: floor
+// fields map to the binder leaf (ObjectIO::floor_field_to_leaf), custom fields
+// write to the store object (apply_field). The store is rebuilt before populate
+// (binder node = truth, registry = projection) and resolved LIVE in the on_change
+// sink — never a held pointer (the objects vector may re-project between renders).
+// ─────────────────────────────────────────────────────────────────────────────
+void Editor::populate_object_form() {
+  if (!m_current_node) { m_object_form.clear(); return; }
+  const std::string iid = m_current_node->iid;
+
+  m_model.rebuild_object_store();
+  const Folio::ObjectStore& store = m_model.object_store();
+  const Folio::Object* obj = store.find_object(iid);
+  if (!obj) { m_object_form.clear(); return; }
+  const Folio::Template* tmpl = store.find_template(obj->type);
+  if (!tmpl) { m_object_form.clear(); return; }
+
+  m_object_form.populate(*tmpl, *obj, /*editable=*/true,
+      [this, iid](const std::string& field_id, const Folio::json& raw) {
+        if (m_loading || !m_current_node || m_current_node->iid != iid)
+          return;
+        const std::string s = raw.is_string() ? raw.get<std::string>()
+                                              : std::string{};
+        switch (Folio::ObjectIO::floor_field_to_leaf(field_id)) {
+          case Folio::ObjectIO::LeafField::Title:       m_current_node->title       = s; break;
+          case Folio::ObjectIO::LeafField::Content:     m_current_node->content     = s; break;
+          case Folio::ObjectIO::LeafField::ImagePath:   m_current_node->image_path  = s; break;
+          case Folio::ObjectIO::LeafField::Description: m_current_node->description = s; break;
+          case Folio::ObjectIO::LeafField::Role:        m_current_node->role        = s; break;
+          case Folio::ObjectIO::LeafField::None: {
+            // Custom (object-only) field: no projected leaf home — write THROUGH to
+            // the store object, coerced against the field schema. Resolved fresh
+            // each fire (no held pointer). Survives the next rebuild's reconcile.
+            Folio::ObjectStore& st = m_model.object_store();
+            Folio::Object* mo = st.find_object(iid);
+            if (!mo) return;
+            const Folio::Template* t = st.find_template(mo->type);
+            if (!t) return;
+            const Folio::FieldSchema* fs = t->find_field(field_id);
+            if (!fs) return;
+            Folio::apply_field(*mo, *fs, raw);
+            m_model.mark_modified();
+            return;   // custom fields don't touch the leaf title
+          }
+        }
+        m_model.mark_modified();
+        // A floor field changed (title/image/etc.) — refresh chrome that reads the
+        // leaf (sidebar title, chapter tag) via the meta-changed path.
+        refresh_chapter_tag();
+        if (m_on_meta_changed)
+          m_on_meta_changed(m_current_node);
+      });
+}
+
+void Editor::refresh_object_form() {
+  if (node_is_form_kind(m_current_node))
+    populate_object_form();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -587,6 +665,12 @@ void Editor::save_current() {
     return;
   }
   if (m_current_node) {
+    // s41: form-kind nodes (Character/Place) persist through the ObjectForm's
+    // write-through path, not the prose buffer — the buffer is not their editing
+    // surface and is hidden. Skip the buffer→content write so a stale hidden
+    // buffer can't clobber the form's edits on the next load_node.
+    if (node_is_form_kind(m_current_node))
+      return;
     m_current_node->content = buffer_to_html();
     // Persist cursor position
     m_current_node->cursor_offset =
@@ -778,7 +862,11 @@ void Editor::set_view_mode(ViewMode mode) {
   case ViewMode::Write:
   case ViewMode::Joined:
     m_write_placeholder.set_visible(m_editor_mode == EditorMode::Empty);
-    m_view_stack.set_visible_child(m_scroll_overlay);
+    // s41: form-kind nodes show their form; everything else the prose write view.
+    if (node_is_form_kind(m_current_node))
+      m_view_stack.set_visible_child(m_form_scroll);
+    else
+      m_view_stack.set_visible_child(m_scroll_overlay);
     break;
   case ViewMode::Outline:
     rebuild_outline();

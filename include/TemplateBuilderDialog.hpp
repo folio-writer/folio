@@ -46,6 +46,7 @@ public:
 private:
     ApplyCallback   m_on_apply;
     Folio::Template m_draft;          // the local copy being edited
+    std::string     m_drag_field_id;  // s43 — id of the row currently being dragged
 
     // Chrome
     Gtk::Box            m_root{Gtk::Orientation::VERTICAL, 0};
@@ -58,6 +59,14 @@ private:
     void build_chrome();
     void rebuild_field_rows();
     void append_field_row(const Folio::FieldSchema& f, bool is_buffer);
+
+    // s43 — drag-and-drop reorder. Attaches a DragSource (carries the field id)
+    // and a DropTarget (before/after by cursor y) to a built row, replacing the
+    // up/down arrow buttons. `outer` is the row's outermost widget (the drag
+    // handle + drop indicator host); `field_id` keys the move. The trailing
+    // floor buffer's row passes draggable=false (it stays pinned, §4).
+    void attach_row_dnd(Gtk::Widget& outer, const std::string& field_id, bool draggable);
+
     void on_add_field();
     void on_add_section();   // s39 — append a Heading marker
     void on_save();

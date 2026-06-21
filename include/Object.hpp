@@ -362,4 +362,20 @@ inline Template built_in_place_template() {
     return t;
 }
 
+// s42 — the third form-kind. Same floor shape (name/image/description); the
+// Reference's url + notes stay node chrome in the Inspector (the kind's orphan
+// fields, like Place's tagline), not form fields. A citation-rich Reference is
+// the author's to grow (the "Annotated Reference" the model names). Category
+// "reference" is the seam its first downstream behavior (bibliography) hangs on.
+inline Template built_in_reference_template() {
+    Template t;
+    t.id        = "reference";
+    t.type_name = "Reference";
+    t.icon      = "folio-show-links-symbolic";
+    t.fields    = default_floor_fields();
+    t.builtin   = true;
+    t.category  = "reference";
+    return t;
+}
+
 }  // namespace Folio

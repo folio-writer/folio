@@ -130,6 +130,48 @@ inline bool move_field(Template& t, const std::string& field_id, int delta) {
     return true;
 }
 
+// Move `moved_id` so it lands immediately before (place_after=false) or after
+// (place_after=true) `target_id`. This is the DRAG-AND-DROP shape: the dropped
+// position is expressed relative to the row under the cursor, not as a delta.
+// (s43 — replaces the up/down arrow reorder; grouping under a Heading is purely a
+// matter of where a field sits, so dragging a field above or below a section
+// marker IS moving it into / out of that block — no separate primitive needed.)
+//
+// Invariants preserved (§4): the trailing floor buffer is pinned last — it never
+// moves (a drag from it is rejected) and nothing may land after it (a drop after
+// the buffer is folded to a drop before it). Returns true iff the order changed.
+inline bool move_field_relative(Template& t, const std::string& moved_id,
+                                const std::string& target_id, bool place_after) {
+    if (moved_id == target_id) return false;
+    int mi = field_index(t, moved_id);
+    int ti = field_index(t, target_id);
+    if (mi < 0 || ti < 0) return false;
+    // The trailing buffer never moves and nothing may land after it.
+    if (is_trailing_buffer(t, static_cast<std::size_t>(mi))) return false;
+    if (is_trailing_buffer(t, static_cast<std::size_t>(ti))) place_after = false;
+
+    FieldSchema moved = t.fields[static_cast<std::size_t>(mi)];   // capture before edit
+    std::vector<FieldSchema> out;
+    out.reserve(t.fields.size());
+    for (int k = 0; k < static_cast<int>(t.fields.size()); ++k) {
+        if (k == mi) continue;                       // pull the moved field out
+        if (k == ti) {
+            if (!place_after) out.push_back(moved);
+            out.push_back(t.fields[static_cast<std::size_t>(k)]);
+            if (place_after)  out.push_back(moved);
+        } else {
+            out.push_back(t.fields[static_cast<std::size_t>(k)]);
+        }
+    }
+    // No-op guard: report false when the resulting order is identical.
+    bool changed = false;
+    for (std::size_t k = 0; k < out.size(); ++k)
+        if (out[k].id != t.fields[k].id) { changed = true; break; }
+    if (!changed) return false;
+    t.fields = std::move(out);
+    return true;
+}
+
 // Rename a field's LABEL only — the id (and every stored value keyed by it) is
 // untouched. Returns true if the field exists.
 inline bool rename_field(Template& t, const std::string& field_id,

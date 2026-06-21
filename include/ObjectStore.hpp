@@ -145,6 +145,7 @@ struct ObjectStore {
     void seed_builtins() {
         upsert_template(built_in_character_template());
         upsert_template(built_in_place_template());
+        upsert_template(built_in_reference_template());   // s42
     }
 
     // Install or update a template by id (the template builder's commit, s33).
@@ -181,11 +182,13 @@ struct ObjectStore {
     //   set, missing (deleted)  -> floor   (orphan-and-keep: object retains its
     //                                        hidden custom values; falls back)
     //   set, a built-in id      -> floor   (built-ins are never a leaf's own type)
-    // The floor is chosen by `is_place`, so a stale cross-section id still lands
-    // on the right floor. seed_builtins() runs before the reconcile, so the floor
-    // template always resolves.
-    std::string resolve_leaf_type(bool is_place, const std::string& template_id) const {
-        const std::string floor = is_place ? "place" : "character";
+    //   set, a built-in id      -> floor   (built-ins are never a leaf's own type)
+    // The floor is chosen by `floor_type` ("character"/"place"/"reference"), so a
+    // stale cross-section id still lands on the right floor. seed_builtins() runs
+    // before the reconcile, so the floor template always resolves.
+    std::string resolve_leaf_type(const std::string& floor_type,
+                                  const std::string& template_id) const {
+        const std::string floor = floor_type.empty() ? "character" : floor_type;
         if (template_id.empty()) return floor;
         const Template* t = find_template(template_id);
         if (!t)          return floor;   // deleted clone -> fall back to floor
@@ -209,7 +212,7 @@ struct ObjectStore {
     // instantiated against that template so a clone's custom fields are seeded.
     // The object is marked `projected` either way.
     std::string add_migrated_leaf(const std::string& iid,
-                                  bool               is_place,
+                                  const std::string& floor_type,
                                   const std::string& title,
                                   const std::string& buffer_html,
                                   const std::string& image_path,

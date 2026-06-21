@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "DocumentModel.hpp"
+#include "ObjectForm.hpp"   // s41 — the inversion: the object form is the Editor document
 #include "SearchEngine.hpp"
 #include "EditorHtmlSerializer.hpp"
 #include "EditorRuler.hpp"
@@ -107,7 +108,7 @@ public:
 
   // ── View / content modes ──────────────────────────────────────────────────
   enum class ViewMode    { Write, Outline, Board, Joined };
-  enum class EditorMode  { Node, Character, Place, Empty };
+  enum class EditorMode  { Node, Character, Place, Reference, Empty };
   enum class WritingMode { Novel, Outline, Screenplay };
 
   static constexpr int SP_COUNT = 6; // number of screenplay element types
@@ -131,6 +132,24 @@ public:
   void set_snapshot_saved_callback(SnapshotSavedCallback cb) {
     m_on_snapshot_saved = std::move(cb);
   }
+
+  // ── s41 — object form (the inversion) ─────────────────────────────────────
+  // Fired by the form's "Edit fields…" door. MainWindow routes it to the
+  // Inspector-owned template builder for the current object's template.
+  using EditTemplateCallback = std::function<void()>;
+  void set_edit_template_callback(EditTemplateCallback cb) {
+    m_on_edit_template = std::move(cb);
+  }
+  // Fired when the form writes a floor field that the binder leaf owns (title,
+  // image, …) — lets MainWindow refresh chrome (sidebar title, etc.).
+  using MetaChangedCallback = std::function<void(BinderNode*)>;
+  void set_meta_changed_callback(MetaChangedCallback cb) {
+    m_on_meta_changed = std::move(cb);
+  }
+  // Re-render the form for the currently-loaded node (after the builder saves a
+  // schema change). No-op when the current node is not a form-kind.
+  void refresh_object_form();
+
   void enter_focus_mode();
   void exit_focus_mode();
   bool is_focus_mode() const { return m_in_focus; }
@@ -457,6 +476,22 @@ private:
   Gtk::Box m_avatar_strip;
   Gtk::Image m_avatar_image;
   Gtk::Button m_avatar_btn;
+
+  // ── s41 — Form view (the inversion) ───────────────────────────────────────
+  // A Character/Place opens its template-driven form as the Editor document.
+  // Persistent widget (own once; ObjectForm::populate rebuilds its rows). Hosted
+  // in a paper card matching the write view, added to m_view_stack as "form".
+  Gtk::ScrolledWindow m_form_scroll;
+  Gtk::Box            m_form_card;
+  Folio::ObjectForm   m_object_form;
+  EditTemplateCallback m_on_edit_template;
+  MetaChangedCallback  m_on_meta_changed;
+  bool node_is_form_kind(const BinderNode* n) const {
+    return n && (n->kind == BinderKind::Character ||
+                 n->kind == BinderKind::Place ||
+                 n->kind == BinderKind::Reference);   // s42
+  }
+  void populate_object_form();   // render m_object_form for m_current_node
 
   // Exit-focus overlay button
   Gtk::Button *m_exit_focus_btn  = nullptr;

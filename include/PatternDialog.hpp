@@ -161,7 +161,16 @@ private:
     void refresh_arc_views();         // board + preview after a structural edit
     void add_keypoint();              // append a blank KP
     void load_builtin_kps();          // reseed m_arc from the built-in 14
-    void move_kp(size_t idx, int dir);// reorder by ±1
+    void move_kp(size_t idx, int dir);// reorder by ±1 (kept; e.g. keyboard)
+    // s43 — drag-and-drop reorder: move the KP at `src` to just before (after=false)
+    // or after (after=true) the KP at `tgt`, then renumber (order/colour follow the
+    // new position — palette = arc) and refresh. Same shape as the template
+    // builder's move_field_relative.
+    void move_kp_relative(size_t src, size_t tgt, bool after);
+    // s43 — attach the DragSource (on `grip`) + DropTarget (on `row`) for KP
+    // reorder; `index` is this row's position in m_arc at build time.
+    void attach_kp_dnd(Gtk::Widget& row, Gtk::Widget& grip, size_t index);
+    int  m_drag_kp = -1;              // index of the KP row currently being dragged
     void remove_kp(size_t idx);
 
     // ── Parts management ───────────────────────────────────────────────────────

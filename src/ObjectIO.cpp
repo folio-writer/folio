@@ -106,14 +106,15 @@ Object object_from_string(const std::string& text) {
 
 // ── Migration (§8) ────────────────────────────────────────────────────────────
 Object migrate_legacy_leaf(const std::string& iid,
-                           bool               is_place,
+                           const std::string& floor_type,
                            const std::string& title,
                            const std::string& buffer_html,
                            const std::string& image_path,
                            const std::string& legacy_tagline,
                            const std::string& legacy_role) {
-    const Template tmpl = is_place ? built_in_place_template()
-                                   : built_in_character_template();
+    const Template tmpl = floor_type == "place"     ? built_in_place_template()
+                        : floor_type == "reference" ? built_in_reference_template()
+                                                    : built_in_character_template();
     Object o;
     o.iid  = iid;                       // same part — the iid travels forward
     instantiate_against(o, tmpl);       // seeds name/image/description defaults

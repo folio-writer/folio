@@ -58,6 +58,16 @@ public:
     // the edited schema back to the node and re-projects the store.
     void open_template_builder_for_template_node(const std::string& node_iid);
 
+    // s41 — open the schema builder for the CURRENT object's template (the
+    // instance "Edit fields…" door). Public so MainWindow can route the Editor
+    // form's door here. On commit it fires the object-form dirty callback so the
+    // Editor (which now hosts the form) re-renders.
+    void open_template_builder_for_current();
+    using ObjectFormDirtyCallback = std::function<void()>;
+    void set_object_form_dirty_callback(ObjectFormDirtyCallback cb) {
+      m_on_object_form_dirty = std::move(cb);
+    }
+
     // Annotations — called by Editor when annotations change
     void notify_annotations_changed();
 
@@ -90,6 +100,7 @@ private:
     std::vector<BinderNode*>  m_jv_nodes;           // ordered list of JV segments
 
     MetaChangedCallback    m_on_meta_changed;
+    ObjectFormDirtyCallback m_on_object_form_dirty;   // s41 — Editor re-renders its form
     ContentChangedCallback m_on_content_changed;
     ToastCallback          m_on_toast;
     std::function<void(bool)> m_on_progress_disclosure_changed;
@@ -163,18 +174,15 @@ private:
     Gtk::TextView     m_char_notes_view;
     Glib::RefPtr<Gtk::TextBuffer> m_char_notes_buffer;
 
-    // s31: template-driven object form (read-only preview this slice). One per
-    // panel — a widget can be parented only once, so character and place each
-    // own their instance. Populated on node load from the model's object store.
-    ObjectForm        m_char_object_form;
-    ObjectForm        m_place_object_form;
-    void populate_object_form(ObjectForm& form, const std::string& iid);
+    // s41 — the object form moved OUT of the Inspector into the Editor (the
+    // inversion). The Inspector retreats to chrome: status / tagline / colour /
+    // snapshots / notes. The template builder it owns is reached from the Editor
+    // form's "Edit fields…" door via open_template_builder_for_current (public).
 
     // s33 — the template builder (schema editor), owned once (persistent-window
     // rule), opened from the object form's "Edit fields…" affordance for the
     // current object's template. Commits on idle (s24 modal rule).
     std::unique_ptr<TemplateBuilderDialog> m_template_builder;
-    void open_template_builder_for_current();
 
     // Metadata tab disclosure — character
     Gtk::Revealer  m_meta_char_identity_revealer;
@@ -199,8 +207,7 @@ private:
     Gtk::Label     m_meta_place_colour_arrow;
 
     // Reference meta
-    Gtk::Entry        m_ref_name_entry;
-    Gtk::Entry        m_ref_url_entry;
+    Gtk::Entry        m_ref_url_entry;   // s42 — Title moved to the Editor form
     Gtk::TextView     m_ref_notes_view;
     Glib::RefPtr<Gtk::TextBuffer> m_ref_notes_buffer;
     void              build_reference_meta_section(Gtk::Box& s);

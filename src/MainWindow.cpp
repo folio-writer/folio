@@ -1097,6 +1097,18 @@ void MainWindow::wire_callbacks() {
   m_inspector->set_meta_changed_callback(
       [this](BinderNode *node) { on_meta_changed(node); });
 
+  // ── s41 — the inversion: the object form lives in the Editor now ────────────
+  // Editor form floor-field edit (title/image/…) → same chrome refresh path.
+  m_editor->set_meta_changed_callback(
+      [this](BinderNode *node) { on_meta_changed(node); });
+  // Editor form's "Edit fields…" door → the Inspector-owned template builder for
+  // the current object's template.
+  m_editor->set_edit_template_callback(
+      [this]() { if (m_inspector) m_inspector->open_template_builder_for_current(); });
+  // Builder saved a schema change → the Editor re-renders its form.
+  m_inspector->set_object_form_dirty_callback(
+      [this]() { if (m_editor) m_editor->refresh_object_form(); });
+
   // Inspector: content replaced (snapshot restore) → reload Editor buffer
   m_inspector->set_content_changed_callback([this](BinderNode *node) {
     if (m_editor && node)
@@ -1363,12 +1375,22 @@ void MainWindow::wire_callbacks() {
 // Callback handlers
 // ─────────────────────────────────────────────────────────────────────────────
 void MainWindow::on_node_opened(Section section, const std::vector<int> &path) {
+  BinderNode *n = m_model.node_at(section, path);
+  // s43 — the "two faces" gesture (model §4): OPENING a Template node (double-
+  // click / Enter / "Open in Editor") opens its form DESIGNER — the schema
+  // builder — rather than a prose tab. Single-click still just selects it. This
+  // is the dialog-door route; the in-Editor designer-on-select is the deferred
+  // symmetric follow.
+  if (n && n->kind == BinderKind::Template) {
+    if (m_inspector)
+      m_inspector->open_template_builder_for_template_node(n->iid);
+    return;
+  }
   if (m_timeline) {
     m_restoring_tabs = true;   // suppress on_tab_activated during open_node
     m_timeline->open_node(section, path);
     m_restoring_tabs = false;
   }
-  BinderNode *n = m_model.node_at(section, path);
   if (n)
     apply_selection({BoardItem::make(section, n->iid)});
 }

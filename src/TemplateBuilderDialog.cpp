@@ -121,7 +121,7 @@ void TemplateBuilderDialog::build_chrome() {
     }
 
     // ── Scrollable field list ───────────────────────────────────────────────────
-    m_field_list.set_spacing(4);
+    m_field_list.set_spacing(1);
     m_scroll.set_child(m_field_list);
     m_scroll.set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
     m_scroll.set_vexpand(true);
@@ -190,23 +190,122 @@ void TemplateBuilderDialog::rebuild_field_rows() {
     }
 }
 
-// One field row: [ label entry ][ type ▾ ][ ↑ ][ ↓ ][ ✕ ], with a per-type
-// CONFIG sub-editor (s36) hosted indented beneath it. The trailing floor buffer
-// (§4) is rendered with its destructive controls disabled — it stays put and is
-// never removed; its type stays Rich text (and carries no config).
+// s43 — drag-and-drop reorder, modeled on the binder tree / tab bar pattern
+// (Gtk::DragSource carries the moved field id as a string; Gtk::DropTarget reads
+// the cursor's vertical half to choose before/after). The pure brain
+// TemplateEdit::move_field_relative does the actual reorder and guards the §4
+// floor-buffer pin. Reuses the .binder-* drag CSS classes (loaded globally).
+void TemplateBuilderDialog::attach_row_dnd(Gtk::Widget& outer,
+                                           const std::string& field_id,
+                                           bool draggable) {
+    auto alive = std::make_shared<bool>(true);
+    outer.signal_destroy().connect([alive]() { *alive = false; });
+
+    // ── Drag source (skipped for the pinned floor buffer) ─────────────────────
+    if (draggable) {
+        auto src = Gtk::DragSource::create();
+        src->set_actions(Gdk::DragAction::MOVE);
+        Gtk::Widget* outerp = &outer;
+        src->signal_prepare().connect(
+            [this, field_id](double, double) -> Glib::RefPtr<Gdk::ContentProvider> {
+                m_drag_field_id = field_id;
+                Glib::Value<Glib::ustring> val;
+                val.init(G_TYPE_STRING);
+                val.set(field_id);
+                return Gdk::ContentProvider::create(val);
+            },
+            false);
+        src->signal_drag_begin().connect(
+            [outerp, alive](const Glib::RefPtr<Gdk::Drag>&) {
+                if (*alive) outerp->add_css_class("binder-drag-source");
+            },
+            false);
+        src->signal_drag_end().connect(
+            [this, outerp, alive](const Glib::RefPtr<Gdk::Drag>&, bool) {
+                m_drag_field_id.clear();
+                if (*alive) outerp->remove_css_class("binder-drag-source");
+            },
+            false);
+        outer.add_controller(src);
+    }
+
+    // ── Drop target (every row, including the buffer: a drop on it lands the
+    //    field just above it, since move_field_relative folds "after buffer" to
+    //    "before buffer") ──────────────────────────────────────────────────────
+    auto dst = Gtk::DropTarget::create(G_TYPE_STRING, Gdk::DragAction::MOVE);
+    Gtk::Widget* outerp = &outer;
+    const bool is_buffer_row = !draggable;   // only the pinned floor buffer is undraggable
+
+    auto clear_hl = [outerp, alive]() {
+        if (!*alive) return;
+        outerp->remove_css_class("binder-drop-before");
+        outerp->remove_css_class("binder-drop-after");
+    };
+
+    dst->signal_motion().connect(
+        [this, field_id, outerp, alive, clear_hl, is_buffer_row](double, double y) -> Gdk::DragAction {
+            if (!*alive || m_drag_field_id.empty() || m_drag_field_id == field_id)
+                return Gdk::DragAction{};
+            // Nothing may land after the buffer — always show "before" on it.
+            bool after = !is_buffer_row && (y > outerp->get_height() * 0.5);
+            clear_hl();
+            outerp->add_css_class(after ? "binder-drop-after" : "binder-drop-before");
+            return Gdk::DragAction::MOVE;
+        },
+        false);
+
+    dst->signal_leave().connect([clear_hl]() { clear_hl(); }, false);
+
+    dst->signal_drop().connect(
+        [this, field_id, outerp, alive, clear_hl, is_buffer_row](const Glib::ValueBase&,
+                                                  double, double y) -> bool {
+            if (!*alive) return false;
+            clear_hl();
+            // GTK fires drop BEFORE drag_end, so m_drag_field_id is still set
+            // (same ordering the tab bar relies on).
+            const std::string moved_id = m_drag_field_id;
+            if (moved_id.empty() || moved_id == field_id) return false;
+            bool after = !is_buffer_row && (y > outerp->get_height() * 0.5);
+            if (TemplateEdit::move_field_relative(m_draft, moved_id, field_id, after)) {
+                // Defer the rebuild off the live drop handler (the idle rule).
+                Glib::signal_idle().connect_once([this]() { rebuild_field_rows(); });
+                return true;
+            }
+            return false;
+        },
+        false);
+
+    outer.add_controller(dst);
+}
+
+// One field row: [ ⠿ grip ][ label entry ][ type ▾ ][ ✕ ], with a per-type CONFIG
+// sub-editor (s36) hosted indented beneath it. s43 — reorder is now drag-and-drop
+// (the grip; attach_row_dnd), the up/down arrows are gone. The trailing floor
+// buffer (§4) is rendered with its destructive controls disabled and is not
+// draggable — it stays put and is never removed; its type stays Rich text.
 void TemplateBuilderDialog::append_field_row(const Folio::FieldSchema& f, bool is_buffer) {
     const std::string field_id = f.id;
 
-    // s39 — a Heading is a section divider, not a data field: a title entry plus the
-    // reorder/remove controls, with no type dropdown and no config sub-editor. (A
-    // heading is never the floor buffer, so is_buffer is always false here.)
+    // s39 — a Heading is a section divider, not a data field: a grip + title entry
+    // + remove control, with no type dropdown and no config sub-editor. (A heading
+    // is never the floor buffer, so is_buffer is always false here.) s43 — reorder
+    // by drag, not arrows.
     if (f.type == Folio::FieldType::Heading) {
         auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
         row->set_margin_start(6);
         row->set_margin_end(6);
-        row->set_margin_top(10);   // sets the section apart from the field above
-        row->set_margin_bottom(2);
+        row->set_margin_top(6);    // sets the section apart from the field above
+        row->set_margin_bottom(1);
         row->set_name(std::string("tpl-section-row-") + field_id);
+
+        // s43 — drag handle (replaces up/down arrows); the whole row is the drag
+        // source and drop target via attach_row_dnd below.
+        auto* grip = Gtk::make_managed<Gtk::Image>();
+        grip->set_from_icon_name("list-drag-handle-symbolic");
+        grip->add_css_class("dim-label");
+        grip->set_valign(Gtk::Align::CENTER);
+        grip->set_tooltip_text("Drag to reorder");
+        row->append(*grip);
 
         auto* tag = Gtk::make_managed<Gtk::Label>("Section");
         tag->add_css_class("dim-label");
@@ -223,22 +322,6 @@ void TemplateBuilderDialog::append_field_row(const Folio::FieldSchema& f, bool i
         });
         row->append(*title);
 
-        auto* up = Gtk::make_managed<Gtk::Button>();
-        up->set_icon_name("go-up-symbolic");
-        up->add_css_class("flat");
-        up->signal_clicked().connect([this, field_id]() {
-            if (TemplateEdit::move_field(m_draft, field_id, -1)) rebuild_field_rows();
-        });
-        row->append(*up);
-
-        auto* down = Gtk::make_managed<Gtk::Button>();
-        down->set_icon_name("go-down-symbolic");
-        down->add_css_class("flat");
-        down->signal_clicked().connect([this, field_id]() {
-            if (TemplateEdit::move_field(m_draft, field_id, +1)) rebuild_field_rows();
-        });
-        row->append(*down);
-
         auto* del = Gtk::make_managed<Gtk::Button>();
         del->set_icon_name("user-trash-symbolic");
         del->add_css_class("flat");
@@ -247,6 +330,7 @@ void TemplateBuilderDialog::append_field_row(const Folio::FieldSchema& f, bool i
         });
         row->append(*del);
 
+        attach_row_dnd(*row, field_id, /*draggable=*/true);
         m_field_list.append(*row);
         return;
     }
@@ -257,9 +341,19 @@ void TemplateBuilderDialog::append_field_row(const Folio::FieldSchema& f, bool i
     auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
     row->set_margin_start(6);
     row->set_margin_end(6);
-    row->set_margin_top(4);
-    row->set_margin_bottom(4);
+    row->set_margin_top(1);
+    row->set_margin_bottom(1);
     row->set_name(std::string("tpl-field-row-") + field_id);
+
+    // s43 — drag handle (replaces up/down arrows). The trailing floor buffer is
+    // pinned (§4): no grip, and attach_row_dnd is told draggable=false.
+    auto* grip = Gtk::make_managed<Gtk::Image>();
+    grip->set_from_icon_name("list-drag-handle-symbolic");
+    grip->add_css_class("dim-label");
+    grip->set_valign(Gtk::Align::CENTER);
+    grip->set_tooltip_text("Drag to reorder");
+    grip->set_opacity(is_buffer ? 0.0 : 1.0);   // invisible but keeps the row aligned
+    row->append(*grip);
 
     auto* label_entry = Gtk::make_managed<Gtk::Entry>();
     label_entry->set_text(f.label);
@@ -286,24 +380,6 @@ void TemplateBuilderDialog::append_field_row(const Folio::FieldSchema& f, bool i
     });
     row->append(*type_dd);
 
-    auto* up = Gtk::make_managed<Gtk::Button>();
-    up->set_icon_name("go-up-symbolic");
-    up->add_css_class("flat");
-    up->set_sensitive(!is_buffer);
-    up->signal_clicked().connect([this, field_id]() {
-        if (TemplateEdit::move_field(m_draft, field_id, -1)) rebuild_field_rows();
-    });
-    row->append(*up);
-
-    auto* down = Gtk::make_managed<Gtk::Button>();
-    down->set_icon_name("go-down-symbolic");
-    down->add_css_class("flat");
-    down->set_sensitive(!is_buffer);
-    down->signal_clicked().connect([this, field_id]() {
-        if (TemplateEdit::move_field(m_draft, field_id, +1)) rebuild_field_rows();
-    });
-    row->append(*down);
-
     auto* del = Gtk::make_managed<Gtk::Button>();
     del->set_icon_name("user-trash-symbolic");
     del->add_css_class("flat");
@@ -324,6 +400,7 @@ void TemplateBuilderDialog::append_field_row(const Folio::FieldSchema& f, bool i
     if (!is_buffer) append_config_editor(*config_host, f);
     outer->append(*config_host);
 
+    attach_row_dnd(*outer, field_id, /*draggable=*/!is_buffer);
     m_field_list.append(*outer);
 }
 

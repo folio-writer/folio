@@ -667,6 +667,18 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
     .folio-inspector dropdown > button > box > label,
     .folio-inspector dropdown label { font-size: 12px; padding: 0; min-height: 0; }
     .folio-inspector .pref-listbox row { min-height: 0; padding-top: 4px; padding-bottom: 4px; }
+    /* s43 — the in-Editor object form (set_name "object-form") is NOT under
+       .folio-inspector, so it never inherited the row/dropdown tightening and
+       kept the 44px base row min-height. Mirror it here, scoped by #object-form. */
+    #object-form .pref-listbox row { min-height: 0; padding-top: 3px; padding-bottom: 3px; }
+    #object-form dropdown,
+    #object-form dropdown button,
+    #object-form dropdown button.combo {
+        min-height: 0; padding-top: 2px; padding-bottom: 2px;
+        padding-left: 6px; padding-right: 4px; font-size: 12px;
+    }
+    #object-form dropdown > button > box > label,
+    #object-form dropdown label { font-size: 12px; padding: 0; min-height: 0; }
     .pref-row-label { font-size: 13px; color: @tx1; }
     .pref-row-sub   { font-size: 11px; color: @tx3; }
     .synopsis-view text {
