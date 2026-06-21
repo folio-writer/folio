@@ -155,11 +155,15 @@ void TemplateBuilderDialog::rebuild_field_rows() {
     }
 }
 
-// One field row: [ label entry ][ type ▾ ][ ↑ ][ ↓ ][ ✕ ]. The trailing floor
-// buffer (§4) is rendered with its destructive controls disabled — it stays put
-// and is never removed; its type stays Rich text.
+// One field row: [ label entry ][ type ▾ ][ ↑ ][ ↓ ][ ✕ ], with a per-type
+// CONFIG sub-editor (s36) hosted indented beneath it. The trailing floor buffer
+// (§4) is rendered with its destructive controls disabled — it stays put and is
+// never removed; its type stays Rich text (and carries no config).
 void TemplateBuilderDialog::append_field_row(const Folio::FieldSchema& f, bool is_buffer) {
     const std::string field_id = f.id;
+
+    auto* outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+    outer->set_name(std::string("tpl-field-") + field_id);
 
     auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
     row->set_margin_start(6);
@@ -181,12 +185,15 @@ void TemplateBuilderDialog::append_field_row(const Folio::FieldSchema& f, bool i
     auto* type_dd = make_type_dropdown(f.type);
     type_dd->set_sensitive(!is_buffer);   // the buffer's type is fixed
     type_dd->property_selected().signal_changed().connect([this, field_id, type_dd]() {
-        // Record only — no row rebuild here. Destroying the dropdown from inside
-        // its own property-notify is unsafe, and a retype can't change which row
-        // is the buffer (that is positional); ensure_floor_buffer settles the
-        // no-buffer edge at save.
+        // Record the retype, then rebuild the WHOLE row list on idle so the
+        // config sub-editor follows the new type. Deferred to idle because
+        // destroying this dropdown from inside its own property-notify is unsafe
+        // (the s24 modal lesson, in miniature) — the notify returns first, then
+        // the idle tick rebuilds. retype_field clears config, so the new type's
+        // sub-editor starts blank.
         TemplateEdit::retype_field(m_draft, field_id,
                                    type_for_index(type_dd->get_selected()));
+        Glib::signal_idle().connect_once([this]() { rebuild_field_rows(); });
     });
     row->append(*type_dd);
 
@@ -217,7 +224,172 @@ void TemplateBuilderDialog::append_field_row(const Folio::FieldSchema& f, bool i
     });
     row->append(*del);
 
-    m_field_list.append(*row);
+    outer->append(*row);
+
+    // Config sub-editor, indented beneath the row (empty for types with no config).
+    auto* config_host = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
+    config_host->set_margin_start(28);
+    config_host->set_margin_end(6);
+    config_host->set_margin_bottom(2);
+    config_host->set_name(std::string("tpl-field-config-") + field_id);
+    if (!is_buffer) append_config_editor(*config_host, f);
+    outer->append(*config_host);
+
+    m_field_list.append(*outer);
+}
+
+// ── Config sub-editors (s36) ─────────────────────────────────────────────────
+
+const Folio::FieldSchema*
+TemplateBuilderDialog::draft_field(const std::string& field_id) const {
+    return m_draft.find_field(field_id);
+}
+
+void TemplateBuilderDialog::append_config_editor(Gtk::Box& host, const Folio::FieldSchema& f) {
+    switch (f.type) {
+        case Folio::FieldType::Number:
+        case Folio::FieldType::Slider:       build_number_config(host, f.id); break;
+        case Folio::FieldType::Dropdown:
+        case Folio::FieldType::MultiSelect:  build_options_config(host, f.id); break;
+        case Folio::FieldType::List:         build_presets_config(host, f.id); break;
+        default: break;  // text/richtext/toggle/image/color/date/relation — no config UI yet
+    }
+}
+
+namespace {
+// Clean number → text for the config entries (no trailing zeros / dot).
+std::string fmt_num(double d) {
+    if (d == static_cast<double>(static_cast<long long>(d)))
+        return std::to_string(static_cast<long long>(d));
+    std::string s = std::to_string(d);
+    while (!s.empty() && s.back() == '0') s.pop_back();
+    if (!s.empty() && s.back() == '.') s.pop_back();
+    return s;
+}
+double parse_num(Gtk::Entry* e, double dflt) {
+    try { return std::stod(std::string(e->get_text())); } catch (...) { return dflt; }
+}
+}  // namespace
+
+// number / slider: [ Min ___ ] [ Max ___ ] [ Step ___ ] writing {min,max,step}.
+void TemplateBuilderDialog::build_number_config(Gtk::Box& host, const std::string& field_id) {
+    while (Gtk::Widget* c = host.get_first_child()) host.remove(*c);
+    const Folio::FieldSchema* f = draft_field(field_id);
+    if (!f) return;
+
+    auto* rowb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    auto add_field_entry = [&](const char* lbl, double val) -> Gtk::Entry* {
+        auto* l = Gtk::make_managed<Gtk::Label>(lbl);
+        l->add_css_class("dim-label");
+        auto* e = Gtk::make_managed<Gtk::Entry>();
+        e->set_width_chars(6);
+        e->set_max_width_chars(7);
+        e->set_text(fmt_num(val));
+        rowb->append(*l);
+        rowb->append(*e);
+        return e;
+    };
+    auto* emin  = add_field_entry("Min",  Folio::config_num(f->config, "min",  0.0));
+    auto* emax  = add_field_entry("Max",  Folio::config_num(f->config, "max",  100.0));
+    auto* estep = add_field_entry("Step", Folio::config_num(f->config, "step", 1.0));
+
+    auto settle = [this, field_id, emin, emax, estep]() {
+        TemplateEdit::set_number_range(m_draft, field_id,
+                                       parse_num(emin, 0.0),
+                                       parse_num(emax, 100.0),
+                                       parse_num(estep, 1.0));
+    };
+    emin->signal_changed().connect(settle);
+    emax->signal_changed().connect(settle);
+    estep->signal_changed().connect(settle);
+    host.append(*rowb);
+}
+
+// dropdown / multiselect: an editable choice list — [ label ][ ✕ ] rows + add.
+void TemplateBuilderDialog::build_options_config(Gtk::Box& host, const std::string& field_id) {
+    while (Gtk::Widget* c = host.get_first_child()) host.remove(*c);
+    const Folio::FieldSchema* f = draft_field(field_id);
+    if (!f) return;
+
+    auto* hint = Gtk::make_managed<Gtk::Label>("Choices");
+    hint->add_css_class("dim-label");
+    hint->set_halign(Gtk::Align::START);
+    host.append(*hint);
+
+    for (const auto& opt : Folio::config_options(f->config)) {
+        const std::string oid = opt.id;
+        auto* r = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+        auto* e = Gtk::make_managed<Gtk::Entry>();
+        e->set_text(opt.label);
+        e->set_hexpand(true);
+        e->signal_changed().connect([this, field_id, oid, e]() {
+            TemplateEdit::rename_option(m_draft, field_id, oid,
+                                        std::string(e->get_text()));
+        });
+        auto* del = Gtk::make_managed<Gtk::Button>();
+        del->set_icon_name("user-trash-symbolic");
+        del->add_css_class("flat");
+        del->signal_clicked().connect([this, field_id, oid, &host]() {
+            TemplateEdit::remove_option(m_draft, field_id, oid);
+            build_options_config(host, field_id);   // refill this box only
+        });
+        r->append(*e);
+        r->append(*del);
+        host.append(*r);
+    }
+
+    auto* add = Gtk::make_managed<Gtk::Button>("+ Add choice");
+    add->add_css_class("flat");
+    add->set_halign(Gtk::Align::START);
+    add->signal_clicked().connect([this, field_id, &host]() {
+        TemplateEdit::add_option(m_draft, field_id, "Choice");
+        build_options_config(host, field_id);
+    });
+    host.append(*add);
+}
+
+// list: a preset list — [ value ][ ✕ ] rows + add. Presets seed the value list.
+void TemplateBuilderDialog::build_presets_config(Gtk::Box& host, const std::string& field_id) {
+    while (Gtk::Widget* c = host.get_first_child()) host.remove(*c);
+    const Folio::FieldSchema* f = draft_field(field_id);
+    if (!f) return;
+
+    auto* hint = Gtk::make_managed<Gtk::Label>("Presets (optional)");
+    hint->add_css_class("dim-label");
+    hint->set_halign(Gtk::Align::START);
+    host.append(*hint);
+
+    const auto presets = Folio::config_presets(f->config);
+    for (std::size_t i = 0; i < presets.size(); ++i) {
+        const std::size_t idx = i;
+        auto* r = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+        auto* e = Gtk::make_managed<Gtk::Entry>();
+        e->set_text(presets[i]);
+        e->set_hexpand(true);
+        e->signal_changed().connect([this, field_id, idx, e]() {
+            TemplateEdit::set_preset(m_draft, field_id, idx,
+                                     std::string(e->get_text()));
+        });
+        auto* del = Gtk::make_managed<Gtk::Button>();
+        del->set_icon_name("user-trash-symbolic");
+        del->add_css_class("flat");
+        del->signal_clicked().connect([this, field_id, idx, &host]() {
+            TemplateEdit::remove_preset(m_draft, field_id, idx);
+            build_presets_config(host, field_id);
+        });
+        r->append(*e);
+        r->append(*del);
+        host.append(*r);
+    }
+
+    auto* add = Gtk::make_managed<Gtk::Button>("+ Add preset");
+    add->add_css_class("flat");
+    add->set_halign(Gtk::Align::START);
+    add->signal_clicked().connect([this, field_id, &host]() {
+        TemplateEdit::add_preset(m_draft, field_id, "");
+        build_presets_config(host, field_id);
+    });
+    host.append(*add);
 }
 
 void TemplateBuilderDialog::on_add_field() {

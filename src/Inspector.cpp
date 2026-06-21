@@ -66,6 +66,20 @@ Inspector::Inspector(DocumentModel &model, FolioPrefs &prefs)
   // template through the same handler (the form supplies no template itself).
   m_char_object_form.set_on_edit_template([this]() { open_template_builder_for_current(); });
   m_place_object_form.set_on_edit_template([this]() { open_template_builder_for_current(); });
+
+  // s37 — the relation picker's candidate source: every object of the target type,
+  // as {iid, display-name}. Resolved LIVE against the store on each call (the store
+  // is rebuilt before populate, and may re-project between renders) — never a held
+  // snapshot. Empty target_type ("any") yields all objects.
+  auto relation_provider = [this](const std::string& target_type) {
+    std::vector<Folio::FieldChoice> out;
+    const Folio::ObjectStore& store = m_model.object_store();
+    for (const Folio::Object* o : store.objects_of_type(target_type))
+      out.push_back({ o->iid, Folio::object_display_name(*o) });
+    return out;
+  };
+  m_char_object_form.set_relation_provider(relation_provider);
+  m_place_object_form.set_relation_provider(relation_provider);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

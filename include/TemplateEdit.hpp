@@ -157,6 +157,117 @@ inline bool set_field_config(Template& t, const std::string& field_id, json conf
     return true;
 }
 
+// ── Per-type CONFIG editing (s36) ────────────────────────────────────────────
+// The builder edits a field's `config` through these; FormPlan's accessors read
+// the SAME keys on the renderer side. THE CONFIG-KEY CONTRACT (round-trips to
+// disk verbatim via ObjectIO, so the shape is load-bearing — both halves agree
+// here, and a key rename is a migration):
+//
+//   number / slider   { "min": num, "max": num, "step": num }
+//   dropdown / multiselect  { "options": [ { "id": str, "label": str }, … ] }
+//   list              { "presets": [ str, … ] }                  (quick-add seeds)
+//   relation          { "target_type": str, "multi": bool }      (edited at step 4)
+//
+// An OPTION id is a stable machine key minted from its label (deduped within the
+// field's options), exactly like a FIELD id — renaming a choice's label never
+// moves a stored value that points at it. Helpers are tolerant of a missing /
+// wrong-typed config (they (re)create the object/array as needed) and pure, so
+// the sandbox test can prove the shape before any GTK is cut.
+
+inline FieldSchema* find_field_mut(Template& t, const std::string& field_id) {
+    int i = field_index(t, field_id);
+    return (i < 0) ? nullptr : &t.fields[static_cast<std::size_t>(i)];
+}
+
+// number / slider RANGE — writes all three keys in one settle.
+inline bool set_number_range(Template& t, const std::string& field_id,
+                             double min, double max, double step) {
+    FieldSchema* f = find_field_mut(t, field_id);
+    if (!f) return false;
+    if (!f->config.is_object()) f->config = json::object();
+    f->config["min"]  = min;
+    f->config["max"]  = max;
+    f->config["step"] = step;
+    return true;
+}
+
+// dropdown / multiselect OPTIONS. add_option mints + appends, returning the new
+// stable id; rename touches the label only (id stable); remove drops by id.
+inline std::string add_option(Template& t, const std::string& field_id,
+                              const std::string& label) {
+    FieldSchema* f = find_field_mut(t, field_id);
+    if (!f) return {};
+    if (!f->config.is_object()) f->config = json::object();
+    if (!f->config.contains("options") || !f->config["options"].is_array())
+        f->config["options"] = json::array();
+    json& opts = f->config["options"];
+    auto taken = [&](const std::string& id) {
+        for (const auto& o : opts)
+            if (o.is_object() && o.value("id", std::string{}) == id) return true;
+        return false;
+    };
+    std::string base = slugify(label.empty() ? std::string("option") : label);
+    std::string id = base;
+    for (int n = 2; taken(id); ++n) id = base + "_" + std::to_string(n);
+    opts.push_back(json{ { "id", id }, { "label", label } });
+    return id;
+}
+inline bool rename_option(Template& t, const std::string& field_id,
+                          const std::string& opt_id, const std::string& new_label) {
+    FieldSchema* f = find_field_mut(t, field_id);
+    if (!f || !f->config.is_object() || !f->config.contains("options")
+          || !f->config["options"].is_array()) return false;
+    for (auto& o : f->config["options"])
+        if (o.is_object() && o.value("id", std::string{}) == opt_id) {
+            o["label"] = new_label;
+            return true;
+        }
+    return false;
+}
+inline bool remove_option(Template& t, const std::string& field_id,
+                          const std::string& opt_id) {
+    FieldSchema* f = find_field_mut(t, field_id);
+    if (!f || !f->config.is_object() || !f->config.contains("options")
+          || !f->config["options"].is_array()) return false;
+    json& opts = f->config["options"];
+    for (std::size_t k = 0; k < opts.size(); ++k)
+        if (opts[k].is_object() && opts[k].value("id", std::string{}) == opt_id) {
+            opts.erase(opts.begin() + k);
+            return true;
+        }
+    return false;
+}
+
+// list PRESETS — bare strings. add appends, set replaces by index, remove drops.
+inline bool add_preset(Template& t, const std::string& field_id,
+                       const std::string& value) {
+    FieldSchema* f = find_field_mut(t, field_id);
+    if (!f) return false;
+    if (!f->config.is_object()) f->config = json::object();
+    if (!f->config.contains("presets") || !f->config["presets"].is_array())
+        f->config["presets"] = json::array();
+    f->config["presets"].push_back(value);
+    return true;
+}
+inline bool set_preset(Template& t, const std::string& field_id,
+                       std::size_t index, const std::string& value) {
+    FieldSchema* f = find_field_mut(t, field_id);
+    if (!f || !f->config.is_object() || !f->config.contains("presets")
+          || !f->config["presets"].is_array()
+          || index >= f->config["presets"].size()) return false;
+    f->config["presets"][index] = value;
+    return true;
+}
+inline bool remove_preset(Template& t, const std::string& field_id,
+                          std::size_t index) {
+    FieldSchema* f = find_field_mut(t, field_id);
+    if (!f || !f->config.is_object() || !f->config.contains("presets")
+          || !f->config["presets"].is_array()
+          || index >= f->config["presets"].size()) return false;
+    f->config["presets"].erase(f->config["presets"].begin() + index);
+    return true;
+}
+
 // Guarantee the floor buffer (§4): a trailing richtext "description" field.
 // Idempotent — only appends one if the template has no trailing buffer. Uses the
 // stable id "description" when free (matches the built-in floor + migration), so

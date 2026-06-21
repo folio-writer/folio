@@ -50,6 +50,14 @@ public:
     // The Inspector opens the template builder for the current object's template.
     using OnEditTemplate = std::function<void()>;
 
+    // s37 — the relation picker's candidate source. Given a relation field's
+    // config.target_type, return the pickable objects as {iid, display-name}. The
+    // Inspector supplies this closing over the model's ObjectStore, so the form
+    // stays decoupled from the store (same idiom as OnChange). An empty target_type
+    // means "any type" — every object is a candidate.
+    using RelationProvider =
+        std::function<std::vector<FieldChoice>(const std::string& target_type)>;
+
     ObjectForm();
 
     // Render `obj` through `tmpl`. editable=false (this slice) renders read-only;
@@ -61,6 +69,10 @@ public:
     // Wire the "Edit fields…" affordance (shown at the bottom when editable).
     void set_on_edit_template(OnEditTemplate cb) { m_on_edit_template = std::move(cb); }
 
+    // Wire the relation candidate source (s37). Set once; consulted while
+    // populating any relation field. Absent → relation rows render read-only.
+    void set_relation_provider(RelationProvider cb) { m_relation_provider = std::move(cb); }
+
     // Show an empty state (no object selected / no template resolved).
     void clear();
 
@@ -68,12 +80,24 @@ private:
     Gtk::Box   m_body;      // the rebuilt content column
     Gtk::Label m_heading;   // type_name heading
     OnEditTemplate m_on_edit_template;
+    RelationProvider m_relation_provider;   // s37 — candidate source for relations
 
     void clear_body();
     void append_compact_row(const FormRow& row);                 // label / value
     void append_full_width(const FormRow& row);                  // richtext / list block
     void append_editable_text(const FormRow& row, const OnChange& on_change);     // text/image entry
     void append_editable_richtext(const FormRow& row, const OnChange& on_change); // the buffer (s32)
+    // s36 — configured editable widgets, each wired to the live value-write path.
+    void append_editable_number(const FormRow& row, const OnChange& on_change);      // SpinButton(min/max/step)
+    void append_editable_slider(const FormRow& row, const OnChange& on_change);      // Scale(min/max/step)
+    void append_editable_toggle(const FormRow& row, const OnChange& on_change);      // Switch (.active)
+    void append_editable_dropdown(const FormRow& row, const OnChange& on_change);    // DropDown(config.options)
+    void append_editable_multiselect(const FormRow& row, const OnChange& on_change); // CheckButtons → [id]
+    // s37 — collection widgets: the relation picker (over store candidates) and the
+    // free-text list value editor (presets offered as quick-add).
+    void append_editable_relation_single(const FormRow& row, const OnChange& on_change); // DropDown(candidates)+none
+    void append_editable_relation_multi(const FormRow& row, const OnChange& on_change);  // CheckButtons(candidates)
+    void append_editable_list(const FormRow& row, const OnChange& on_change);            // [entry][x]+add card
     void append_edit_template_button(bool builtin);             // the §7 door (s33/s35)
 };
 

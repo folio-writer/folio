@@ -279,6 +279,18 @@ struct Object {
     }
 };
 
+// The object's human label — the floor `name` field (every template carries it;
+// migration maps the leaf title into it). Falls back to a parenthesised
+// placeholder when unnamed, so a relation picker never shows a blank row and a
+// freshly-created character still reads as something. Pure read over the value
+// map; the relation candidate list and any read-only edge summary resolve through
+// this so an iid always renders as a name, never a raw key. (s37)
+inline std::string object_display_name(const Object& o) {
+    json v = o.value_or("name", json(std::string{}));
+    if (v.is_string() && !v.get<std::string>().empty()) return v.get<std::string>();
+    return "(unnamed)";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Instantiate an Object against a Template: mint nothing here (caller owns the
 // iid), but seed every schema field with its default value so the form renderer

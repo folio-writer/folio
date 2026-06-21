@@ -21,6 +21,7 @@
 
 #include "Object.hpp"
 #include "TemplateEdit.hpp"
+#include "FormPlan.hpp"   // s36 — config accessors (config_options/presets/num)
 
 #include <gtkmm.h>
 #include <functional>
@@ -58,6 +59,17 @@ private:
     void append_field_row(const Folio::FieldSchema& f, bool is_buffer);
     void on_add_field();
     void on_save();
+
+    // s36 — per-type CONFIG sub-editors, hosted under each field row. Routed by
+    // type; number/slider edit {min,max,step}, dropdown/multiselect edit the
+    // {options} choice list, list edits {presets}. Each rebuilds only its own
+    // host box on add/remove (focus stays put); a RETYPE rebuilds the whole row
+    // list on idle so the sub-editor follows the new type.
+    void append_config_editor(Gtk::Box& host, const Folio::FieldSchema& f);
+    void build_number_config(Gtk::Box& host, const std::string& field_id);
+    void build_options_config(Gtk::Box& host, const std::string& field_id);
+    void build_presets_config(Gtk::Box& host, const std::string& field_id);
+    const Folio::FieldSchema* draft_field(const std::string& field_id) const;
 
     // FieldType <-> dropdown index over the pickable type list.
     static Gtk::DropDown* make_type_dropdown(Folio::FieldType current);

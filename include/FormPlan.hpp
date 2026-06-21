@@ -40,7 +40,7 @@ struct FormRow {
     json        config = json::object();
     json        value;                // current value (defaulted if absent)
     bool        full_width = false;   // richtext/list → own block; else label/row
-    bool        read_only  = false;   // relation is read-only THIS slice (no picker yet)
+    bool        read_only  = false;   // (relation became editable in s37 — picker lives in the form)
 };
 
 struct FormPlan {
@@ -74,7 +74,9 @@ inline FormPlan plan_form(const Template& t, const Object& o) {
         r.config     = f.config;
         r.value      = o.value_or(f.id, field_default_value(f));
         r.full_width = field_is_full_width(f.type);
-        r.read_only  = field_type_is_relation(f.type);   // picker is a later slice
+        // Relation is editable from s37 (the form renders a picker over the
+        // store's candidates); it carries no special read-only flag now.
+        r.read_only  = false;
         p.rows.push_back(std::move(r));
     }
     return p;
@@ -117,6 +119,94 @@ inline json coerce_field_value(const FieldSchema& f, const json& raw) {
 // field schema and the raw widget value; the object is updated in place.
 inline void apply_field(Object& o, const FieldSchema& f, const json& raw) {
     o.set_value(f.id, coerce_field_value(f, raw));
+}
+
+// ── Config accessors (s36) — the renderer's read side of the config-key ───────
+// contract that TemplateEdit's editors write (min/max/step, options, presets).
+// Tolerant of a missing/wrong-typed config (return the supplied fallback / an
+// empty list), so the renderer can route on them without re-checking shapes.
+struct FieldChoice { std::string id; std::string label; };
+
+inline double config_num(const json& c, const char* key, double fallback) {
+    if (c.is_object()) {
+        auto it = c.find(key);
+        if (it != c.end() && it->is_number()) return it->get<double>();
+    }
+    return fallback;
+}
+
+// dropdown / multiselect choices. {id,label} objects; a bare string is tolerated
+// (id == label). Options with an empty id are skipped (no stable key to store).
+inline std::vector<FieldChoice> config_options(const json& c) {
+    std::vector<FieldChoice> out;
+    if (c.is_object()) {
+        auto it = c.find("options");
+        if (it != c.end() && it->is_array()) {
+            for (const auto& o : *it) {
+                if (o.is_object()) {
+                    FieldChoice fc;
+                    fc.id    = o.value("id", std::string{});
+                    fc.label = o.value("label", fc.id);
+                    if (!fc.id.empty()) out.push_back(std::move(fc));
+                } else if (o.is_string()) {
+                    out.push_back({ o.get<std::string>(), o.get<std::string>() });
+                }
+            }
+        }
+    }
+    return out;
+}
+
+inline std::vector<std::string> config_presets(const json& c) {
+    std::vector<std::string> out;
+    if (c.is_object()) {
+        auto it = c.find("presets");
+        if (it != c.end() && it->is_array())
+            for (const auto& p : *it)
+                if (p.is_string()) out.push_back(p.get<std::string>());
+    }
+    return out;
+}
+
+// Resolve an option id to its label (falls back to the raw id if the option was
+// removed — orphan-and-keep at the option level, so a stored value still reads).
+inline std::string option_label_for(const json& config, const std::string& id) {
+    for (const auto& o : config_options(config))
+        if (o.id == id) return o.label;
+    return id;
+}
+
+// ── Relation resolution (s37) — iid(s) → human label(s) over a candidate set ──
+// The picker's candidates are FieldChoice{iid,label}; this turns a stored
+// relation value (a single iid string or an array of iids) into the display text
+// for the read-only summary and the picker's current-selection line. A target
+// whose object was deleted is not in the candidate set, so it falls back to its
+// raw iid (orphan-and-keep at the edge level — the edge still reads, repairs when
+// the object returns). Empty value → empty string (the renderer shows a
+// placeholder). Pure; tested alongside the candidate assembly.
+inline std::string relation_label_for(const std::vector<FieldChoice>& candidates,
+                                      const std::string& iid) {
+    if (iid.empty()) return {};
+    for (const auto& c : candidates)
+        if (c.id == iid) return c.label;
+    return iid;   // orphan: object gone, show the raw key rather than nothing
+}
+
+inline std::string relation_summary(const std::vector<FieldChoice>& candidates,
+                                    const json& value) {
+    if (value.is_string()) return relation_label_for(candidates, value.get<std::string>());
+    if (value.is_array()) {
+        std::string s;
+        for (const auto& e : value) {
+            if (!e.is_string()) continue;
+            std::string lbl = relation_label_for(candidates, e.get<std::string>());
+            if (lbl.empty()) continue;
+            if (!s.empty()) s += " · ";
+            s += lbl;
+        }
+        return s;
+    }
+    return {};
 }
 
 // ── Display string: a value → human text (read-only render + previews) ────────
@@ -162,6 +252,27 @@ inline std::string field_display_string(FieldType t, const json& v) {
             return v.is_string() ? v.get<std::string>() : std::string{};
     }
     return v.is_string() ? v.get<std::string>() : std::string{};
+}
+
+// Config-aware overload (s36): dropdown / multiselect resolve their stored id(s)
+// to the option LABEL(s) via config; every other type defers to the 2-arg form.
+// Used for the read-only render of a configured field so a dropdown shows
+// "Antagonist", not "antagonist" (and a removed option still shows its raw id).
+inline std::string field_display_string(FieldType t, const json& v, const json& config) {
+    if (t == FieldType::Dropdown)
+        return v.is_string() ? option_label_for(config, v.get<std::string>())
+                             : std::string{};
+    if (t == FieldType::MultiSelect) {
+        if (!v.is_array()) return {};
+        std::string s;
+        for (const auto& e : v) {
+            if (!e.is_string()) continue;
+            if (!s.empty()) s += " · ";
+            s += option_label_for(config, e.get<std::string>());
+        }
+        return s;
+    }
+    return field_display_string(t, v);
 }
 
 }  // namespace Folio
