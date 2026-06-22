@@ -64,6 +64,35 @@ struct ObjectStore {
     }
     bool has_template(const std::string& id) const { return find_template(id) != nullptr; }
 
+    // ── Category default (s44 §11) — which Template a new instance is born on ─────
+    // An EXPLICIT default is a non-built-in Template in `category` with is_default
+    // set (the author marked it). If none is marked, the built-in FLOOR for that
+    // category is the IMPLICIT default — so seed_builtins never has to assert the
+    // flag (it would re-stomp a user choice on every reseed). Returns the resolved
+    // template id, or "" for an unknown category. Pure.
+    std::string category_default_id(const std::string& category) const {
+        for (const auto& t : templates)
+            if (!t.builtin && t.category == category && t.is_default) return t.id;
+        // implicit fallback: the floor whose id == category ("character"/…)
+        if (find_template(category)) return category;
+        return {};
+    }
+
+    // Clear is_default on every Template in `category` EXCEPT keep_id — the
+    // commit-time invariant that keeps at most one explicit default per category.
+    // Built-ins never carry the flag, so they are unaffected. Pure; returns the
+    // number of templates whose flag was cleared.
+    int clear_category_defaults_except(const std::string& category,
+                                       const std::string& keep_id) {
+        int cleared = 0;
+        for (auto& t : templates)
+            if (t.category == category && t.id != keep_id && t.is_default) {
+                t.is_default = false;
+                ++cleared;
+            }
+        return cleared;
+    }
+
     Object* find_object(const std::string& iid) {
         for (auto& o : objects)
             if (o.iid == iid) return &o;

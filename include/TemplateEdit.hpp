@@ -310,6 +310,32 @@ inline bool remove_preset(Template& t, const std::string& field_id,
     return true;
 }
 
+// relation TARGET + CARDINALITY — { "target_type": str, "multi": bool } (the last
+// config-key family without a write helper; §s44 brick 1). target_type is a
+// Template id naming the type this relation points at ("" == any type); multi
+// toggles single-target (value: string iid) vs multi-target (value: array of
+// iids). Both tolerant of a missing/wrong-typed config; the two keys are
+// independent (writing one never disturbs the other). The renderer reads the SAME
+// keys — FieldSchema::relation_target_type / relation_multi, and FormPlan's
+// picker (s37) — so this is purely the AUTHORING half the builder was missing.
+// (Flipping multi does not migrate existing instance values; the renderer's
+// coercion reads either shape, and re-shaping a filled edge is a later concern.)
+inline bool set_relation_target_type(Template& t, const std::string& field_id,
+                                     const std::string& target_type) {
+    FieldSchema* f = find_field_mut(t, field_id);
+    if (!f) return false;
+    if (!f->config.is_object()) f->config = json::object();
+    f->config["target_type"] = target_type;
+    return true;
+}
+inline bool set_relation_multi(Template& t, const std::string& field_id, bool multi) {
+    FieldSchema* f = find_field_mut(t, field_id);
+    if (!f) return false;
+    if (!f->config.is_object()) f->config = json::object();
+    f->config["multi"] = multi;
+    return true;
+}
+
 // Guarantee the floor buffer (§4): a trailing richtext "description" field.
 // Idempotent — only appends one if the template has no trailing buffer. Uses the
 // stable id "description" when free (matches the built-in floor + migration), so

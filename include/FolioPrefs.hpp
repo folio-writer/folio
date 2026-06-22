@@ -174,6 +174,7 @@ public:
     // ── Editor geometry ───────────────────────────────────────────────────────
     int  typewriter_width_chars    = 72;     // chars before soft-wrap
     bool typewriter_mode           = false;  // keep cursor centred vertically
+    double typewriter_position     = 0.42;   // s44 — rail fraction from top (0.30–0.55)
     bool focus_mode_dim            = true;   // dim non-active paragraph in focus
     int  editor_page_width_pct     = 65;     // page width as % of editor window (15–100)
     int  editor_page_margin_px     = 64;     // legacy — kept for migration
@@ -188,6 +189,14 @@ public:
     int         focus_font_size    = 0;      // font size in focus (0 = use editor size)
     double      focus_line_spacing = 0.0;   // line spacing in focus (0 = use editor spacing)
     std::string focus_text_color   = "";     // text color override in focus ("" = none)
+    // s45 — focus backdrop (global pref, external path; projects link, never embed —
+    // a gather/archive step is the future packager). dim = darkness of the scrim over
+    // the whole photo (0=none); panel_opacity = alpha of the text-column backing card
+    // (1=solid card, photo only in the margins; ~0.6–0.85 = frosted, photo as atmosphere).
+    std::string focus_background_path = "";   // external image path ("" = no backdrop)
+    double      focus_background_dim   = 0.35; // 0.0–0.9 scrim darkness over the photo
+    double      focus_panel_opacity    = 0.78; // 0.0–1.0 text-column backing alpha
+    std::string focus_panel_color      = "#1e1e2e"; // s45 — card fill colour (hex)
     int  editor_zoom_pct           = 100;    // zoom level (50–300%)
     bool editor_header_visible     = true;   // show title/path header in editor
 

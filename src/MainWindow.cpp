@@ -1101,10 +1101,6 @@ void MainWindow::wire_callbacks() {
   // Editor form floor-field edit (title/image/…) → same chrome refresh path.
   m_editor->set_meta_changed_callback(
       [this](BinderNode *node) { on_meta_changed(node); });
-  // Editor form's "Edit fields…" door → the Inspector-owned template builder for
-  // the current object's template.
-  m_editor->set_edit_template_callback(
-      [this]() { if (m_inspector) m_inspector->open_template_builder_for_current(); });
   // Builder saved a schema change → the Editor re-renders its form.
   m_inspector->set_object_form_dirty_callback(
       [this]() { if (m_editor) m_editor->refresh_object_form(); });

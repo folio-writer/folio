@@ -39,12 +39,20 @@ public:
 
     void set_apply_callback(ApplyCallback cb) { m_on_apply = std::move(cb); }
 
+    // s44 — the type registry, as {id=template id, label=type_name}, for the
+    // relation field's "Points to" picker. Mirrors ObjectForm::set_relation_
+    // provider: the builder holds no store, so the opener (Inspector) supplies the
+    // candidate types live. Empty/absent provider => only "(any type)" is offered.
+    using TypeProvider = std::function<std::vector<Folio::FieldChoice>()>;
+    void set_type_provider(TypeProvider cb) { m_type_provider = std::move(cb); }
+
     // Load `tmpl` as the editable draft and (re)build the rows. Safe to call
     // repeatedly on the one owned instance (persistent-window rule).
     void open_for(const Folio::Template& tmpl);
 
 private:
     ApplyCallback   m_on_apply;
+    TypeProvider    m_type_provider;  // s44 — relation "Points to" candidate types
     Folio::Template m_draft;          // the local copy being edited
     std::string     m_drag_field_id;  // s43 — id of the row currently being dragged
 
@@ -52,6 +60,7 @@ private:
     Gtk::Box            m_root{Gtk::Orientation::VERTICAL, 0};
     Gtk::Entry          m_type_name_entry;
     Gtk::DropDown*      m_category_dd = nullptr;   // s39 — character/place/reference
+    Gtk::Switch*        m_default_sw  = nullptr;   // s44 — default-for-category
     Gtk::ScrolledWindow m_scroll;
     Gtk::Box            m_field_list{Gtk::Orientation::VERTICAL, 0};
     Gtk::Label          m_error_label;
@@ -80,6 +89,7 @@ private:
     void build_number_config(Gtk::Box& host, const std::string& field_id);
     void build_options_config(Gtk::Box& host, const std::string& field_id);
     void build_presets_config(Gtk::Box& host, const std::string& field_id);
+    void build_relation_config(Gtk::Box& host, const std::string& field_id);  // s44
     const Folio::FieldSchema* draft_field(const std::string& field_id) const;
 
     // FieldType <-> dropdown index over the pickable type list.

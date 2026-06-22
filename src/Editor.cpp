@@ -559,6 +559,30 @@ void Editor::load_node(BinderNode *node) {
           LOG_DEBUG("load_node timeout: no saved scroll, leaving at {:.1f}",
                     vadj_after_mode);
         }
+
+        // s44 — Consume GTK's first-focus insert-mark reset HERE, during load,
+        // where no click is in flight to extend it into a selection. The user's
+        // first click then lands in an already-focused view: no reset, no
+        // spurious "select to end" glob. Re-assert the caret on a short timeout
+        // so it lands after GTK's focus-in reset whether that fires sync or async.
+        m_text_view.grab_focus();
+        Glib::signal_timeout().connect_once(
+            [this, saved_cursor, saved_scroll]() {
+              if (!m_buffer) return;
+              int n = m_buffer->get_char_count();
+              int o = (saved_cursor >= 0 && saved_cursor <= n) ? saved_cursor : 0;
+              auto it = m_buffer->get_iter_at_offset(o);
+              m_loading = true;
+              m_buffer->select_range(it, it);   // clear any focus-reset selection
+              m_loading = false;
+              if (saved_scroll > 0.0) {
+                if (auto v = m_write_scroll.get_vadjustment()) {
+                  double upper = v->get_upper() - v->get_page_size();
+                  v->set_value(std::min(saved_scroll, std::max(0.0, upper)));
+                }
+              }
+            },
+            50);
       },
       100);
 
@@ -615,6 +639,18 @@ void Editor::populate_object_form() {
       [this, iid](const std::string& field_id, const Folio::json& raw) {
         if (m_loading || !m_current_node || m_current_node->iid != iid)
           return;
+        // s44 — reserved preview-state key (per-instance image height): write
+        // straight to the store object's values. It round-trips via ObjectIO and
+        // survives the merge-preserving reconcile; it is not a schema field, so it
+        // has no leaf home and must not go through floor_field_to_leaf.
+        if (field_id.rfind(Folio::kImagePreviewKeyPrefix, 0) == 0) {
+          Folio::ObjectStore& st = m_model.object_store();
+          if (Folio::Object* mo = st.find_object(iid)) {
+            mo->values[field_id] = raw;
+            m_model.mark_modified();
+          }
+          return;
+        }
         const std::string s = raw.is_string() ? raw.get<std::string>()
                                               : std::string{};
         switch (Folio::ObjectIO::floor_field_to_leaf(field_id)) {
@@ -878,6 +914,36 @@ void Editor::set_view_mode(ViewMode mode) {
   }
 }
 
+// s44 — the typewriter rail fraction (0 = top, 0.5 = centre), clamped to a sane
+// band so the caret can never be pinned to the very top/bottom (which would defeat
+// the platen feel). Set by the floating alt-click slider, persisted in prefs.
+double Editor::typewriter_pos() const {
+  double p = m_prefs.typewriter_position;
+  if (p < 0.15) p = 0.15;
+  if (p > 0.85) p = 0.85;
+  return p;
+}
+
+// s44 — alt-click the typewriter button floats a vertical slider at the editor's
+// right edge to set the rail fraction by eye. Toggles visibility; on dismiss the
+// value persists. The live value updates prefs + re-rails immediately (only while
+// typewriter mode is actually engaged, so pre-setting it while off doesn't jump
+// the view).
+void Editor::toggle_typewriter_slider() {
+  // s44 — the rail slider only exists while typewriter mode is live. Alt-click does
+  // NOTHING in normal mode (and never toggles the button — the gesture claims the
+  // event so the mode state is untouched). Show/hide only when the rail is on.
+  if (!m_typewriter_mode || m_in_focus) {
+    if (m_typewriter_pos_slider.get_visible())
+      m_typewriter_pos_slider.set_visible(false);
+    return;
+  }
+  bool show = !m_typewriter_pos_slider.get_visible();
+  if (show) m_typewriter_pos_slider.set_value(typewriter_pos());
+  m_typewriter_pos_slider.set_visible(show);
+  if (!show) { try { m_prefs.save(); } catch (...) {} }   // persist on dismiss
+}
+
 void Editor::scroll_to_cursor_center() {
   auto vadj = m_write_scroll.get_vadjustment();
   if (!vadj)
@@ -924,7 +990,7 @@ void Editor::scroll_to_cursor_center() {
   double cursor_abs_y = tv_abs_y + (double)m_text_view.get_top_margin() +
                         (double)buf_rect.get_y() + buf_rect.get_height() / 2.0;
 
-  double target = cursor_abs_y - viewport_h / 2.0;
+  double target = cursor_abs_y - viewport_h * typewriter_pos();
 
   double lo = vadj->get_lower();
   double hi = vadj->get_upper() - viewport_h;

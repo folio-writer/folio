@@ -381,8 +381,31 @@ void Editor::build_toolbar() {
   m_btn_typewriter.set_tooltip_text(
       "Typewriter mode — keeps cursor vertically centred");
   m_btn_typewriter.set_active(m_typewriter_mode);
+  if (m_typewriter_mode) m_btn_typewriter.add_css_class("active");  // s44 — :checked unreliable
   m_btn_typewriter.signal_toggled().connect([this]() {
+    if (m_tw_toggle_guard) return;   // our own revert below — ignore
+    if (m_tw_alt_press) {
+      // s44 — Alt+click must NOT change the mode; it only shows the rail slider.
+      // GTK4 toggles the button regardless of a claiming gesture, so revert the
+      // flip (state untouched) and treat the click as "show adjustment".
+      m_tw_alt_press = false;
+      m_tw_toggle_guard = true;
+      m_btn_typewriter.set_active(m_typewriter_mode);   // undo the visual flip
+      m_tw_toggle_guard = false;
+      toggle_typewriter_slider();
+      return;
+    }
     m_typewriter_mode = m_btn_typewriter.get_active();
+    // s44 — drive the on-look from code: this GTK build doesn't reliably apply the
+    // :checked CSS state to toggle buttons (see css.hpp).
+    if (m_typewriter_mode) m_btn_typewriter.add_css_class("active");
+    else                   m_btn_typewriter.remove_css_class("active");
+    // The rail slider only belongs while the rail is live — hide it (and persist)
+    // when typewriter mode turns off.
+    if (!m_typewriter_mode && m_typewriter_pos_slider.get_visible()) {
+      m_typewriter_pos_slider.set_visible(false);
+      try { m_prefs.save(); } catch (...) {}
+    }
     if (m_in_focus) {
       m_focus_typewriter = m_typewriter_mode;
       m_prefs.focus_typewriter_mode = m_focus_typewriter;
@@ -400,9 +423,25 @@ void Editor::build_toolbar() {
     } catch (...) {
     }
     if (m_typewriter_mode && !m_in_focus)
-      scroll_to_cursor_center();
+      queue_scroll_to_center();   // s44 — defer past the margin relayout
   });
   m_toolbar.append(m_btn_typewriter);
+
+  // s44 — record whether Alt was held at press time so the toggled handler can
+  // tell an Alt+click (show slider, keep state) from a plain click (toggle mode).
+  // No claim — GTK toggles the button regardless; the handler reverts when Alt.
+  {
+    auto tw_alt = Gtk::GestureClick::create();
+    tw_alt->set_button(GDK_BUTTON_PRIMARY);
+    tw_alt->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
+    tw_alt->signal_pressed().connect(
+        [this, tw_alt](int, double, double) {
+          m_tw_alt_press =
+              (tw_alt->get_current_event_state() & Gdk::ModifierType::ALT_MASK)
+              == Gdk::ModifierType::ALT_MASK;
+        });
+    m_btn_typewriter.add_controller(tw_alt);
+  }
 
   // ── Line numbers button ───────────────────────────────────────────────────
   m_btn_line_numbers.set_icon_name("folio-line-numbers-symbolic");
@@ -1278,6 +1317,23 @@ void Editor::build_editor_area() {
   m_write_scroll.set_vexpand(true);
   m_write_scroll.set_hexpand(true);
 
+  // s44 — typewriter rail: the runway margins are half the VIEWPORT, so they must
+  // be recomputed when the viewport resizes or the rail drifts off-centre. The
+  // vadjustment's "changed" fires when page-size (viewport) or upper (content)
+  // changes; guard on the page-size so setting margins here can't loop.
+  if (auto vadj = m_write_scroll.get_vadjustment()) {
+    vadj->signal_changed().connect([this]() {
+      if (!m_typewriter_mode || m_in_focus) return;
+      auto v = m_write_scroll.get_vadjustment();
+      if (!v) return;
+      const int ph = static_cast<int>(v->get_page_size());
+      if (ph == m_typewriter_page_h) return;     // viewport unchanged — no work
+      m_typewriter_page_h = ph;
+      apply_typewriter_padding();
+      queue_scroll_to_center();
+    });
+  }
+
   m_paper_card.add_css_class("folio-paper");
   m_paper_card.set_margin_top(28);
   m_paper_card.set_margin_bottom(28);
@@ -1756,15 +1812,9 @@ void Editor::build_editor_area() {
       m_first_node_click = false;
       if (auto vadj = m_write_scroll.get_vadjustment()) {
         double saved = vadj->get_value();
-        LOG_DEBUG(
-            "first-click: snapshotting scroll={:.1f} before GTK focus-scroll",
-            saved);
         Glib::signal_idle().connect_once([this, saved]() {
-          if (auto v = m_write_scroll.get_vadjustment()) {
-            LOG_DEBUG("first-click idle: restoring scroll={:.1f} (was {:.1f})",
-                      saved, v->get_value());
+          if (auto v = m_write_scroll.get_vadjustment())
             v->set_value(saved);
-          }
         });
       }
     }
@@ -2201,6 +2251,32 @@ void Editor::build_editor_area() {
   m_toast_revealer.set_can_target(false); // don't block mouse events
   m_scroll_overlay.add_overlay(m_toast_revealer);
 
+  // ── Typewriter rail slider (s44) — alt-click the typewriter button floats this
+  // vertical slider at the editor's right edge to set the rail position by eye.
+  // Inverted so dragging UP raises the caret (smaller fraction). Hidden until
+  // summoned; live value re-rails immediately while typewriter mode is engaged.
+  m_typewriter_pos_slider.set_orientation(Gtk::Orientation::VERTICAL);
+  m_typewriter_pos_slider.set_range(0.15, 0.85);
+  m_typewriter_pos_slider.set_increments(0.01, 0.05);
+  m_typewriter_pos_slider.set_inverted(true);
+  m_typewriter_pos_slider.set_draw_value(false);
+  m_typewriter_pos_slider.set_value(typewriter_pos());
+  m_typewriter_pos_slider.set_size_request(-1, 200);
+  m_typewriter_pos_slider.set_halign(Gtk::Align::END);
+  m_typewriter_pos_slider.set_valign(Gtk::Align::CENTER);
+  m_typewriter_pos_slider.set_margin_end(10);
+  m_typewriter_pos_slider.add_css_class("typewriter-pos-slider");
+  m_typewriter_pos_slider.set_tooltip_text("Typewriter rail position");
+  m_typewriter_pos_slider.set_visible(false);
+  m_typewriter_pos_slider.signal_value_changed().connect([this]() {
+    m_prefs.typewriter_position = m_typewriter_pos_slider.get_value();
+    if (m_typewriter_mode && !m_in_focus) {
+      apply_typewriter_padding();
+      queue_scroll_to_center();
+    }
+  });
+  m_scroll_overlay.add_overlay(m_typewriter_pos_slider);
+
   // ── Invisible characters — drawn via snapshot on the TextView itself
   // ──────── Using g_signal_connect_after("snapshot") paints in the text_view's
   // own coordinate space — no translation needed, no overlay positioning
@@ -2390,9 +2466,29 @@ void Editor::build_editor_area() {
       out.push_back({ o->iid, Folio::object_display_name(*o) });
     return out;
   });
-  // "Edit fields…" door → MainWindow routes to the Inspector-owned builder.
-  m_object_form.set_on_edit_template([this]() {
-    if (m_on_edit_template) m_on_edit_template();
+  // Backlink source (s44 — the relief): incoming_edges resolved to display rows,
+  // one per (source object, relation field) pair pointing at `iid`. Computed live
+  // against the store on each populate; never a stored reverse index.
+  m_object_form.set_backlink_provider([this](const std::string& iid) {
+    std::vector<Folio::ObjectForm::Backlink> out;
+    const Folio::ObjectStore& store = m_model.object_store();
+    for (const Folio::Object* src : store.incoming_edges(iid)) {
+      const Folio::Template* st = store.find_template(src->type);
+      if (!st) continue;
+      const std::string label = Folio::object_display_name(*src);
+      for (const auto& f : st->fields) {
+        if (!Folio::field_type_is_relation(f.type)) continue;
+        if (!src->has_value(f.id)) continue;
+        const Folio::json& v = src->values.at(f.id);
+        bool hit = false;
+        if (v.is_string()) hit = (v.get<std::string>() == iid);
+        else if (v.is_array())
+          for (const auto& e : v)
+            if (e.is_string() && e.get<std::string>() == iid) { hit = true; break; }
+        if (hit) out.push_back({ src->iid, label, f.label });
+      }
+    }
+    return out;
   });
 
   m_form_scroll.set_policy(Gtk::PolicyType::AUTOMATIC, Gtk::PolicyType::AUTOMATIC);

@@ -2065,22 +2065,25 @@ void Editor::exit_focus_mode() {
 // reach vertical centre at document start/end.  Called when typewriter
 // mode is toggled and when entering/exiting focus mode.
 void Editor::apply_typewriter_padding() {
-  if (m_typewriter_mode || m_in_focus) {
-    auto vadj = m_write_scroll.get_vadjustment();
-    int page_h = vadj ? std::max(400, (int)(vadj->get_page_size())) : 400;
+  auto vadj = m_write_scroll.get_vadjustment();
+  int page_h = vadj ? std::max(400, (int)(vadj->get_page_size())) : 400;
+  if (m_in_focus) {
+    // Focus mode — unchanged feel: half-viewport bottom runway only.
     m_text_view.set_top_margin(4);
-    // Focus mode uses half viewport; typewriter mode needs full viewport
-    // because the surrounding card margins (paper_inner 52 + paper_card 28)
-    // eat into the usable scroll range.
-    m_text_view.set_bottom_margin(m_in_focus ? page_h / 2 : page_h);
-    m_paper_inner.set_margin_top(52);
-    m_paper_inner.set_margin_bottom(52);
+    m_text_view.set_bottom_margin(page_h / 2);
+  } else if (m_typewriter_mode) {
+    // s44 — the platen rail: runway sized to the rail fraction so the caret line
+    // can reach exactly that position at the FIRST line (top runway = pos·vp) and
+    // the LAST line (bottom runway = (1−pos)·vp). Buffer untouched — view-only.
+    double pos = typewriter_pos();
+    m_text_view.set_top_margin(static_cast<int>(page_h * pos));
+    m_text_view.set_bottom_margin(static_cast<int>(page_h * (1.0 - pos)));
   } else {
     m_text_view.set_top_margin(4);
     m_text_view.set_bottom_margin(0);
-    m_paper_inner.set_margin_top(52);
-    m_paper_inner.set_margin_bottom(52);
   }
+  m_paper_inner.set_margin_top(52);
+  m_paper_inner.set_margin_bottom(52);
 }
 
 }  // namespace Folio

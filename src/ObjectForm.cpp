@@ -233,6 +233,175 @@ void ObjectForm::append_editable_text(const Folio::FormRow& row, const OnChange&
     m_body.append(*lb);
 }
 
+// Editable Image (s44) — a bounded preview plus a "Set image…" / "Clear" control,
+// replacing the bare path entry. The value stays a filesystem path (string), so it
+// round-trips through the same coercion and the read-only renderer is unchanged.
+// The picker mirrors the avatar strip's FileChooserNative idiom; the preview loads
+// a size-bounded pixbuf. (Copying the chosen file into the bundle's assets/ for
+// portability — the link-death guard, scrapbook §3 — is the follow; this stores
+// the external path.)
+void ObjectForm::append_editable_image(const Folio::FormRow& row, const OnChange& on_change) {
+    const std::string field_id = row.field_id;
+    const std::string cur_path = field_display_string(row.type, row.value);
+
+    auto* lb  = Gtk::make_managed<Gtk::ListBox>();
+    lb->set_selection_mode(Gtk::SelectionMode::NONE);
+    lb->add_css_class("pref-listbox");
+    auto* lbr = Gtk::make_managed<Gtk::ListBoxRow>();
+
+    auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+    col->set_margin_start(12);
+    col->set_margin_end(12);
+    col->set_margin_top(6);
+    col->set_margin_bottom(6);
+
+    auto* label = Gtk::make_managed<Gtk::Label>(row.label);
+    label->add_css_class("pref-row-label");
+    label->set_halign(Gtk::Align::START);
+    col->append(*label);
+
+    // Preview — a Picture that fills the panel width and preserves aspect, plus a
+    // "sizer" slider to scale its height (so a small image can be made large enough
+    // to read). Hidden when there is no path; an unloadable path shows an inline
+    // notice instead of vanishing.
+    auto* pic = Gtk::make_managed<Gtk::Picture>();
+    pic->set_hexpand(true);
+    pic->set_halign(Gtk::Align::FILL);     // fill width so the image centers in it
+    pic->set_valign(Gtk::Align::FILL);
+    pic->set_can_shrink(true);
+    pic->set_content_fit(Gtk::ContentFit::SCALE_DOWN);  // never upscale → never fuzzy
+    pic->add_css_class("object-image-preview");
+    col->append(*pic);
+
+    // Sizer: drag to scale the preview's height (48–720px). Seeded from the
+    // remembered per-instance height (object values, reserved key) and persisted
+    // back through on_change so it is restored next time this object opens. Only
+    // shown when an image is loaded.
+    const std::string size_key = image_preview_key(field_id);
+    double init_h = 300.0;
+    if (m_obj_values.is_object() && m_obj_values.contains(size_key)
+        && m_obj_values[size_key].is_number())
+        init_h = m_obj_values[size_key].get<double>();
+    if (init_h < 48.0)  init_h = 48.0;
+    if (init_h > 720.0) init_h = 720.0;
+    auto size_adj = Gtk::Adjustment::create(init_h, 48.0, 720.0, 10.0, 60.0, 0.0);
+    auto* sizer = Gtk::make_managed<Gtk::Scale>(size_adj, Gtk::Orientation::HORIZONTAL);
+    sizer->set_draw_value(false);
+    sizer->set_hexpand(true);
+    sizer->set_tooltip_text("Scale the preview");
+    col->append(*sizer);
+
+    auto* err = Gtk::make_managed<Gtk::Label>("Image could not be loaded.");
+    err->add_css_class("dim-label");
+    err->set_halign(Gtk::Align::START);
+    err->set_visible(false);
+    col->append(*err);
+
+    // The full-res source is loaded ONCE and cached. The sizer sets the WIDGET
+    // height (H); the image is scaled DOWN to fit that height when larger, shown at
+    // natural size when smaller (never upscaled → never fuzzy), and centered in the
+    // widget. We pre-scale to ≤H so the source paintable's natural height never
+    // exceeds H — that lets size_request(-1, H) pin the widget to exactly H with
+    // the (possibly smaller) image centered inside it.
+    auto orig = std::make_shared<Glib::RefPtr<Gdk::Pixbuf>>();
+
+    auto render_at = [pic, orig](int H) {
+        if (!*orig) return;
+        const int oh = (*orig)->get_height();
+        const int ow = (*orig)->get_width();
+        if (oh <= 0 || ow <= 0) return;
+        if (H < 1) H = 1;
+        const int th = std::min(oh, H);                 // downscale only — never up
+        const int tw = std::max(1, static_cast<int>(std::lround(
+                          static_cast<double>(ow) * th / oh)));
+        Glib::RefPtr<Gdk::Pixbuf> shown =
+            (th == oh) ? *orig
+                       : (*orig)->scale_simple(tw, th, Gdk::InterpType::BILINEAR);
+        pic->set_paintable(Gdk::Texture::create_for_pixbuf(shown));
+        pic->set_size_request(-1, H);                   // the WIDGET height = slider
+    };
+    auto apply_height = [size_adj, render_at]() {
+        render_at(static_cast<int>(size_adj->get_value()));
+    };
+    // Slider drag: re-render at the new height AND remember it on the object so the
+    // next open restores this size. The initial seed (above) and load_preview use
+    // render_at directly, so they never write back.
+    sizer->signal_value_changed().connect(
+        [size_adj, render_at, on_change, size_key]() {
+            const int H = static_cast<int>(size_adj->get_value());
+            render_at(H);
+            if (on_change) on_change(size_key, json(static_cast<double>(H)));
+        });
+
+    auto load_preview = [pic, sizer, err, orig, apply_height](const std::string& path) {
+        if (path.empty()) {
+            *orig = Glib::RefPtr<Gdk::Pixbuf>{};
+            pic->set_visible(false); sizer->set_visible(false); err->set_visible(false);
+            return;
+        }
+        try {
+            *orig = Gdk::Pixbuf::create_from_file(path);
+            pic->set_visible(true); sizer->set_visible(true); err->set_visible(false);
+            apply_height();
+        } catch (...) {
+            *orig = Glib::RefPtr<Gdk::Pixbuf>{};
+            pic->set_paintable(Glib::RefPtr<Gdk::Paintable>{});
+            pic->set_visible(false); sizer->set_visible(false); err->set_visible(true);
+        }
+    };
+    load_preview(cur_path);
+
+    auto* btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    auto* set_btn = Gtk::make_managed<Gtk::Button>(
+        cur_path.empty() ? "Set image…" : "Change image…");
+    set_btn->add_css_class("flat");
+    auto* clear_btn = Gtk::make_managed<Gtk::Button>("Clear");
+    clear_btn->add_css_class("flat");
+    clear_btn->set_visible(!cur_path.empty());
+    btn_row->append(*set_btn);
+    btn_row->append(*clear_btn);
+    col->append(*btn_row);
+
+    set_btn->signal_clicked().connect(
+        [this, field_id, on_change, load_preview, set_btn, clear_btn]() {
+            auto* win = dynamic_cast<Gtk::Window*>(get_root());
+            if (!win) return;
+            auto dlg = Gtk::FileChooserNative::create(
+                "Choose Image", *win, Gtk::FileChooser::Action::OPEN, "Open", "Cancel");
+            auto filter = Gtk::FileFilter::create();
+            filter->set_name("Images (PNG, JPG, WebP)");
+            filter->add_mime_type("image/png");
+            filter->add_mime_type("image/jpeg");
+            filter->add_mime_type("image/webp");
+            dlg->add_filter(filter);
+            dlg->signal_response().connect(
+                [dlg, field_id, on_change, load_preview, set_btn, clear_btn](int response) {
+                    if (response != Gtk::ResponseType::ACCEPT) return;
+                    auto file = dlg->get_file();
+                    if (!file) return;
+                    const std::string path = file->get_path();
+                    if (path.empty()) return;
+                    if (on_change) on_change(field_id, json(path));
+                    load_preview(path);
+                    set_btn->set_label("Change image…");
+                    clear_btn->set_visible(true);
+                });
+            dlg->show();
+        });
+
+    clear_btn->signal_clicked().connect(
+        [field_id, on_change, load_preview, set_btn, clear_btn]() {
+            if (on_change) on_change(field_id, json(std::string{}));
+            load_preview("");
+            set_btn->set_label("Set image…");
+            clear_btn->set_visible(false);
+        });
+
+    lbr->set_child(*col);
+    lb->append(*lbr);
+    m_body.append(*lb);
+}
+
 // Editable richtext path (s32) — the dissertation buffer made writable. Same
 // framed TextView as the read-only block, but editable, with the buffer's
 // changed signal wired through on_change. Plain text this slice (the value is a
@@ -633,27 +802,67 @@ void ObjectForm::append_editable_list(const Folio::FormRow& row, const OnChange&
 // built-in invites a CLONE ("Customize fields…"), an already-cloned template
 // edits in place ("Edit fields…"). Either way the click runs the same handler;
 // the Inspector decides whether to clone first.
-void ObjectForm::append_edit_template_button(bool builtin) {
-    auto* btn = Gtk::make_managed<Gtk::Button>(
-        builtin ? "Customize fields…" : "Edit fields…");
-    btn->set_tooltip_text(builtin
-        ? "Make an editable copy of this form and tailor its fields"
-        : "Add, rename, reorder, or remove this form's fields");
-    btn->add_css_class("flat");
-    btn->set_halign(Gtk::Align::START);
-    btn->set_margin_start(12);
-    btn->set_margin_top(4);
-    btn->set_margin_bottom(3);
-    btn->signal_clicked().connect([this]() {
-        if (m_on_edit_template) m_on_edit_template();
-    });
-    m_body.append(*btn);
+// s44 — the relief (DESIGN_scrapbook §4): a read-only "Referenced by" section that
+// lists every object pointing AT this one, and through which field. The provider
+// computes incoming_edges live (node-is-truth, projection-not-stored), so the list
+// reflects the current graph on every populate. Hidden entirely when nothing points
+// here — the relief only appears where there is contact. Navigation is deferred:
+// rows are labels this slice, made activatable in a clean follow.
+void ObjectForm::append_backlinks(const std::string& iid) {
+    if (iid.empty() || !m_backlink_provider) return;
+    const std::vector<Backlink> links = m_backlink_provider(iid);
+    if (links.empty()) return;
+
+    auto* h = Gtk::make_managed<Gtk::Label>("Referenced by");
+    h->add_css_class("inspector-section-label");
+    h->set_halign(Gtk::Align::START);
+    h->set_margin_start(12);
+    h->set_margin_top(12);
+    h->set_margin_bottom(2);
+    m_body.append(*h);
+
+    auto* lb = Gtk::make_managed<Gtk::ListBox>();
+    lb->set_selection_mode(Gtk::SelectionMode::NONE);
+    lb->add_css_class("pref-listbox");
+    for (const auto& bl : links) {
+        auto* lbr = Gtk::make_managed<Gtk::ListBoxRow>();
+        auto* rb  = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+        rb->set_margin_start(12);
+        rb->set_margin_end(12);
+        rb->set_margin_top(3);
+        rb->set_margin_bottom(3);
+
+        auto* name = Gtk::make_managed<Gtk::Label>(
+            bl.source_label.empty() ? "(unnamed)" : bl.source_label);
+        name->add_css_class("pref-row-label");
+        name->set_hexpand(true);
+        name->set_halign(Gtk::Align::START);
+        name->set_ellipsize(Pango::EllipsizeMode::END);
+
+        auto* via = Gtk::make_managed<Gtk::Label>(
+            bl.via_label.empty() ? std::string{} : "via " + bl.via_label);
+        via->add_css_class("dim-label");
+        via->set_halign(Gtk::Align::END);
+        via->set_ellipsize(Pango::EllipsizeMode::END);
+        via->set_max_width_chars(24);
+
+        rb->append(*name);
+        rb->append(*via);
+        lbr->set_child(*rb);
+        lb->append(*lbr);
+    }
+    m_body.append(*lb);
 }
+
+// s44 §11 — the instance-side "Edit fields…"/"Customize fields…" door is retired.
+// Schema is edited only on the Template node (no-mutate); append_edit_template_button
+// and its clone-to-customize path are gone.
 
 void ObjectForm::populate(const Folio::Template& tmpl, const Folio::Object& obj,
                           bool editable, OnChange on_change) {
     clear_body();
     m_heading.set_text(tmpl.type_name.empty() ? "Object" : tmpl.type_name);
+    m_obj_values = obj.values;   // s44 — for per-instance preview state (image height)
 
     Folio::FormPlan plan = plan_form(tmpl, obj);
     for (const auto& row : plan.rows) {
@@ -711,8 +920,10 @@ void ObjectForm::populate(const Folio::Template& tmpl, const Folio::Object& obj,
         switch (row.type) {
             case FieldType::Text:
             case FieldType::Date:
+                append_editable_text(row, on_change);          // wired entry: name / date
+                break;
             case FieldType::Image:
-                append_editable_text(row, on_change);          // wired entry: name / date / image path
+                append_editable_image(row, on_change);         // s44 — picker + preview
                 break;
             case FieldType::Number:
                 append_editable_number(row, on_change);        // SpinButton (s36)
@@ -734,8 +945,10 @@ void ObjectForm::populate(const Folio::Template& tmpl, const Folio::Object& obj,
                 break;
         }
     }
-    if (editable && m_on_edit_template)
-        append_edit_template_button(tmpl.builtin);             // the §7 door (s33/s35)
+    append_backlinks(obj.iid);                                 // s44 — the relief
+    // s44 §11 — NO schema door on the instance. Editing fields lives only on the
+    // Template node now (no-mutate); a Character is born on a Template and reshaped
+    // only by editing that Template. The clone-to-customize path is retired.
 }
 
 }  // namespace Folio

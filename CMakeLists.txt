@@ -152,6 +152,9 @@ set(SOURCES
     src/BackupManager.cpp
     src/MainWindow.cpp
     src/FocusWindow.cpp           # s21 — distraction-free window on the shared editor buffer
+    src/color/Color.cpp           # s45 — color model (sRGB/OKLCH/hex), ported from Curvz
+    src/ColorPickerRecents.cpp    # s45 — recent-colour history (~/.config/folio)
+    src/ColorPicker.cpp           # s45 — OKLCH color picker widget, ported from Curvz
     src/Sidebar.cpp
     src/EditorTabBar.cpp          # was SceneTimeline.cpp
     src/Editor.cpp                # s13 — CORE TU (lifecycle + glue)

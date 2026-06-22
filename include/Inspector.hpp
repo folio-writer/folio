@@ -58,11 +58,6 @@ public:
     // the edited schema back to the node and re-projects the store.
     void open_template_builder_for_template_node(const std::string& node_iid);
 
-    // s41 — open the schema builder for the CURRENT object's template (the
-    // instance "Edit fields…" door). Public so MainWindow can route the Editor
-    // form's door here. On commit it fires the object-form dirty callback so the
-    // Editor (which now hosts the form) re-renders.
-    void open_template_builder_for_current();
     using ObjectFormDirtyCallback = std::function<void()>;
     void set_object_form_dirty_callback(ObjectFormDirtyCallback cb) {
       m_on_object_form_dirty = std::move(cb);
@@ -176,12 +171,12 @@ private:
 
     // s41 — the object form moved OUT of the Inspector into the Editor (the
     // inversion). The Inspector retreats to chrome: status / tagline / colour /
-    // snapshots / notes. The template builder it owns is reached from the Editor
-    // form's "Edit fields…" door via open_template_builder_for_current (public).
+    // snapshots / notes. s44 §11 — the instance schema door is retired; the
+    // template builder it owns is reached from a Template node only.
 
     // s33 — the template builder (schema editor), owned once (persistent-window
-    // rule), opened from the object form's "Edit fields…" affordance for the
-    // current object's template. Commits on idle (s24 modal rule).
+    // rule), opened from a Template binder node (s44 §11 — no longer from an
+    // instance). Commits on idle (s24 modal rule).
     std::unique_ptr<TemplateBuilderDialog> m_template_builder;
 
     // Metadata tab disclosure — character

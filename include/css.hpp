@@ -366,6 +366,7 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
     }
     .fmt-btn:hover { background-color: @adw_overlay; color: @tx1; }
     .fmt-btn:checked, .fmt-btn.active { background-color: @accent_dim; color: @accent; }
+    .fmt-btn.active image { color: @accent; }   /* s44 — reach the symbolic icon mask */
     .fmt-btn-pilcrow { font-size: 19px; padding: 0px 4px; font-family: serif; }
     .fmt-btn-sp-help { font-size: 13px; font-weight: 700; padding: 0px 5px; }
     .typewriter-btn { font-size: 22px; padding: 4px 4px; }
@@ -401,6 +402,114 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
         border: none;
         box-shadow: 0 1px 4px @border_strong;
     }
+
+    /* s45 — focus typewriter rail slider (right-edge, alt-summoned) */
+    .focus-tw-slider trough {
+        min-width: 6px;
+        border-radius: 9999px;
+        background-color: alpha(@adw_overlay2, 0.85);
+    }
+    .focus-tw-slider highlight {
+        background-color: @accent;
+        border-radius: 9999px;
+    }
+    .focus-tw-slider slider {
+        min-width: 18px;
+        min-height: 18px;
+        background-color: @accent;
+        border-radius: 9999px;
+        border: none;
+        box-shadow: 0 1px 4px @border_strong;
+    }
+
+    /* s45 — focus backdrop layers. The dim scrim is solid black drawn at a widget
+       opacity = the Dim knob; the panel is the plain focus surface colour drawn at
+       a widget opacity = the Panel knob, so 1.0 reproduces today's surface exactly
+       and lower values let the photo through. */
+    #focus-backdrop-dim   { background-color: #000000; }
+    /* When a backdrop is live, the text surface goes transparent so the panel (and
+       photo in the margins) shows; with no backdrop the class is absent and the
+       surface is unchanged. */
+    #focus-window.backdrop #focus-scroll,
+    #focus-window.backdrop #focus-scroll > viewport,
+    #focus-window.backdrop #focus-view,
+    #focus-window.backdrop #focus-view text { background-color: transparent; }
+
+    /* s45 — left settings drawer */
+    .focus-drawer {
+        background-color: @adw_bg2;
+        border-right: 1px solid @border_subtle;
+        box-shadow: 6px 0 28px rgba(0,0,0,0.45);
+        padding: 0;
+    }
+    .focus-drawer-header {
+        padding: 14px 16px 12px 18px;
+        border-bottom: 1px solid @border_subtle;
+    }
+    .focus-drawer-title {
+        font-size: 14px; font-weight: 700; color: @tx1; letter-spacing: 0.01em;
+    }
+    .focus-drawer-close {
+        font-size: 18px; color: @tx3; min-width: 28px; padding: 0 6px;
+    }
+    .focus-drawer-close:hover { color: @tx1; }
+    .focus-drawer-body { padding: 6px 18px 18px 18px; }
+    .focus-section-header {
+        font-size: 10px; font-weight: 700; color: @tx3;
+        letter-spacing: 0.10em; text-transform: uppercase;
+        margin-top: 18px; margin-bottom: 4px;
+    }
+    .focus-setting-row { padding: 6px 0; }
+    .focus-setting-label { font-size: 12px; color: @tx2; }
+    .focus-setting-value { font-size: 12px; color: @tx3; font-feature-settings: "tnum"; }
+    .focus-drawer-action {
+        margin-top: 8px; padding: 7px 12px; border-radius: 8px;
+        background-color: @adw_surface; color: @tx2; font-size: 12px;
+    }
+    .focus-drawer-action:hover { background-color: @adw_overlay; color: @tx1; }
+    /* The always-visible pull tab on the left edge — quiet, low-contrast. */
+    .focus-drawer-tab {
+        background-color: alpha(@adw_surface, 0.72);
+        color: @tx3; font-size: 15px;
+        border: 1px solid @border_subtle; border-left: none;
+        border-radius: 0 10px 10px 0;
+        min-width: 22px; min-height: 56px; padding: 0;
+        box-shadow: 2px 0 8px rgba(0,0,0,0.30);
+    }
+    .focus-drawer-tab:hover { background-color: @adw_overlay; color: @tx1; }
+    /* Transparent click-away catcher; only present while the drawer is open. */
+    #focus-drawer-scrim { background-color: transparent; }
+
+    /* s45 — top-centre scene breadcrumb (the visible nav door) */
+    .focus-navbar {
+        background-color: alpha(@adw_surface, 0.82);
+        border: 1px solid @border_subtle;
+        border-radius: 9999px;
+        padding: 2px 4px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+    }
+    .focus-nav-arrow {
+        background: none; border: none; box-shadow: none;
+        color: @tx3; font-size: 15px; min-width: 26px; padding: 2px 6px;
+        border-radius: 9999px;
+    }
+    .focus-nav-arrow:hover { background-color: @adw_overlay; color: @tx1; }
+    .focus-nav-title {
+        background: none; border: none; box-shadow: none;
+        color: @tx2; font-size: 12px; font-weight: 600; padding: 2px 12px;
+        border-radius: 9999px;
+    }
+    .focus-nav-title:hover { background-color: @adw_overlay; color: @tx1; }
+
+    /* s45 — colour swatch buttons in the drawer (panel + text colour) */
+    .focus-color-mb { min-width: 0; min-height: 0; padding: 0; }
+    .focus-color-mb > button {
+        padding: 3px; background: none; border: 1px solid @border_subtle;
+        border-radius: 7px; box-shadow: none; min-height: 0;
+    }
+    .focus-color-mb > button:hover { background-color: @adw_overlay; }
+    .folio-color-picker { padding: 10px; }
+    .folio-color-picker-recents { margin-top: 8px; }
     
     /* ── Editor paper card ──────────────────────────────────────────────────── */
     .folio-paper {

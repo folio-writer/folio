@@ -1167,6 +1167,31 @@ const BinderNode* DocumentModel::find_node_by_iid(const std::string& iid) const 
     return const_cast<DocumentModel*>(this)->find_node_by_iid(iid);
 }
 
+// s44 §11 — keep at most one explicit default Template per category. Walks the
+// Template region and erases the is_default flag from every Template node whose
+// form_schema category matches, EXCEPT keep_iid. The node form_schema is the
+// truth (§4); the registry re-derives the flag on the next rebuild. Returns the
+// count cleared. Call from the builder's commit when the saved Template is default.
+int DocumentModel::clear_default_template_for_category(const std::string& category,
+                                                       const std::string& keep_iid) {
+    int cleared = 0;
+    std::function<void(std::vector<BinderNode>&)> walk =
+        [&](std::vector<BinderNode>& nodes) {
+            for (auto& n : nodes) {
+                if (n.kind == BinderKind::Template && n.iid != keep_iid
+                    && n.form_schema.is_object()
+                    && n.form_schema.value("category", std::string{}) == category
+                    && n.form_schema.value("is_default", false)) {
+                    n.form_schema.erase("is_default");
+                    ++cleared;
+                }
+                walk(n.children);
+            }
+        };
+    walk(templates);
+    return cleared;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // extract_links_from_html — parse <a data-folio-link="iid:anchor"> tags
 // Returns list of (target_iid, anchor_id) pairs found in the HTML. The iid is a

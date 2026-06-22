@@ -217,6 +217,13 @@ struct Template {
     // later slice.
     std::string              category;
 
+    // s44 (§11) — the category default. One Template per category carries this; a
+    // new instance in that category is born on it (its template_id is stamped at
+    // create). The built-in floor holds it until the author marks another. The
+    // commit path clears it on category siblings so exactly one holds. Serialized
+    // on the node's form_schema (node-is-truth, §4).
+    bool                     is_default = false;
+
     const FieldSchema* find_field(const std::string& field_id) const {
         for (const auto& f : fields)
             if (f.id == field_id) return &f;

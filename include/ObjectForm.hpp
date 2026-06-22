@@ -40,6 +40,14 @@
 
 namespace Folio {
 
+// s44 — per-instance image-preview height is remembered in the object's values map
+// under a reserved key (travels with the project, round-trips via ObjectIO, and is
+// ignored by the schema-driven renderer and edge reads). One entry per image field.
+inline constexpr const char* kImagePreviewKeyPrefix = "__img_h__";
+inline std::string image_preview_key(const std::string& field_id) {
+    return std::string(kImagePreviewKeyPrefix) + field_id;
+}
+
 class ObjectForm : public Gtk::Box {
 public:
     // Raw value a widget produced for field `field_id`, to be coerced + stored
@@ -48,7 +56,8 @@ public:
 
     // Fired when the user clicks the "Edit fields…" affordance (the §7 door).
     // The Inspector opens the template builder for the current object's template.
-    using OnEditTemplate = std::function<void()>;
+    // s44 §11 — RETIRED: schema editing lives only on the Template node now
+    // (no-mutate). The instance form carries no schema door.
 
     // s37 — the relation picker's candidate source. Given a relation field's
     // config.target_type, return the pickable objects as {iid, display-name}. The
@@ -58,6 +67,20 @@ public:
     using RelationProvider =
         std::function<std::vector<FieldChoice>(const std::string& target_type)>;
 
+    // s44 — the RELIEF (DESIGN_scrapbook §4): "stand on this object, see everything
+    // attached to it." A backlink is one incoming edge, resolved for display:
+    // which object points here, and through which field. Computed, never stored —
+    // the form asks the provider (which closes over the store's incoming_edges) on
+    // every populate, so a rename or a re-point is always reflected. One row per
+    // (source, field) pair; read-only this slice (navigation is a clean follow).
+    struct Backlink {
+        std::string source_iid;    // the object that points here
+        std::string source_label;  // its display name
+        std::string via_label;     // the relation field's label on the source
+    };
+    using BacklinkProvider =
+        std::function<std::vector<Backlink>(const std::string& iid)>;
+
     ObjectForm();
 
     // Render `obj` through `tmpl`. editable=false (this slice) renders read-only;
@@ -66,12 +89,13 @@ public:
     void populate(const Folio::Template& tmpl, const Folio::Object& obj,
                   bool editable = false, OnChange on_change = {});
 
-    // Wire the "Edit fields…" affordance (shown at the bottom when editable).
-    void set_on_edit_template(OnEditTemplate cb) { m_on_edit_template = std::move(cb); }
-
     // Wire the relation candidate source (s37). Set once; consulted while
     // populating any relation field. Absent → relation rows render read-only.
     void set_relation_provider(RelationProvider cb) { m_relation_provider = std::move(cb); }
+
+    // s44 — wire the relief's source (incoming_edges, resolved). Set once;
+    // consulted at the end of every populate. Absent / empty → no section shown.
+    void set_backlink_provider(BacklinkProvider cb) { m_backlink_provider = std::move(cb); }
 
     // Show an empty state (no object selected / no template resolved).
     void clear();
@@ -79,13 +103,15 @@ public:
 private:
     Gtk::Box   m_body;      // the rebuilt content column
     Gtk::Label m_heading;   // type_name heading
-    OnEditTemplate m_on_edit_template;
     RelationProvider m_relation_provider;   // s37 — candidate source for relations
+    BacklinkProvider m_backlink_provider;   // s44 — the relief (incoming edges)
+    json             m_obj_values;          // s44 — current object's values (preview state)
 
     void clear_body();
     void append_compact_row(const FormRow& row);                 // label / value
     void append_full_width(const FormRow& row);                  // richtext / list block
     void append_editable_text(const FormRow& row, const OnChange& on_change);     // text/image entry
+    void append_editable_image(const FormRow& row, const OnChange& on_change);    // s44 — picker + preview
     void append_editable_richtext(const FormRow& row, const OnChange& on_change); // the buffer (s32)
     // s36 — configured editable widgets, each wired to the live value-write path.
     void append_editable_number(const FormRow& row, const OnChange& on_change);      // SpinButton(min/max/step)
@@ -98,7 +124,7 @@ private:
     void append_editable_relation_single(const FormRow& row, const OnChange& on_change); // DropDown(candidates)+none
     void append_editable_relation_multi(const FormRow& row, const OnChange& on_change);  // CheckButtons(candidates)
     void append_editable_list(const FormRow& row, const OnChange& on_change);            // [entry][x]+add card
-    void append_edit_template_button(bool builtin);             // the §7 door (s33/s35)
+    void append_backlinks(const std::string& iid);              // s44 — the relief section
 };
 
 }  // namespace Folio

@@ -614,6 +614,11 @@ public:
     BinderNode*       find_node_by_iid(const std::string& iid);
     const BinderNode* find_node_by_iid(const std::string& iid) const;
 
+    // s44 §11 — clear the explicit-default flag on Template nodes of `category`
+    // except keep_iid (one default per category). Returns the count cleared.
+    int clear_default_template_for_category(const std::string& category,
+                                            const std::string& keep_iid);
+
     // ── Objects & templates (s31) ─────────────────────────────────────────────
     // The object store is the durable form of characters/places (and any future
     // user-defined type). This slice keeps it a PROJECTION of the live binder

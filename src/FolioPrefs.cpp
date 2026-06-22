@@ -103,6 +103,7 @@ void FolioPrefs::load() {
 
     typewriter_width_chars = intv (GROUP_EDITOR, "typewriter-width-chars", typewriter_width_chars);
     typewriter_mode        = boolv(GROUP_EDITOR, "typewriter-mode",        typewriter_mode);
+    typewriter_position    = dbl  (GROUP_EDITOR, "typewriter-position",    typewriter_position);
     focus_mode_dim         = boolv(GROUP_EDITOR, "focus-mode-dim",         focus_mode_dim);
     editor_page_width_pct  = intv (GROUP_EDITOR, "page-width-pct",         editor_page_width_pct);
     editor_page_margin_px  = intv (GROUP_EDITOR, "page-margin-px",         editor_page_margin_px);
@@ -117,6 +118,10 @@ void FolioPrefs::load() {
     focus_font_size      = intv (GROUP_EDITOR, "focus-font-size",      focus_font_size);
     focus_line_spacing   = dbl  (GROUP_EDITOR, "focus-line-spacing",   focus_line_spacing);
     focus_text_color     = str  (GROUP_EDITOR, "focus-text-color",     focus_text_color.c_str());
+    focus_background_path = str  (GROUP_EDITOR, "focus-background-path", focus_background_path.c_str());
+    focus_background_dim  = dbl  (GROUP_EDITOR, "focus-background-dim",  focus_background_dim);
+    focus_panel_opacity   = dbl  (GROUP_EDITOR, "focus-panel-opacity",   focus_panel_opacity);
+    focus_panel_color     = str  (GROUP_EDITOR, "focus-panel-color",     focus_panel_color.c_str());
     editor_zoom_pct        = intv (GROUP_EDITOR, "zoom-pct",               editor_zoom_pct);
     if (editor_zoom_pct < 50)  editor_zoom_pct = 50;
     if (editor_zoom_pct > 300) editor_zoom_pct = 300;
@@ -507,6 +512,7 @@ void FolioPrefs::save() const {
 
     g_key_file_set_integer(kf, GROUP_EDITOR, "typewriter-width-chars",   typewriter_width_chars);
     g_key_file_set_boolean(kf, GROUP_EDITOR, "typewriter-mode",          typewriter_mode);
+    g_key_file_set_double (kf, GROUP_EDITOR, "typewriter-position",      typewriter_position);
     g_key_file_set_boolean(kf, GROUP_EDITOR, "focus-mode-dim",           focus_mode_dim);
     g_key_file_set_integer(kf, GROUP_EDITOR, "page-width-pct",           editor_page_width_pct);
     g_key_file_set_integer(kf, GROUP_EDITOR, "page-margin-px",           editor_page_margin_px);
@@ -532,6 +538,10 @@ void FolioPrefs::save() const {
     g_key_file_set_integer(kf, GROUP_EDITOR, "focus-font-size",      focus_font_size);
     g_key_file_set_double (kf, GROUP_EDITOR, "focus-line-spacing",   focus_line_spacing);
     g_key_file_set_string (kf, GROUP_EDITOR, "focus-text-color",     focus_text_color.c_str());
+    g_key_file_set_string (kf, GROUP_EDITOR, "focus-background-path", focus_background_path.c_str());
+    g_key_file_set_double (kf, GROUP_EDITOR, "focus-background-dim",  focus_background_dim);
+    g_key_file_set_double (kf, GROUP_EDITOR, "focus-panel-opacity",   focus_panel_opacity);
+    g_key_file_set_string (kf, GROUP_EDITOR, "focus-panel-color",     focus_panel_color.c_str());
     g_key_file_set_integer(kf, GROUP_EDITOR, "zoom-pct",                 editor_zoom_pct);
     g_key_file_set_boolean(kf, GROUP_EDITOR, "header-visible",           editor_header_visible);
 

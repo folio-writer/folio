@@ -111,6 +111,27 @@ void TemplateBuilderDialog::build_chrome() {
         m_root.append(*row);
     }
 
+    // ── Default for category (s44 §11) ──────────────────────────────────────────
+    // Mark this Template as the one a new instance in its category is born on. The
+    // commit clears the flag on its category siblings (Inspector), so exactly one
+    // holds; unset → the built-in floor is the implicit default.
+    {
+        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+        auto* l = Gtk::make_managed<Gtk::Label>("Default for new items");
+        l->add_css_class("pref-row-label");
+        l->set_halign(Gtk::Align::START);
+        l->set_hexpand(true);
+        m_default_sw = Gtk::make_managed<Gtk::Switch>();
+        m_default_sw->set_halign(Gtk::Align::END);
+        m_default_sw->set_valign(Gtk::Align::CENTER);
+        m_default_sw->property_active().signal_changed().connect([this]() {
+            if (m_default_sw) m_draft.is_default = m_default_sw->get_active();
+        });
+        row->append(*l);
+        row->append(*m_default_sw);
+        m_root.append(*row);
+    }
+
     // ── Fields heading ─────────────────────────────────────────────────────────
     {
         auto* hdr = Gtk::make_managed<Gtk::Label>("Fields");
@@ -176,6 +197,7 @@ void TemplateBuilderDialog::open_for(const Folio::Template& tmpl) {
                                                     : 0;   // default → character
         m_category_dd->set_selected(idx);
     }
+    if (m_default_sw) m_default_sw->set_active(m_draft.is_default);   // s44
     rebuild_field_rows();
 }
 
@@ -418,7 +440,8 @@ void TemplateBuilderDialog::append_config_editor(Gtk::Box& host, const Folio::Fi
         case Folio::FieldType::Dropdown:
         case Folio::FieldType::MultiSelect:  build_options_config(host, f.id); break;
         case Folio::FieldType::List:         build_presets_config(host, f.id); break;
-        default: break;  // text/richtext/toggle/image/color/date/relation — no config UI yet
+        case Folio::FieldType::Relation:     build_relation_config(host, f.id); break;
+        default: break;  // text/richtext/toggle/image/color/date — no config UI
     }
 }
 
@@ -556,6 +579,66 @@ void TemplateBuilderDialog::build_presets_config(Gtk::Box& host, const std::stri
         build_presets_config(host, field_id);
     });
     host.append(*add);
+}
+
+// relation (s44): "Points to" type dropdown + "Allow multiple" switch, writing
+// { target_type, multi }. The type list comes from the type provider (the
+// registry); index 0 == "(any type)" == empty target_type. The instance form
+// already renders the picker over this config (s37) — this is its authoring half,
+// and the last config hole in the templates subsystem.
+void TemplateBuilderDialog::build_relation_config(Gtk::Box& host, const std::string& field_id) {
+    while (Gtk::Widget* c = host.get_first_child()) host.remove(*c);
+    const Folio::FieldSchema* f = draft_field(field_id);
+    if (!f) return;
+
+    const std::vector<Folio::FieldChoice> types =
+        m_type_provider ? m_type_provider() : std::vector<Folio::FieldChoice>{};
+
+    // ── Points to: (any type) + each registered type, label = type_name. ──
+    auto* trow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    auto* tlbl = Gtk::make_managed<Gtk::Label>("Points to");
+    tlbl->add_css_class("dim-label");
+    tlbl->set_hexpand(true);
+    tlbl->set_halign(Gtk::Align::START);
+
+    std::vector<Glib::ustring> labels;
+    labels.push_back("(any type)");
+    std::vector<std::string> ids;                 // index i+1 in the dropdown
+    for (const auto& c : types) { labels.push_back(c.label); ids.push_back(c.id); }
+    auto model = Gtk::StringList::create(labels);
+    auto* dd = Gtk::make_managed<Gtk::DropDown>(model);
+    dd->set_halign(Gtk::Align::END);
+
+    const std::string cur = f->relation_target_type();
+    guint sel = 0;
+    for (std::size_t i = 0; i < ids.size(); ++i)
+        if (ids[i] == cur) { sel = static_cast<guint>(i) + 1; break; }
+    dd->set_selected(sel);
+    dd->property_selected().signal_changed().connect([this, field_id, dd, ids]() {
+        guint i = dd->get_selected();
+        const std::string target = (i == 0 || i > ids.size())
+                                       ? std::string{} : ids[i - 1];
+        TemplateEdit::set_relation_target_type(m_draft, field_id, target);
+    });
+    trow->append(*tlbl);
+    trow->append(*dd);
+    host.append(*trow);
+
+    // ── Allow multiple: single (string iid) vs multi (array of iids). ──
+    auto* mrow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    auto* mlbl = Gtk::make_managed<Gtk::Label>("Allow multiple");
+    mlbl->add_css_class("dim-label");
+    mlbl->set_hexpand(true);
+    mlbl->set_halign(Gtk::Align::START);
+    auto* sw = Gtk::make_managed<Gtk::Switch>();
+    sw->set_active(f->relation_multi());
+    sw->set_halign(Gtk::Align::END);
+    sw->property_active().signal_changed().connect([this, field_id, sw]() {
+        TemplateEdit::set_relation_multi(m_draft, field_id, sw->get_active());
+    });
+    mrow->append(*mlbl);
+    mrow->append(*sw);
+    host.append(*mrow);
 }
 
 void TemplateBuilderDialog::on_add_field() {

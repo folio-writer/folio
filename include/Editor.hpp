@@ -134,12 +134,6 @@ public:
   }
 
   // ── s41 — object form (the inversion) ─────────────────────────────────────
-  // Fired by the form's "Edit fields…" door. MainWindow routes it to the
-  // Inspector-owned template builder for the current object's template.
-  using EditTemplateCallback = std::function<void()>;
-  void set_edit_template_callback(EditTemplateCallback cb) {
-    m_on_edit_template = std::move(cb);
-  }
   // Fired when the form writes a floor field that the binder leaf owns (title,
   // image, …) — lets MainWindow refresh chrome (sidebar title, etc.).
   using MetaChangedCallback = std::function<void(BinderNode*)>;
@@ -265,6 +259,12 @@ private:
   WritingMode m_writing_mode = WritingMode::Novel;
   bool m_in_focus       = false;
   bool m_typewriter_mode = false;   // centres cursor line vertically on every move
+  int  m_typewriter_page_h = -1;    // s44 — last viewport height the rail padding used
+  Gtk::Scale m_typewriter_pos_slider;  // s44 — alt-click float to set the rail fraction
+  bool m_tw_alt_press   = false;       // s44 — last typewriter-button press had Alt held
+  bool m_tw_toggle_guard = false;      // s44 — re-entrancy guard for the revert set_active
+  double typewriter_pos() const;       // s44 — clamped rail fraction (0.30–0.55)
+  void   toggle_typewriter_slider();   // s44 — show/hide the floating rail slider
   Glib::RefPtr<Gtk::EventControllerKey> m_focus_key_ctrl;
 
   // Writing mode dropdown (Novel / Outline / Screenplay)
@@ -484,7 +484,6 @@ private:
   Gtk::ScrolledWindow m_form_scroll;
   Gtk::Box            m_form_card;
   Folio::ObjectForm   m_object_form;
-  EditTemplateCallback m_on_edit_template;
   MetaChangedCallback  m_on_meta_changed;
   bool node_is_form_kind(const BinderNode* n) const {
     return n && (n->kind == BinderKind::Character ||

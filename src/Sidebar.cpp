@@ -2658,6 +2658,28 @@ void Sidebar::on_add_leaf(Section section,
     }
   }
 
+  // s44 §11 — born on the category default: stamp the new object leaf's
+  // template_id with its category's EXPLICIT default Template (a user template
+  // marked default). The floor is the implicit default and needs no stamp (empty
+  // template_id already resolves to it). rebuild_object_store first so the
+  // registry reflects any is_default flags carried on Template nodes.
+  {
+    const char* cat = section == Section::Characters ? "character"
+                    : section == Section::Places     ? "place"
+                    : section == Section::References ? "reference"
+                                                     : nullptr;
+    if (cat) {
+      m_model.rebuild_object_store();
+      const std::string def = m_model.object_store().category_default_id(cat);
+      if (!def.empty() && def != cat) {          // explicit user default, not the floor
+        if (BinderNode* nn = m_model.node_at(section, new_path)) {
+          nn->template_id = def;
+          m_model.mark_modified();
+        }
+      }
+    }
+  }
+
   m_model.set_active(section, new_path);
   rebuild_section(section);
   m_board_selection = {SelPath::make(section, new_path)};

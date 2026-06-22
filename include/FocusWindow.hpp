@@ -120,22 +120,63 @@ public:
 private:
     // ── Construction ──────────────────────────────────────────────────────────
     void build_view();          // m_view + set_buffer(editor shared buffer)
-    void build_control_bar();   // hover-reveal width/zoom/font/size/spacing/color
+    void build_drawer();        // s45 — left settings drawer (replaces the hover pill)
     void build_switcher();      // type-to-filter scene overlay
     void repopulate_switcher(); // refill m_switch_list from m_scenes + filter text
     void activate_switch_row(Gtk::ListBoxRow* row);  // resolve row → scene → goto
     void wire_keys();           // Esc → close; switcher hotkey; next/prev hotkeys
 
+    // ── Settings drawer (s45) — left-edge slide-in, organized + labeled ────────
+    void open_drawer();
+    void close_drawer();
+    void toggle_drawer();
+
+    // ── Slider smoothness (s45) ───────────────────────────────────────────────
+    // The cheap part of a slider change (the numeric readout + the pref value) runs
+    // immediately; the expensive part is taken off the per-tick drag:
+    //   • prefs.save() is debounced (one disk write after the drag settles), never
+    //     per tick — that disk I/O was the main hitch.
+    //   • the heavy line-spacing relayout is coalesced to one apply per idle.
+    //   • the full-buffer font re-tag (size) is debounced — it applies when the drag
+    //     settles, not every frame, since there is no cheap size preview.
+    // Sliders also round to clean steps (set_round_digits) so a drag lands precisely.
+    void schedule_save();        // debounced prefs.save()
+    void queue_apply_look();     // idle-coalesced apply_focus_look (spacing)
+    void schedule_size_apply();  // debounced set_body_display (size re-tag)
+
+    // ── Backdrop (s45) — external image behind the text, two writer knobs ──────
+    // Layer stack, back → front, all on m_overlay:
+    //   background image → dim scrim → text-column backing (panel) → text → chrome.
+    // The photo is an EXTERNAL path (projects link, never embed). Dim = darkness of
+    // the scrim over the whole photo; Panel = alpha of the reading-column card.
+    void open_backdrop_picker();        // FileChooserNative → set path + reload
+    void set_backdrop(const std::string& path);  // load/clear + persist + reapply
+    void apply_backdrop();              // push path/dim/panel onto the three layers
+    void update_backdrop_controls();    // button label + slider-group visibility
+    void apply_panel_color();           // s45 — pref hex → m_panel_color + redraw card
+    void apply_text_color();            // s45 — pref hex → CssProvider on m_view
+
     // ── Look (applies to m_view ONLY; never writes to the editor) ─────────────
     void apply_focus_look();        // view-level: line spacing, then geometry + padding
-    void apply_typewriter_padding();// half-viewport top/bottom so the active line centres
+    void apply_typewriter_padding();// rail-fraction top/bottom runway (s45 — pos-driven)
     void apply_focus_geometry();    // page width % of the focus viewport (self-contained)
+
+    // ── Typewriter rail (s45) ─────────────────────────────────────────────────
+    // Focus owns its OWN view, so the editor's scroll_to_cursor_center cannot move
+    // it. These mirror that machinery for m_view, but read the SHARED rail fraction
+    // (m_prefs.typewriter_position) so the platen position is one value across both
+    // surfaces. View-level only — the buffer is never touched.
+    double focus_typewriter_pos() const;  // shared rail fraction, clamped 0.15–0.85
+    void   scroll_to_rail();              // pin the caret to the rail in m_view
+    void   queue_scroll_to_rail();        // idle-deduped scroll_to_rail
+    void   toggle_typewriter();           // flip focus_typewriter_mode + re-rail
 
     // ── Navigation (delegates content to Editor::load_node) ───────────────────
     void rebuild_scene_list();          // ← model.manuscript_in_reading_order()
     void goto_node(BinderNode* node);   // Editor::load_node(node); update title/index
     void goto_relative(int delta);      // next/prev within m_scenes
     void open_switcher();               // populate + show the filter overlay
+    void update_navbar();               // s45 — refresh the visible scene breadcrumb
 
     // ── Refs (injected; not owned) ────────────────────────────────────────────
     DocumentModel& m_model;
@@ -146,14 +187,53 @@ private:
     Gtk::Overlay         m_overlay;
     Gtk::ScrolledWindow  m_scroll;
     Gtk::TextView        m_view;            // bound to the editor's shared buffer
+
+    // s45 — backdrop layers (back → front; m_bg_pic is the overlay's child, the
+    // rest are overlays added BEFORE the text so they sit behind it).
+    Gtk::Picture*        m_bg_pic   = nullptr; // the photo (COVER), overlay child
+    Gtk::Box*            m_bg_dim   = nullptr; // full-bleed black scrim (opacity = dim)
+    Gtk::DrawingArea*    m_bg_panel = nullptr; // text-column card, Cairo-drawn (feathered)
+    Gdk::RGBA            m_panel_color {"#1e1e2e"};  // card fill (panel-color picker later)
+    Glib::RefPtr<Gtk::CssProvider> m_text_css;       // s45 — focus text colour override
+
+    // s45 — backdrop controls in the hover bar (sliders gated on a live backdrop)
+    Gtk::Button*         m_bg_btn        = nullptr; // Set/Change backdrop… (picker)
+    Gtk::Button*         m_bg_clear      = nullptr; // remove the backdrop
+    Gtk::Box*            m_bg_slider_grp = nullptr; // Dim + Panel sliders (show when set)
     Glib::RefPtr<Gtk::Adjustment> m_size_adj;    // body-size control (refreshed on open)
     int    m_saved_size = 0;     // editor size snapshot taken on focus enter
     double m_saved_zoom = 1.0;   // editor zoom snapshot taken on focus enter
 
-    Gtk::Box*            m_control_bar = nullptr; // hover-reveal, like the old bar
     Gtk::Box*            m_switcher    = nullptr;  // type-to-filter scene list
     Gtk::SearchEntry*    m_switch_entry = nullptr; // owned by m_switcher subtree
     Gtk::ListBox*        m_switch_list  = nullptr; // owned by m_switcher subtree
+
+    // s45 — visible scene navigation: a quiet top-centre breadcrumb that shows the
+    // current scene (click → switcher) flanked by prev/next. The door for what was
+    // a keyboard-only switcher. Scenes only — non-prose nodes need form rendering
+    // focus doesn't have (see the cross-section fork in the slice notes).
+    Gtk::Box*            m_navbar    = nullptr;
+    Gtk::Button*         m_nav_title = nullptr;
+
+    // s45 — left settings drawer. m_drawer is a Revealer (SLIDE_RIGHT) holding the
+    // panel; m_drawer_tab is the always-visible pull on the left edge; m_drawer_scrim
+    // is a transparent click-away catcher shown only while the drawer is open.
+    Gtk::Revealer*       m_drawer       = nullptr;
+    Gtk::Widget*         m_drawer_tab   = nullptr;
+    Gtk::Box*            m_drawer_scrim = nullptr;
+
+    // s45 — typewriter rail. The mode is a Switch in the drawer; the rail position is
+    // a labeled slider row (m_rail_scale), sensitive only while the mode is on. Shares
+    // m_prefs.typewriter_position with the editor.
+    Gtk::Switch*         m_tw_switch  = nullptr;
+    Gtk::Scale*          m_rail_scale = nullptr;
+    bool m_tw_guard    = false;   // re-entrancy guard while syncing the switch in code
+    bool m_rail_queued = false;   // an idle scroll_to_rail is already pending
+
+    // s45 — slider smoothness: debounced save / size, coalesced spacing relayout.
+    sigc::connection m_save_conn;     // pending debounced prefs.save()
+    sigc::connection m_size_conn;     // pending debounced size re-tag
+    bool             m_look_queued = false;  // an idle apply_focus_look is pending
 
     // Navigation working set (rebuilt on open; transient, model is the truth)
     std::vector<BinderNode*> m_scenes;     // reading order, from the model

@@ -62,10 +62,10 @@ Inspector::Inspector(DocumentModel &model, FolioPrefs &prefs)
   build_project_tab();
   build_annotations_tab();
 
-  // s41 — the object form (and its relation provider + "Edit fields…" door) moved
-  // to the Editor (the inversion). The Inspector keeps only the template builder
-  // it owns, reached from the Editor form's door via
-  // open_template_builder_for_current().
+  // s41 — the object form (and its relation provider) moved to the Editor (the
+  // inversion). s44 §11 — the instance "Edit fields…" door is retired entirely;
+  // the Inspector keeps only the template builder it owns, reached from a Template
+  // node via open_template_builder_for_template_node().
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -909,71 +909,10 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
 // now resolves object + template from the store and renders the form as its
 // document, running the same floor->leaf / custom->store write-through.
 
-// s33/s35 — open the schema editor for the CURRENT object's template. Resolves
-// the template from the selected leaf's object. CLONE-TO-CUSTOMIZE (s35): a
-// built-in is locked, so the first "Customize fields…" clones it, assigns the
-// clone to the leaf (template_id), re-projects so the object renders through the
-// clone, and edits THAT — an already-customized form edits in place. Hands the
-// builder a copy; on Save commits + repopulates the form ON AN IDLE TICK (the
-// s24 rule: never mutate the model / rebuild views from inside a live modal
-// handler — the dialog is still tearing down when apply fires).
-void Inspector::open_template_builder_for_current() {
-  if (!m_current_node) return;
-  const std::string iid = m_current_node->iid;
-
-  m_model.rebuild_object_store();
-  const Folio::Object* obj = m_model.object_store().find_object(iid);
-  if (!obj) return;
-  const Folio::Template* tmpl = m_model.object_store().find_template(obj->type);
-  if (!tmpl) return;
-
-  // Capture by value NOW: clone_template()'s push_back below can reallocate the
-  // templates vector and invalidate `tmpl`, so nothing past the clone may deref it.
-  const std::string src_id      = tmpl->id;
-  const bool        src_editable = Folio::template_is_editable(*tmpl);
-  std::string       edit_id      = src_id;
-
-  // Clone-to-customize: a locked built-in is never edited directly. Clone it,
-  // the leaf adopts the clone, re-project so the object now carries the clone
-  // type, and refresh the visible form before opening the builder on the clone.
-  if (!src_editable) {
-    const std::string clone_id = m_model.object_store().clone_template(src_id);
-    if (clone_id.empty()) return;
-    m_current_node->template_id = clone_id;     // the leaf adopts the clone
-    m_model.mark_modified();
-    m_model.rebuild_object_store();             // object.type resolves to the clone
-    edit_id = clone_id;
-    LOG_DEBUG("clone-to-customize {} {} -> {}", iid, src_id, clone_id);
-    if (m_on_object_form_dirty) m_on_object_form_dirty();   // s41 — Editor re-renders
-    notify_meta_changed();
-  }
-
-  const Folio::Template* edit_tmpl = m_model.object_store().find_template(edit_id);
-  if (!edit_tmpl) return;
-  Folio::Template draft = *edit_tmpl;   // copy — the dialog edits this, not the store
-
-  auto* root = dynamic_cast<Gtk::Window*>(get_root());
-  if (!root) return;
-
-  m_template_builder = std::make_unique<TemplateBuilderDialog>(*root);
-  m_template_builder->set_apply_callback([this](const Folio::Template& edited) {
-    if (!Folio::template_is_editable(edited)) return;  // built-ins are locked (s34) — clone to edit
-    Folio::Template t = edited;   // capture by value — survives the dialog teardown
-    Glib::signal_idle().connect_once([this, t]() {
-      m_model.object_store().upsert_template(t);
-      m_model.mark_modified();
-      // s41 — the Editor hosts the form now: ask it to re-render the affected
-      // object through the edited schema.
-      if (m_on_object_form_dirty) m_on_object_form_dirty();
-      notify_meta_changed();
-    });
-  });
-  m_template_builder->signal_hide().connect([this]() {
-    Glib::signal_idle().connect_once([this]() { m_template_builder.reset(); });
-  });
-  m_template_builder->open_for(draft);
-  m_template_builder->present();
-}
+// s44 §11 — open_template_builder_for_current() (the instance-side "Edit fields…"
+// clone-to-customize path) is RETIRED. Schema editing lives only on the Template
+// node (open_template_builder_for_template_node); a Character is born on a Template
+// and reshaped only by editing that Template. No-mutate.
 
 // s38 — author a Template binder node's form. Unlike the character-driven path
 // above, there is no Object here: the node carries the schema directly in
@@ -999,6 +938,12 @@ void Inspector::open_template_builder_for_template_node(const std::string& node_
   if (!root) return;
 
   m_template_builder = std::make_unique<TemplateBuilderDialog>(*root);
+  m_template_builder->set_type_provider([this]() {
+    std::vector<Folio::FieldChoice> out;
+    for (const auto& t : m_model.object_store().templates)
+      out.push_back({ t.id, t.type_name });
+    return out;
+  });
   m_template_builder->set_apply_callback([this, node_iid](const Folio::Template& edited) {
     Folio::Template t = edited;   // capture by value — survives the dialog teardown
     t.id      = node_iid;         // keep identity pinned to the node
@@ -1008,6 +953,10 @@ void Inspector::open_template_builder_for_template_node(const std::string& node_
       if (!n) return;
       n->form_schema = Folio::ObjectIO::template_to_json(t);
       if (!t.type_name.empty()) n->title = t.type_name;     // the binder shows the form's name
+      // s44 §11 — at most one explicit default per category: if this Template was
+      // marked default, clear the flag on its category siblings.
+      if (t.is_default)
+        m_model.clear_default_template_for_category(t.category, node_iid);
       m_model.mark_modified();
       m_model.rebuild_object_store();   // re-project so the registry reflects the edit
       notify_meta_changed();            // refresh the binder/sidebar

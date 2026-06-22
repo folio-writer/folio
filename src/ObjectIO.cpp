@@ -49,6 +49,7 @@ json template_to_json(const Template& t) {
     };
     if (t.builtin) j["builtin"] = true;   // omit when false to keep user types clean
     if (!t.category.empty()) j["category"] = t.category;   // s38 — omit when unset
+    if (t.is_default) j["is_default"] = true;   // s44 — omit when false
     return j;
 }
 
@@ -59,6 +60,7 @@ Template template_from_json(const json& j) {
     t.icon      = j.value("icon", "");
     t.builtin   = j.value("builtin", false);
     t.category  = j.value("category", "");   // s38 — "" on legacy templates
+    t.is_default = j.value("is_default", false);   // s44
     if (j.contains("fields") && j["fields"].is_array())
         for (const auto& fj : j["fields"])
             t.fields.push_back(field_from_json(fj));
