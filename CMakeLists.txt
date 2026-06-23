@@ -177,6 +177,7 @@ set(SOURCES
     src/DocumentModel.cpp
     src/Iid.cpp                   # s19 — pure cross-layer part identity (GTK-free, tested)
     src/MindMap.cpp               # s47 — pure mind-map lens: glyph derivation (GTK-free, tested)
+    src/CustomMindMap.cpp         # s50 — pure owned mind-map DOCUMENT (Reference form): nodes/edges/subjects/stamp/json (GTK-free, tested)
     src/StoryGraph.cpp            # s48 — the graph reading: edges_from_backlinks bridge (s20 link ∪ s44 relation)
     src/MindMapCanvas.cpp         # s48 — the fourth lens, GTK side: thin painter over the pure layer
     src/ModuleIO.cpp              # s23 — pure (json<->Module) anatomy seam (GTK-free, tested)
