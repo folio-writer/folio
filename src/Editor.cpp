@@ -40,7 +40,7 @@ Editor::Editor(DocumentModel &model, FolioPrefs &prefs)
       m_avatar_strip(Gtk::Orientation::HORIZONTAL, 12),
       m_multi_placeholder_box(Gtk::Orientation::VERTICAL, 16),
       m_footer(Gtk::Orientation::HORIZONTAL, 12), m_map_canvas(model, prefs),
-      m_ruler(prefs) {
+      m_cmm_canvas(prefs), m_ruler(prefs) {
   set_vexpand(true);
   set_hexpand(true);
 
@@ -399,7 +399,15 @@ void Editor::load_node(BinderNode *node) {
     m_editor_mode = EditorMode::Reference;
     m_chapter_tag.set_text("Reference");
     m_title_label.set_text(node->title.empty() ? "Unnamed" : node->title);
-    html_to_buffer(node->content);   // hidden; the form owns the description field
+    if (node_is_mindmap_form(node)) {
+      // s51 — a Mind Map document: the body cell is the serialised CMMDoc, not
+      // prose. Load it into the owned-MM canvas; the buffer stays untouched.
+      m_chapter_tag.set_text("Mind Map");
+      m_cmm_iid = node->iid;
+      m_cmm_canvas.load_string(node->iid, node->content);
+    } else {
+      html_to_buffer(node->content);   // hidden; the form owns the description field
+    }
     break;
 
   default: { // Scene, Group, or Template
@@ -463,7 +471,8 @@ void Editor::load_node(BinderNode *node) {
   m_invis_overlay.queue_draw();
   set_editor_mode(m_editor_mode);
   // s41: a Character/Place draws its template form as the Editor document.
-  if (node_is_form_kind(m_current_node))
+  // s51: a Mind Map Reference draws its canvas (loaded above), not the form.
+  if (node_is_form_kind(m_current_node) && !node_is_mindmap_form(m_current_node))
     populate_object_form();
   update_word_count();
 
@@ -610,7 +619,9 @@ void Editor::set_editor_mode(EditorMode mode) {
   // s41/s42: in Write/Joined, a form-kind (Character/Place/Reference) shows its
   // FORM as the document; every other kind shows the prose write view.
   if (m_view_mode == ViewMode::Write || m_view_mode == ViewMode::Joined) {
-    if (is_form_mode)
+    if (node_is_mindmap_form(m_current_node))
+      m_view_stack.set_visible_child(m_cmm_canvas);   // s51 — owned MM surface
+    else if (is_form_mode)
       m_view_stack.set_visible_child(m_form_scroll);
     else
       m_view_stack.set_visible_child(m_scroll_overlay);
@@ -918,7 +929,9 @@ void Editor::set_view_mode(ViewMode mode) {
   case ViewMode::Joined:
     m_write_placeholder.set_visible(m_editor_mode == EditorMode::Empty);
     // s41: form-kind nodes show their form; everything else the prose write view.
-    if (node_is_form_kind(m_current_node))
+    if (node_is_mindmap_form(m_current_node))
+      m_view_stack.set_visible_child(m_cmm_canvas);   // s51 — owned MM surface
+    else if (node_is_form_kind(m_current_node))
       m_view_stack.set_visible_child(m_form_scroll);
     else
       m_view_stack.set_visible_child(m_scroll_overlay);

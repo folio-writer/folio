@@ -180,6 +180,7 @@ set(SOURCES
     src/CustomMindMap.cpp         # s50 — pure owned mind-map DOCUMENT (Reference form): nodes/edges/subjects/stamp/json (GTK-free, tested)
     src/StoryGraph.cpp            # s48 — the graph reading: edges_from_backlinks bridge (s20 link ∪ s44 relation)
     src/MindMapCanvas.cpp         # s48 — the fourth lens, GTK side: thin painter over the pure layer
+    src/CustomMindMapCanvas.cpp   # s51 — the OWNED mind-map document surface (a Reference form): canvas + toolbar + subjects
     src/ModuleIO.cpp              # s23 — pure (json<->Module) anatomy seam (GTK-free, tested)
     src/ModulePlanner.cpp         # s23 — pure scaffold planner: module+inputs -> Part/Chapter/Scene plan
     src/ModuleMaterializer.cpp    # s23 — Layer 2: materialise a plan into BinderNodes (kp_id stamped)

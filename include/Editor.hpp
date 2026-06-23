@@ -11,6 +11,7 @@
 
 #include "DocumentModel.hpp"
 #include "MindMapCanvas.hpp"   // s48 — the fourth lens, hosted in the view-stack as "map"
+#include "CustomMindMapCanvas.hpp" // s51 — the OWNED mind-map document surface (a Reference form)
 #include "ObjectForm.hpp"   // s41 — the inversion: the object form is the Editor document
 #include "SearchEngine.hpp"
 #include "EditorHtmlSerializer.hpp"
@@ -82,7 +83,7 @@ public:
   // the snapshot on exit via a single synchronous re-stamp.
   int    body_font_size() const { return m_current_font_size; }
   double zoom_factor()    const { return m_zoom_factor; }
-  void   set_body_display(int size_pt, double zoom);
+  void   set_body_display(int size_pt, double zoom, int reference_pt = 0);
 
   // Load a character or place by index.
   
@@ -394,6 +395,11 @@ private:
   int    m_left_margin_px  = 64;       // left margin (px)
   int    m_right_margin_px = 64;       // right margin (px)
   double m_zoom_factor     = 1.0;
+  // Proportional scale applied to per-run font: tags on top of zoom. 1.0 in
+  // regular editing; set by set_body_display (FocusWindow's sizing primitive)
+  // to focus_size / authored_body_size so styled runs grow WITH the focus
+  // sizer instead of staying at their literal authored point size.
+  double m_font_tag_scale  = 1.0;
 
   // Internal helper for the percentage width widget
   void set_page_width_pct(int pct);   // clamp + apply + update entry
@@ -518,6 +524,13 @@ private:
                  n->kind == BinderKind::Place ||
                  n->kind == BinderKind::Reference);   // s42
   }
+  // s51 — a Reference whose form is "Mind Map": routed to the owned-MM canvas as
+  // its editor surface (not the ObjectForm). The marker is the reserved sentinel
+  // template_id; the body cell holds the serialised CMMDoc.
+  bool node_is_mindmap_form(const BinderNode* n) const {
+    return n && n->kind == BinderKind::Reference &&
+           n->template_id == Folio::kMindMapTemplateId;
+  }
   void populate_object_form();   // render m_object_form for m_current_node
 
   // Exit-focus overlay button
@@ -586,6 +599,13 @@ private:
   // Spans the whole graph (all nodes), not the current node — so it is a VIEW
   // mode (like Board), routed in set_view_mode, rebuilt on entry from the model.
   Folio::MindMapCanvas m_map_canvas;
+
+  // s51 — the OWNED mind-map document surface (added to m_view_stack as "cmm").
+  // Shown in Write/Joined when the current node is a Mind Map Reference form,
+  // in place of the ObjectForm. Reads/writes a CMMDoc serialised in the node's
+  // body cell. m_cmm_iid is the host node the canvas's persist callback writes to.
+  Folio::CustomMindMapCanvas m_cmm_canvas;
+  std::string m_cmm_iid;
   // Fired when a node glyph is activated on the map. MainWindow wires it to the
   // app-wide navigate path (switch to Write + select), so map-open == sidebar-open.
   // (MapOpenCallback alias is declared in the public section, above its setter.)

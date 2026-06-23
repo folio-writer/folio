@@ -93,6 +93,26 @@ const CMMNode* cmm_find_node(const CMMDoc& d, const std::string& id) {
     return nullptr;
 }
 
+bool cmm_remove_node(CMMDoc& d, const std::string& id) {
+    auto it = std::find_if(d.nodes.begin(), d.nodes.end(),
+                           [&](const CMMNode& n) { return n.id == id; });
+    if (it == d.nodes.end()) return false;
+    d.nodes.erase(it);
+    // Drop every edge that touched it — no dangling endpoints survive.
+    d.edges.erase(std::remove_if(d.edges.begin(), d.edges.end(),
+                   [&](const CMMEdge& e) { return e.from == id || e.to == id; }),
+                  d.edges.end());
+    return true;
+}
+
+bool cmm_remove_edge(CMMDoc& d, const std::string& id) {
+    auto it = std::find_if(d.edges.begin(), d.edges.end(),
+                           [&](const CMMEdge& e) { return e.id == id; });
+    if (it == d.edges.end()) return false;
+    d.edges.erase(it);
+    return true;
+}
+
 // ── Subjects ─────────────────────────────────────────────────────────────────
 bool cmm_has_subject(const CMMDoc& d, const std::string& iid) {
     return std::find(d.subject_iids.begin(), d.subject_iids.end(), iid)
@@ -168,6 +188,7 @@ json node_to_json(const CMMNode& n) {
     };
     if (!n.body.empty())  j["body"] = n.body;
     if (n.kind == CMMNodeKind::Anchor) j["iid"] = n.iid;   // the bridge to truth
+    if (n.color_idx > 0) j["color_idx"] = n.color_idx;
     if (n.pinned)    j["pinned"]    = true;
     if (n.collapsed) j["collapsed"] = true;
     return j;
@@ -182,6 +203,7 @@ CMMNode node_from_json(const json& j) {
     n.title = j.value("title", std::string());
     n.body  = j.value("body",  std::string());
     n.iid   = j.value("iid",   std::string());
+    n.color_idx = j.value("color_idx", 0);
     n.pinned    = j.value("pinned",    false);
     n.collapsed = j.value("collapsed", false);
     return n;

@@ -183,6 +183,9 @@ private:
     // ── Mutations ─────────────────────────────────────────────────────────────
     void on_add_group(Section section, const std::vector<int>& parent_path);
     void on_add_leaf(Section section, const std::vector<int>& parent_path);
+    // s52 — inline rename: double-click a binder row opens a small entry popover
+    // over it; commit writes node->title, rebuilds the section, reloads the editor.
+    void begin_rename(Section section, const std::vector<int>& path);
     void on_remove_node(Section section, const std::vector<int>& path);
     void on_remove_selected(Section section);
 

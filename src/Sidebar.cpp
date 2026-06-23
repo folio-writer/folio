@@ -4,6 +4,7 @@
 
 #include "Sidebar.hpp"
 #include "color_utils.hpp"
+#include "CustomMindMap.hpp"   // s51 — seed an empty CMMDoc body for a new Mind Map form
 #include "FolioLog.hpp"
 #include "Iid.hpp"
 #include <algorithm>
@@ -1303,6 +1304,35 @@ void Sidebar::show_section_ctx_menu(Section section, double x, double y,
       });
     });
   }
+  // s51 — "New Mind Map": the front door for the OWNED mind map. Creates a
+  // Reference leaf, stamps the reserved Mind Map form id, and seeds an empty
+  // CMMDoc into its body cell; selecting it opens the owned-MM canvas as the
+  // editor surface (not the ObjectForm).
+  if (section == Section::References) {
+    sec->append_item(mi("New Mind Map\xE2\x80\xA6", "ctx.new-mindmap", ""));
+    ag->add_action("new-mindmap", [this]() {
+      if (m_ctx_popover)
+        m_ctx_popover->popdown();
+      Glib::signal_idle().connect_once([this]() {
+        auto new_path = m_model.add_leaf(Section::References, {}, "",
+                                         &m_prefs.reference_defaults);
+        BinderNode *n = m_model.node_at(Section::References, new_path);
+        if (!n)
+          return;
+        n->title       = "Mind Map";
+        n->template_id = Folio::kMindMapTemplateId;
+        Folio::CMMDoc d;
+        d.id   = n->iid;            // the fragment owns the doc identity
+        d.name = n->title;
+        n->content = Folio::cmm_to_string(d, /*pretty=*/false);
+        m_model.mark_modified();
+        m_model.set_active(Section::References, new_path);
+        rebuild_section(Section::References);
+        if (m_on_selected)
+          m_on_selected(Section::References, new_path);
+      });
+    });
+  }
   gm->append_section({}, sec);
 
   // "New from Template…" — only shown when templates exist
@@ -1931,7 +1961,7 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
     hdr->set_margin_end(10);
     hdr->set_margin_top(4);
     hdr->set_margin_bottom(4);
-    hdr->set_tooltip_text("Click to select · Double-click to open · Alt-click "
+    hdr->set_tooltip_text("Click to select · Double-click to rename · Alt-click "
                           "to expand/collapse · Right-click for options");
 
     std::string icon_hex = m_prefs.color_hex_for_idx(node->color_idx);
@@ -2050,7 +2080,7 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
       BinderNode *node = m_model.node_at(section, path);
       bool selected  = m_board_selection.count(item) > 0;
 
-      // Double-click: select + open
+      // Double-click: select, then rename inline (Scrivener muscle memory).
       if (np == 2) {
         m_board_selection.clear();
         if (is_closed && node)
@@ -2060,7 +2090,9 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
         m_selection_anchor = item;
         refresh_all_highlights();
         fire_board_selection();
-        if (m_on_opened) m_on_opened(section, path);
+        if (m_on_selected) m_on_selected(section, path);
+        Glib::signal_idle().connect_once(
+            [this, section, path]() { begin_rename(section, path); });
         return;
       }
 
@@ -2195,7 +2227,7 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
     row->set_focusable(true);
     row->set_cursor(Gdk::Cursor::create("pointer"));
     row->set_tooltip_text(
-        "Click to select · Double-click to open · Right-click for options");
+        "Click to select · Double-click to rename · Right-click for options");
 
     std::string icon_hex = m_prefs.color_hex_for_idx(node->color_idx);
     // Every leaf renders a Curvz symbolic icon as a Gtk::Image, tinted via the
@@ -2346,13 +2378,21 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
           auto item  = SelPath::make(section, path);
           bool selected = m_board_selection.count(item) > 0;
 
-          // Double-click: select + open
+          // Double-click: select, then rename inline. A Template keeps the
+          // designer-open gesture (its name is edited in the schema builder).
           if (np == 2) {
             m_board_selection = {item};
             m_selection_anchor = item;
             refresh_all_highlights();
             fire_board_selection();
-            if (m_on_opened) m_on_opened(section, path);
+            if (m_on_selected) m_on_selected(section, path);
+            BinderNode *dn = m_model.node_at(section, path);
+            if (dn && dn->kind == BinderKind::Template) {
+              if (m_on_opened) m_on_opened(section, path);
+            } else {
+              Glib::signal_idle().connect_once(
+                  [this, section, path]() { begin_rename(section, path); });
+            }
             return;
           }
 
@@ -2593,6 +2633,57 @@ void Sidebar::on_add_group(Section section,
   fire_board_selection();
   if (m_on_selected)
     m_on_selected(section, new_path);
+}
+
+void Sidebar::begin_rename(Section section, const std::vector<int> &path) {
+  BinderNode *node = m_model.node_at(section, path);
+  if (!node)
+    return;
+  // Anchor the popover to this row's header widget.
+  Gtk::Widget *anchor = nullptr;
+  for (const auto &re : m_row_entries)
+    if (re.section == section && re.path == path) { anchor = re.row; break; }
+  if (!anchor)
+    return;
+
+  auto *pop = Gtk::make_managed<Gtk::Popover>();
+  pop->set_parent(*anchor);
+  pop->set_autohide(true);
+  auto *entry = Gtk::make_managed<Gtk::Entry>();
+  entry->set_text(node->title);
+  entry->set_margin(6);
+  entry->set_width_chars(24);
+  pop->set_child(*entry);
+
+  const Section sec = section;
+  const std::vector<int> p = path;
+  auto committed = std::make_shared<bool>(false);
+  auto commit = [this, sec, p, entry, pop, committed]() {
+    if (*committed) return;          // activate + closed both fire; write once
+    *committed = true;
+    BinderNode *n = m_model.node_at(sec, p);
+    if (n) {
+      const std::string text = std::string(entry->get_text());
+      if (text != n->title) {
+        n->title = text;
+        m_model.mark_modified();
+        // After the popover finishes closing: refresh the row, and reload the
+        // node so the editor header tracks the new title (cursor is restored
+        // from the node's saved offset).
+        Glib::signal_idle().connect_once([this, sec, p]() {
+          rebuild_section(sec);
+          if (m_on_selected) m_on_selected(sec, p);
+        });
+      }
+    }
+    pop->popdown();
+  };
+  entry->signal_activate().connect(commit);
+  pop->signal_closed().connect([commit, pop]() { commit(); pop->unparent(); });
+
+  pop->popup();
+  entry->grab_focus();
+  entry->select_region(0, -1);
 }
 
 void Sidebar::on_add_leaf(Section section,

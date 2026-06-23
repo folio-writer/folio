@@ -2677,6 +2677,73 @@ void Editor::build_editor_area() {
   });
   m_view_stack.add(m_map_canvas, "map");
 
+  // ── s51 — the owned Mind Map document surface ───────────────────────────────
+  // A Reference whose form is "Mind Map" shows THIS in place of the ObjectForm
+  // (routed in set_editor_mode / set_view_mode). The canvas reads/writes a CMMDoc;
+  // its persist callback serialises straight into the host node's body cell, and
+  // its open callback navigates to an Anchor's target through the shared map-open
+  // path. Object + name providers resolve against the live object store.
+  m_cmm_canvas.set_open_callback([this](const std::string &iid) {
+    if (m_on_map_open) m_on_map_open(iid);
+  });
+  m_cmm_canvas.set_persist_callback([this](const std::string &cmm) {
+    if (BinderNode *n = m_model.find_node_by_iid(m_cmm_iid)) {
+      n->content = cmm;
+      m_model.mark_modified();
+    }
+  });
+  m_cmm_canvas.set_rename_callback([this](const std::string &name) {
+    BinderNode *n = m_model.find_node_by_iid(m_cmm_iid);
+    if (!n) return;
+    n->title = name;
+    m_model.mark_modified();
+    m_title_label.set_text(name.empty() ? "Unnamed" : name);   // editor header
+    if (m_on_meta_changed) m_on_meta_changed(n);               // sidebar row, etc.
+  });
+  m_cmm_canvas.set_objects_provider([this]() {
+    std::vector<Folio::CustomMindMapCanvas::ObjOption> out;
+    auto group_for = [](Section s) -> const char * {
+      switch (s) {
+        case Section::Manuscript: return "Manuscript";
+        case Section::Characters: return "Characters";
+        case Section::Places:     return "Places";
+        case Section::References:  return "References";
+        default:                  return "";
+      }
+    };
+    // Every anchorable node across the binder (Parts/Chapters/Scenes, Character
+    // groups + characters, Place groups + places, References) — grouped by section
+    // and indented by tree depth. Templates/Trash and the host map are excluded.
+    for (const DocumentModel::NodeRef &nr : m_model.collect_all_nodes()) {
+      if (!nr.node) continue;
+      if (nr.section == Section::Templates) continue;
+      const BinderKind k = nr.node->kind;
+      if (k != BinderKind::Scene && k != BinderKind::Group &&
+          k != BinderKind::Character && k != BinderKind::Place &&
+          k != BinderKind::Reference)
+        continue;
+      if (nr.node->iid == m_cmm_iid) continue;        // a map never anchors itself
+      Folio::CustomMindMapCanvas::ObjOption o;
+      o.iid   = nr.node->iid;
+      o.name  = nr.node->title.empty() ? std::string("Untitled") : nr.node->title;
+      o.group = group_for(nr.section);
+      o.depth = nr.path.empty() ? 0 : (int)nr.path.size() - 1;
+      out.push_back(std::move(o));
+    }
+    return out;
+  });
+  m_cmm_canvas.set_name_provider([this](const std::string &iid) -> std::string {
+    if (const BinderNode *n = m_model.find_node_by_iid(iid))
+      return n->title.empty() ? iid : n->title;
+    return iid;
+  });
+  m_cmm_canvas.set_color_provider([this](const std::string &iid) -> int {
+    if (const BinderNode *n = m_model.find_node_by_iid(iid))
+      return n->color_idx;          // an Anchor inherits its target's label colour
+    return 0;
+  });
+  m_view_stack.add(m_cmm_canvas, "cmm");
+
   // Extra menu is rebuilt on each right-click via rebuild_extra_menu().
 
   append(m_view_stack);

@@ -1134,7 +1134,9 @@ void FocusWindow::schedule_size_apply() {
     m_size_conn.disconnect();
     m_size_conn = Glib::signal_timeout().connect([this]() {
         int v = std::clamp(m_prefs.focus_font_size, 6, 72);
-        m_editor.set_body_display(v, 1.0);   // focus size, zoom neutralised
+        // zoom neutralised; reference = authored body size so styled runs scale
+        // with the sizer (see set_body_display).
+        m_editor.set_body_display(v, 1.0, m_saved_size);
         if (m_prefs.focus_typewriter_mode) queue_scroll_to_rail();
         return false;   // one-shot
     }, 140);
@@ -1471,7 +1473,9 @@ void FocusWindow::present_focus(BinderNode* start) {
     int focus_sz = m_prefs.focus_font_size > 0 ? m_prefs.focus_font_size
                                                : m_saved_size;
     focus_sz = std::clamp(focus_sz, 6, 72);
-    m_editor.set_body_display(focus_sz, 1.0);
+    // reference = the editor's authored body size, so styled runs scale WITH
+    // the focus sizer (focus_sz / authored) instead of staying literal.
+    m_editor.set_body_display(focus_sz, 1.0, m_saved_size);
     if (m_size_adj) m_size_adj->set_value(focus_sz);
     fullscreen();
     present();

@@ -116,12 +116,19 @@ void Editor::apply_indent() {
 // literal size, not editor-size × editor-zoom), and to restore the editor's
 // pre-focus size+zoom on exit. This is a single synchronous re-stamp — no timed
 // restore — so the editor cannot end up disagreeing with the tag.
-void Editor::set_body_display(int size_pt, double zoom) {
+void Editor::set_body_display(int size_pt, double zoom, int reference_pt) {
   int s = size_pt < 6 ? 6 : (size_pt > 72 ? 72 : size_pt);
   m_current_font_size = s;
   m_zoom_factor = zoom;
+  // Styled (font:) runs carry an absolute authored point size, so the body-only
+  // base tag can't resize them. When a reference (authored) body size is given,
+  // scale them by displayed/authored so they grow WITH the body — the focus
+  // sizer then moves the whole document together. reference_pt <= 0 (regular
+  // editing, or restore where displayed == authored) leaves them literal.
+  m_font_tag_scale =
+      (reference_pt > 0) ? (double)s / (double)reference_pt : 1.0;
   apply_base_font_tag();      // base = size × zoom
-  apply_zoom_to_font_tags();  // rescale genuine override runs by zoom
+  apply_zoom_to_font_tags();  // rescale genuine override runs by zoom × scale
   m_updating_font_controls = true;
   if (m_font_size_spin) m_font_size_spin->set_value((double)m_current_font_size);
   if (m_zoom_scale)     m_zoom_scale->set_value(zoom * 100.0);
@@ -145,8 +152,16 @@ void Editor::apply_zoom_to_font_tags() {
   // Per-character font: tags are named "font:FamilyName:BaseSize" and have
   // higher priority than base_font — so zoom must be applied to them too.
   // We read the base size from the tag name and multiply by m_zoom_factor.
+  //
+  // FOCUS scaling: a styled run carries an explicit authored size in its tag
+  // name, which otherwise scales only with zoom — so the focus size control
+  // couldn't resize it. m_font_tag_scale (set by set_body_display, the
+  // FocusWindow sizing primitive) multiplies it so styled text scales WITH the
+  // focus sizer, proportional to the body. It is 1.0 in regular editing, so
+  // regular-mode behaviour is exactly as before.
+  const double focus_ratio = m_font_tag_scale;
   auto table = m_buffer->get_tag_table();
-  table->foreach ([this](const Glib::RefPtr<Gtk::TextTag> &tag) {
+  table->foreach ([this, focus_ratio](const Glib::RefPtr<Gtk::TextTag> &tag) {
     std::string n = tag->property_name().get_value();
     if (n.size() <= 5 || n.substr(0, 5) != "font:")
       return;
@@ -156,7 +171,7 @@ void Editor::apply_zoom_to_font_tags() {
       return;
     try {
       double base_pt = std::stod(n.substr(last_colon + 1));
-      tag->property_size_points() = base_pt * m_zoom_factor;
+      tag->property_size_points() = base_pt * m_zoom_factor * focus_ratio;
     } catch (...) {
     }
   });
@@ -1138,6 +1153,10 @@ void Editor::apply_style(const TextStyle &style) {
   }
 
   m_loading = false;
+  // A freshly applied style's font: tag must immediately reflect the current zoom
+  // (and focus size ratio) — otherwise it renders at unscaled base size until the
+  // next zoom change. Re-stamp now, while still inside the user action.
+  apply_zoom_to_font_tags();
   m_buffer->end_user_action();
 
   // Manually flush the buffer once — the m_loading guard above suppressed

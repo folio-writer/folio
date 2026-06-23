@@ -1552,6 +1552,10 @@ void Editor::enter_focus_mode() {
   if (m_btn_typewriter.get_active() != m_focus_typewriter)
     m_btn_typewriter.set_active(m_focus_typewriter);
   apply_focus_style(true);
+  // Re-stamp so styled (font:) runs pick up the focus size ratio + zoom right away,
+  // not only after the next focus-bar adjustment.
+  apply_base_font_tag();
+  apply_zoom_to_font_tags();
 
   if (!m_exit_focus_btn) {
     m_exit_focus_btn = Gtk::make_managed<Gtk::Button>("✕  Exit Focus");

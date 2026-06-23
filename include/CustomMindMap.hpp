@@ -46,6 +46,15 @@ namespace Folio {
 
 using json = nlohmann::json;
 
+// THE FORM MARKER (s51). A Reference whose `template_id` equals this reserved
+// sentinel IS a Mind Map document: the Editor routes it to the custom-MM canvas
+// instead of an ObjectForm, and its body cell holds the serialised CMMDoc. It is
+// deliberately NOT a registered built-in template — resolve_leaf_type() returns
+// the floor for any builtin id (which would erase the marker), so the sentinel
+// keeps the type registry untouched and the ObjectForm path simply never runs
+// for it. The one front-door verb stamps this id; everything else is owned data.
+inline constexpr const char* kMindMapTemplateId = "mindmap";
+
 // ── Node species — kept to TWO on purpose (the Scapple lesson) ───────────────
 // A Text node is the workhorse: the centre topic, the W-labels, the snippets —
 // all one kind, differing only by size/emphasis the surface chooses, never by
@@ -68,6 +77,11 @@ struct CMMNode {
     std::string body;                     // Text: optional inline prose (snippet); empty for Anchor
 
     std::string iid;                      // Anchor ONLY: the real object this points at ("" for Text)
+
+    // Owned colour: 0 = none/auto (a Text node falls back to a neutral tint; an
+    // Anchor inherits its target's label colour), 1.. = a 1-based index into the
+    // tag-colour palette the surface chooses from. Presentation, owned by the doc.
+    int color_idx = 0;
 
     bool pinned    = false;               // reserved for a later rule layer (no rule owns position yet)
     bool collapsed = false;               // title-only vs title+body
@@ -126,6 +140,15 @@ std::string cmm_add_edge(CMMDoc& d, const std::string& from, const std::string& 
                          const std::string& category, bool directed = false);
 
 const CMMNode* cmm_find_node(const CMMDoc& d, const std::string& id);   // nullptr if absent
+
+// ── Removal (the inverse of the add verbs; pure) ─────────────────────────────
+// Remove a node by id AND every edge incident to it (no dangling endpoints can
+// survive — the same invariant cmm_add_edge guards on the way in). Removing an
+// Anchor drops only the canvas node; the real object it pointed at is untouched
+// (the pointer was read-only). Returns false if the id is unknown.
+bool cmm_remove_node(CMMDoc& d, const std::string& id);
+// Remove a single edge by id. Returns false if the id is unknown.
+bool cmm_remove_edge(CMMDoc& d, const std::string& id);
 
 // ── Subjects (many-to-many; the forward side this doc owns) ──────────────────
 bool cmm_has_subject   (const CMMDoc& d, const std::string& iid);
