@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "DocumentModel.hpp"
+#include "MindMapCanvas.hpp"   // s48 — the fourth lens, hosted in the view-stack as "map"
 #include "ObjectForm.hpp"   // s41 — the inversion: the object form is the Editor document
 #include "SearchEngine.hpp"
 #include "EditorHtmlSerializer.hpp"
@@ -93,6 +94,21 @@ public:
   // Flush current item's buffer back to the model (called before switching).
   void save_current();
 
+  // s46 — flush the shared buffer into the current node's content, then save a
+  // named snapshot of it and notify (Inspector history refresh). Lets a second
+  // surface (FocusWindow) take a snapshot through the editor's own load/save
+  // path instead of reaching into the raw node. No-op for form-kind nodes.
+  void snapshot_current(const std::string& name);
+
+  // s46 — apply a link tag over the selection (or insert display_text linked) at
+  // the shared cursor, and update the backlink index. View-agnostic buffer op, so
+  // a second surface on the shared buffer (FocusWindow) can drive it directly with
+  // its own picker — bypassing open_link_picker(), whose popover parents to the
+  // editor's window and points into the editor's view (wrong surface in focus).
+  void insert_link(const std::string& target_iid,
+                   const std::string& anchor_id,
+                   const std::string& display_text);
+
   // ── Board view ────────────────────────────────────────────────────────────
   void show_board(const std::vector<BoardItem> &items);
   void show_grid(const std::vector<BoardItem> &items);  // populate grid from selection
@@ -107,7 +123,7 @@ public:
   int  joined_segment_count() const { return (int)m_joined_segments.size(); }
 
   // ── View / content modes ──────────────────────────────────────────────────
-  enum class ViewMode    { Write, Outline, Board, Joined };
+  enum class ViewMode    { Write, Outline, Board, Joined, Map };
   enum class EditorMode  { Node, Character, Place, Reference, Empty };
   enum class WritingMode { Novel, Outline, Screenplay };
 
@@ -147,6 +163,18 @@ public:
   void enter_focus_mode();
   void exit_focus_mode();
   bool is_focus_mode() const { return m_in_focus; }
+
+  // ── s48 — map lens open hook ──────────────────────────────────────────────
+  // Wired by MainWindow to its app-wide navigate (switch dropdown→Write + select
+  // the node). The canvas fires it on a node click; the Editor forwards it.
+  using MapOpenCallback = std::function<void(const std::string& iid)>;
+  void set_map_open_callback(MapOpenCallback cb) { m_on_map_open = std::move(cb); }
+
+  // ── s48 slice 2 — map "create a Reference here" hook ──────────────────────
+  // Wired by MainWindow to create a real Reference leaf and return its iid (the
+  // canvas then pins it at the drop point). Returns "" on failure.
+  using MapCreateCallback = std::function<std::string(double world_x, double world_y)>;
+  void set_map_create_callback(MapCreateCallback cb) { m_on_map_create = std::move(cb); }
 
   // ── Font / geometry prefs ─────────────────────────────────────────────────
   void apply_font_prefs(const FolioPrefs &prefs);
@@ -553,6 +581,17 @@ private:
   // ── Stack ─────────────────────────────────────────────────────────────────
   Gtk::Stack m_view_stack;
 
+  // ── s48 — Map view (the fourth lens) ──────────────────────────────────────
+  // A thin painter over the pure MindMap layer, added to m_view_stack as "map".
+  // Spans the whole graph (all nodes), not the current node — so it is a VIEW
+  // mode (like Board), routed in set_view_mode, rebuilt on entry from the model.
+  Folio::MindMapCanvas m_map_canvas;
+  // Fired when a node glyph is activated on the map. MainWindow wires it to the
+  // app-wide navigate path (switch to Write + select), so map-open == sidebar-open.
+  // (MapOpenCallback alias is declared in the public section, above its setter.)
+  MapOpenCallback m_on_map_open;
+  MapCreateCallback m_on_map_create;   // s48 slice 2 — double-click → new Reference
+
   // ── Font / CSS state ──────────────────────────────────────────────────────
   std::string m_current_font = "JansonText";
   int m_current_font_size = 12;
@@ -602,9 +641,8 @@ private:
 
   // ── Internal hyperlinks ───────────────────────────────────────────────────
   void open_link_picker();                           // show node-picker popover to insert a link
-  void insert_link(const std::string& target_iid,    // apply link tag + update backlink index
-                   const std::string& anchor_id,
-                   const std::string& display_text);
+  // insert_link is PUBLIC (see above) — a clean buffer-level op a second surface
+  // (FocusWindow) can drive with its own picker, without the editor-window popover.
   void remove_link_at_cursor();                      // strip link tag under cursor
   void set_anchor_at_cursor();                       // stamp data-anchor on current paragraph
   void remove_anchor_at_cursor();                    // remove anchor: tag from current paragraph

@@ -376,8 +376,9 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
         background-color: alpha(@adw_surface, 0.85); border: 1px solid @border_subtle;
         border-radius: 9999px; color: @tx2; font-size: 11px; padding: 4px 12px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+        opacity: 0; transition: opacity 160ms ease;   /* s46 — hide until hovered */
     }
-    .focus-exit-btn:hover { background-color: @adw_overlay; color: @tx1; }
+    .focus-exit-btn:hover { background-color: @adw_overlay; color: @tx1; opacity: 1; }
 
     /* Focus mode page-width bar (bottom-centre overlay) */
     .focus-width-bar {
@@ -473,10 +474,11 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
         color: @tx3; font-size: 15px;
         border: 1px solid @border_subtle; border-left: none;
         border-radius: 0 10px 10px 0;
-        min-width: 22px; min-height: 56px; padding: 0;
+        min-width: 24px; min-height: 200px; padding: 0;
         box-shadow: 2px 0 8px rgba(0,0,0,0.30);
+        opacity: 0; transition: opacity 160ms ease;   /* s46 — hide until hovered */
     }
-    .focus-drawer-tab:hover { background-color: @adw_overlay; color: @tx1; }
+    .focus-drawer-tab:hover { background-color: @adw_overlay; color: @tx1; opacity: 1; }
     /* Transparent click-away catcher; only present while the drawer is open. */
     #focus-drawer-scrim { background-color: transparent; }
 
@@ -487,7 +489,9 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
         border-radius: 9999px;
         padding: 2px 4px;
         box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+        opacity: 0; transition: opacity 160ms ease;   /* s46 — hide until hovered */
     }
+    .focus-navbar:hover { opacity: 1; }
     .focus-nav-arrow {
         background: none; border: none; box-shadow: none;
         color: @tx3; font-size: 15px; min-width: 26px; padding: 2px 6px;
@@ -500,6 +504,31 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
         border-radius: 9999px;
     }
     .focus-nav-title:hover { background-color: @adw_overlay; color: @tx1; }
+
+    /* s46 — transient confirmation pill (bottom-centre), fades in then out */
+    .focus-toast {
+        background-color: alpha(@adw_surface, 0.92);
+        border: 1px solid @border_subtle;
+        border-radius: 9999px;
+        color: @tx1; font-size: 12px; padding: 6px 16px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.40);
+        opacity: 0; transition: opacity 200ms ease;
+    }
+    .focus-toast.show { opacity: 1; }
+
+    /* s46 — centred overlay panels: the scene switcher and the link picker share
+       this card look (the switcher had none before). Dark, lifted, rounded. */
+    .focus-switcher {
+        background-color: alpha(@adw_surface, 0.97);
+        border: 1px solid @border_subtle;
+        border-radius: 14px;
+        padding: 14px;
+        box-shadow: 0 12px 40px rgba(0,0,0,0.55);
+    }
+    .focus-link-title {
+        font-size: 13px; font-weight: 700; color: @tx1;
+        letter-spacing: 0.02em; margin-bottom: 2px;
+    }
 
     /* s45 — colour swatch buttons in the drawer (panel + text colour) */
     .focus-color-mb { min-width: 0; min-height: 0; padding: 0; }

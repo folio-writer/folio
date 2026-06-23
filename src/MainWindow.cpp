@@ -359,15 +359,16 @@ void MainWindow::setup_headerbar() {
   m_view_toggle_box.set_orientation(Gtk::Orientation::HORIZONTAL);
   m_view_toggle_box.set_valign(Gtk::Align::CENTER);
 
-  // List indices: 0=Write 1=Board 2=Grid
-  // Logical mode indices passed to switch_view_mode: 0 1 2
-  const std::array<guint, 3> LOGICAL_TO_LIST = {0, 1, 2};
-  const std::array<int, 3> LIST_TO_LOGICAL = {0, 1, 2};
+  // List indices: 0=Write 1=Board 2=Grid 3=Map
+  // Logical mode indices passed to switch_view_mode: 0 1 2 3
+  const std::array<guint, 4> LOGICAL_TO_LIST = {0, 1, 2, 3};
+  const std::array<int, 4> LIST_TO_LOGICAL = {0, 1, 2, 3};
 
   auto view_items = Gtk::StringList::create({
-      "✎  Write        Ctrl+Alt+W",  // 0
-      "⊞  Board        Ctrl+Alt+B",  // 1
-      "≡  Grid          Ctrl+Alt+G", // 2
+      "\u270E  Write        Ctrl+Alt+W",  // 0
+      "\u229E  Board        Ctrl+Alt+B",  // 1
+      "\u2261  Grid          Ctrl+Alt+G", // 2
+      "\u25C9  Map          Ctrl+Alt+M",  // 3
   });
   m_view_mode_dd.set_model(view_items);
   m_view_mode_dd.set_selected(0);
@@ -402,7 +403,7 @@ void MainWindow::setup_headerbar() {
 
   // Button face factory — shows icon + name only (no hotkey)
   static const char *const FACE_LABELS[] = {
-      "✎  Write", "⊞  Board", "≡  Grid",
+      "\u270E  Write", "\u229E  Board", "\u2261  Grid", "\u25C9  Map",
   };
   auto btn_factory = Gtk::SignalListItemFactory::create();
   btn_factory->signal_setup().connect(
@@ -416,7 +417,7 @@ void MainWindow::setup_headerbar() {
     if (!lbl)
       return;
     guint pos = li->get_position();
-    if (pos < 3)
+    if (pos < 4)
       lbl->set_text(FACE_LABELS[pos]);
   });
 
@@ -452,6 +453,11 @@ void MainWindow::setup_headerbar() {
       break;
     case 2: // Grid
       m_editor->set_view_mode(Editor::ViewMode::Outline);
+      if (m_sidebar)
+        m_sidebar->set_allow_cross_category(true);
+      break;
+    case 3: // Map (the fourth lens — whole-graph projection)
+      m_editor->set_view_mode(Editor::ViewMode::Map);
       if (m_sidebar)
         m_sidebar->set_allow_cross_category(true);
       break;
@@ -491,6 +497,7 @@ void MainWindow::setup_headerbar() {
   add_view_accel(GDK_KEY_w, 0);
   add_view_accel(GDK_KEY_b, 1);
   add_view_accel(GDK_KEY_g, 2);
+  add_view_accel(GDK_KEY_m, 3);
 
   // ── Expand/collapse all groups hotkeys ────────────────────────────────────
   auto add_expand_accel = [this](guint keyval, bool expand) {
@@ -548,6 +555,7 @@ void MainWindow::setup_headerbar() {
   project_sec->append_item(make_item("New Project", "win.new", "<Ctrl>n"));
   project_sec->append_item(make_item("New from Pattern…", "win.new-from-pattern", ""));
   project_sec->append_item(make_item("Open…", "win.open", "<Ctrl>o"));
+  project_sec->append_item(make_item("Open Sample Project", "win.open-sample", "<Ctrl><Shift>d"));
 
   m_recent_menu = Gio::Menu::create();
   project_sec->append_submenu("Open Recent", m_recent_menu);
@@ -1139,6 +1147,30 @@ void MainWindow::wire_callbacks() {
         navigate_to_link(target_iid, anchor_id);
       });
 
+  // s48 — clicking a node on the map leaves the lens and selects that node,
+  // exactly as clicking it in the sidebar would. Returning the dropdown to Write
+  // fires switch_view_mode(0); navigate_to_link then sets it active (loads it).
+  m_editor->set_map_open_callback([this](const std::string &iid) {
+    m_view_mode_dd.set_selected(0);   // back to Write
+    navigate_to_link(iid, "");
+  });
+
+  // s48 slice 2 — double-click empty map → author a Reference fragment there.
+  // Creates a real leaf in the References section (honouring the user's reference
+  // defaults), refreshes the binder, and returns its iid; the canvas pins it at
+  // the drop point. The map stays open — the scrap appears under the cursor.
+  m_editor->set_map_create_callback([this](double /*wx*/, double /*wy*/) -> std::string {
+    auto new_path = m_model.add_leaf(Section::References, {}, "",
+                                     &m_prefs.reference_defaults);
+    BinderNode *n = m_model.node_at(Section::References, new_path);
+    if (!n)
+      return std::string();
+    m_model.mark_modified();
+    if (m_sidebar)
+      m_sidebar->rebuild();
+    return n->iid;
+  });
+
   // ── Split wiring ──────────────────────────────────────────────────────────
   m_editor->on_split_requested = [this](BinderNode *original,
                                         std::vector<std::string> new_chunks) {
@@ -1565,7 +1597,41 @@ void MainWindow::action_new() {
   confirm_discard_async([this]() {
     if (m_timeline)
       m_timeline->clear();
+    // Drop the editor's current node before the swap frees the old tree (same
+    // use-after-free guard as action_open_sample — save_current writes through it).
+    if (m_editor)
+      m_editor->load_empty();
     m_model = DocumentModel::new_project();
+    m_model.daily_target = m_prefs.daily_word_goal;
+    m_model.on_node_changed = [this](BinderNode *n) { on_node_changed(n); };
+    if (m_sidebar) {
+      m_sidebar->rebuild();
+      m_sidebar->refresh_session();
+    }
+    if (m_inspector)
+      m_inspector->load_project();
+    apply_selection({});
+    update_title_bar();
+  });
+}
+
+void MainWindow::action_open_sample() {
+  // Dev/eval convenience: load the built-in demo so the mind map (and every lens)
+  // has representative data — Parts, chapter-groups, scenes in reading order with
+  // KP colours, protagonist/antagonist clusters, places, references, and real
+  // scene→entity links. Mirrors action_new's safe model-swap path.
+  confirm_discard_async([this]() {
+    if (m_timeline)
+      m_timeline->clear();
+    DocumentModel demo = DocumentModel::make_demo();
+    // CRITICAL: flush + clear the editor's current node BEFORE the swap frees the
+    // old tree. save_current() (run by the next load_node) writes through
+    // m_current_node; if it still points into the freed old tree that's a
+    // use-after-free that corrupts the heap. load_empty() runs save_current while
+    // the old tree is still alive, then clears m_current_node to null.
+    if (m_editor)
+      m_editor->load_empty();
+    m_model = std::move(demo);
     m_model.daily_target = m_prefs.daily_word_goal;
     m_model.on_node_changed = [this](BinderNode *n) { on_node_changed(n); };
     if (m_sidebar) {
@@ -1780,6 +1846,7 @@ void MainWindow::setup_actions() {
   add("new", [this]() { action_new(); });
   add("new-from-pattern", [this]() { action_new_from_pattern(); });
   add("open", [this]() { action_open(); });
+  add("open-sample", [this]() { action_open_sample(); });
   add("save", [this]() { action_save(); });
   add("save-as", [this]() { action_save_as(); });
   add("quit", [this]() {
@@ -1919,6 +1986,7 @@ void MainWindow::setup_actions() {
       return;
     app->set_accels_for_action("win.new", {"<Ctrl>n"});
     app->set_accels_for_action("win.open", {"<Ctrl>o"});
+    app->set_accels_for_action("win.open-sample", {"<Ctrl><Shift>d"});
     app->set_accels_for_action("win.save", {"<Ctrl>s"});
     app->set_accels_for_action("win.save-as", {"<Ctrl><Shift>s"});
     app->set_accels_for_action("win.export", {"<Ctrl>e"});

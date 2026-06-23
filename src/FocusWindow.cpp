@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iterator>
+#include <pango/pango.h>   // s46 — PANGO_PIXELS for the invisibles overlay metrics
 
 namespace Folio {
 
@@ -35,8 +36,11 @@ FocusWindow::FocusWindow(DocumentModel& model, FolioPrefs& prefs, Editor& editor
     set_default_size(1100, 800);
 
     build_view();
+    build_view_chrome();  // s46 — line-number + invisibles overlays (above text, below chrome)
     build_drawer();
     build_switcher();
+    build_link_picker();   // s46 — focus-owned link picker overlay (top of the overlay stack)
+    build_toast();         // s46 — transient confirmation pill (topmost; snapshot/link feedback)
     wire_keys();
 
     set_child(m_overlay);
@@ -94,6 +98,7 @@ FocusWindow::~FocusWindow() {
     // Cancel any pending debounced work so a timeout can't fire on a dead window.
     m_save_conn.disconnect();
     m_size_conn.disconnect();
+    m_toast_conn.disconnect();
 }
 
 // ── Construction ─────────────────────────────────────────────────────────────
@@ -183,6 +188,216 @@ void FocusWindow::build_view() {
         h->signal_changed().connect([this]() { apply_focus_geometry(); });
     if (auto v = m_scroll.get_vadjustment())
         v->signal_changed().connect([this]() { apply_typewriter_padding(); });
+}
+
+// ── View-chrome overlays (s46) ───────────────────────────────────────────────
+// Line numbers and invisible-char marks. The editor draws these with sibling
+// widgets (a gutter packed beside the text, an overlay in its scroll overlay);
+// focus has neither, so it draws its OWN overlay DrawingAreas over m_view, using
+// the same GtkTextView geometry the editor's versions use (compute_bounds to
+// translate into the overlay, get_visible_rect + buffer_to_window_coords to walk
+// visible lines). can_target(false) so they never eat clicks. Both are per-view,
+// gated on the focus-only prefs; they redraw on edit / scroll / resize.
+void FocusWindow::build_view_chrome() {
+    // Invisible-char overlay — a faithful port of the editor's m_invis_overlay,
+    // reading m_view instead of the editor's text view, sized to the focus body
+    // font (focus drives set_body_display at zoom 1.0, so no zoom factor here).
+    m_invis_overlay = Gtk::make_managed<Gtk::DrawingArea>();
+    m_invis_overlay->set_name("focus-invis-overlay");
+    m_invis_overlay->set_can_target(false);
+    m_invis_overlay->set_hexpand(true);
+    m_invis_overlay->set_vexpand(true);
+    m_invis_overlay->set_halign(Gtk::Align::FILL);
+    m_invis_overlay->set_valign(Gtk::Align::FILL);
+    m_invis_overlay->set_visible(m_prefs.focus_show_invisibles);
+    m_invis_overlay->set_draw_func([this](const Cairo::RefPtr<Cairo::Context>& cr,
+                                          int, int) {
+        cr->save();
+        cr->set_operator(Cairo::Context::Operator::CLEAR);
+        cr->paint();
+        cr->restore();
+        auto buf = m_view.get_buffer();
+        if (!buf || !m_prefs.focus_show_invisibles) return;
+
+        graphene_rect_t vb;
+        if (!gtk_widget_compute_bounds(GTK_WIDGET(m_view.gobj()),
+                                       GTK_WIDGET(m_invis_overlay->gobj()), &vb))
+            return;
+        cr->translate(vb.origin.x, vb.origin.y);
+        cr->set_source_rgba(0.42, 0.66, 0.98, 0.85);   // dim link-blue (focus is dark)
+
+        Gdk::Rectangle vis;
+        m_view.get_visible_rect(vis);
+        int base = std::clamp(m_editor.body_font_size(), 6, 72);
+        auto layout = m_view.create_pango_layout("");
+        Pango::FontDescription fd("sans " + std::to_string(base));
+        layout->set_font_description(fd);
+
+        Gtk::TextBuffer::iterator iter;
+        int dummy = 0;
+        m_view.get_line_at_y(iter, vis.get_y(), dummy);
+        iter.set_line_offset(0);
+
+        layout->set_text("M");
+        int ascent = 0;
+        { Pango::Rectangle ink, lg; layout->get_extents(ink, lg);
+          ascent = PANGO_PIXELS(-lg.get_y()); }
+
+        auto draw_at = [&](const Gtk::TextBuffer::iterator& it, const char* glyph) {
+            Gdk::Rectangle r;
+            m_view.get_iter_location(it, r);
+            int wx = 0, wy = 0;
+            m_view.buffer_to_window_coords(Gtk::TextWindowType::WIDGET,
+                                           r.get_x(), r.get_y(), wx, wy);
+            layout->set_text(glyph);
+            cr->move_to(wx, wy + ascent);
+            layout->show_in_cairo_context(cr);
+        };
+
+        while (!iter.is_end()) {
+            Gdk::Rectangle lr;
+            m_view.get_iter_location(iter, lr);
+            if (lr.get_y() > vis.get_y() + vis.get_height()) break;
+            switch (iter.get_char()) {
+                case 0x0020: draw_at(iter, "\xc2\xb7");     break;  // · space
+                case 0x0009: draw_at(iter, "\xe2\x86\x92"); break;  // → tab
+                case 0x000A: draw_at(iter, "\xc2\xb6");     break;  // ¶ newline
+                case 0x00A0: draw_at(iter, "\xe2\x8e\xb5"); break;  // ⎵ nbsp
+                case 0x00AD: draw_at(iter, "\xe2\x80\x90"); break;  // ‐ soft hyphen
+                case 0x2009: draw_at(iter, "\xe2\x80\xa2"); break;  // • thin space
+                case 0x200B: draw_at(iter, "\xc2\xb0");     break;  // ° zwsp
+                case 0x2011: draw_at(iter, "\xe2\x80\x90"); break;  // ‐ nb hyphen
+                case 0x2060: draw_at(iter, "\xc2\xb0");     break;  // ° wj
+                case 0xFEFF: draw_at(iter, "\xc2\xb0");     break;  // ° bom
+                default: break;
+            }
+            if (!iter.forward_char()) break;
+        }
+    });
+    m_overlay.add_overlay(*m_invis_overlay);
+
+    // Line-number overlay — the editor's gutter is a sibling strip; focus has a
+    // centred column with wide margins, so numbers are drawn right-aligned just
+    // left of the column (buffer x=0 → window x is the column's left edge).
+    m_ln_overlay = Gtk::make_managed<Gtk::DrawingArea>();
+    m_ln_overlay->set_name("focus-linenum-overlay");
+    m_ln_overlay->set_can_target(false);
+    m_ln_overlay->set_hexpand(true);
+    m_ln_overlay->set_vexpand(true);
+    m_ln_overlay->set_halign(Gtk::Align::FILL);
+    m_ln_overlay->set_valign(Gtk::Align::FILL);
+    m_ln_overlay->set_visible(m_prefs.focus_show_line_numbers);
+    m_ln_overlay->set_draw_func([this](const Cairo::RefPtr<Cairo::Context>& cr,
+                                       int, int) {
+        cr->save();
+        cr->set_operator(Cairo::Context::Operator::CLEAR);
+        cr->paint();
+        cr->restore();
+        auto buf = m_view.get_buffer();
+        if (!buf || !m_prefs.focus_show_line_numbers) return;
+
+        graphene_rect_t vb;
+        if (!gtk_widget_compute_bounds(GTK_WIDGET(m_view.gobj()),
+                                       GTK_WIDGET(m_ln_overlay->gobj()), &vb))
+            return;
+        cr->translate(vb.origin.x, vb.origin.y);
+        cr->set_source_rgba(0.80, 0.84, 0.96, 0.42);
+
+        int base = std::clamp(m_editor.body_font_size(), 6, 72);
+        int num_pt = std::max(8, (int)std::round(base * 0.62));
+        auto layout = m_view.create_pango_layout("");
+        Pango::FontDescription fd("monospace " + std::to_string(num_pt));
+        layout->set_font_description(fd);
+
+        // The text column starts at m_view's left margin (authoritative — buffer
+        // x=0 → window x came back near zero here, which floated the numbers to the
+        // screen edge). Anchor off the margin so the numbers hug the text column.
+        const double col_left = (double)m_view.get_left_margin();
+
+        Gdk::Rectangle vis;
+        m_view.get_visible_rect(vis);
+        Gtk::TextBuffer::iterator iter;
+        int dummy = 0;
+        m_view.get_line_at_y(iter, vis.get_y(), dummy);
+        iter.set_line_offset(0);
+
+        while (!iter.is_end()) {
+            Gdk::Rectangle r;
+            m_view.get_iter_location(iter, r);
+            if (r.get_y() > vis.get_y() + vis.get_height()) break;
+            int wx = 0, wy = 0;   // only wy needed (scroll-aware line top)
+            m_view.buffer_to_window_coords(Gtk::TextWindowType::WIDGET,
+                                           0, r.get_y(), wx, wy);
+            int ln = iter.get_line();
+            layout->set_text(std::to_string(ln + 1));
+            int lw = 0, lh = 0;
+            layout->get_pixel_size(lw, lh);
+            double draw_x = col_left - 10.0 - (double)lw;  // right-aligned, just left of the text
+            if (draw_x < 2.0) draw_x = 2.0;
+            double draw_y = (double)wy + ((double)r.get_height() - (double)lh) / 2.0;
+            cr->move_to(draw_x, draw_y);
+            layout->show_in_cairo_context(cr);
+            if (!iter.forward_line()) break;
+        }
+    });
+    m_overlay.add_overlay(*m_ln_overlay);
+
+    // Redraw on edit / scroll / resize.
+    if (auto b = m_view.get_buffer())
+        b->signal_changed().connect([this]() { queue_chrome_draw(); });
+    if (auto v = m_scroll.get_vadjustment()) {
+        v->signal_value_changed().connect([this]() { queue_chrome_draw(); });
+        v->signal_changed().connect([this]() { queue_chrome_draw(); });
+    }
+    if (auto h = m_scroll.get_hadjustment())
+        h->signal_changed().connect([this]() { queue_chrome_draw(); });
+}
+
+void FocusWindow::apply_view_chrome() {
+    if (m_ln_overlay) {
+        m_ln_overlay->set_visible(m_prefs.focus_show_line_numbers);
+        m_ln_overlay->queue_draw();
+    }
+    if (m_invis_overlay) {
+        m_invis_overlay->set_visible(m_prefs.focus_show_invisibles);
+        m_invis_overlay->queue_draw();
+    }
+}
+
+void FocusWindow::queue_chrome_draw() {
+    if (m_ln_overlay && m_ln_overlay->get_visible())       m_ln_overlay->queue_draw();
+    if (m_invis_overlay && m_invis_overlay->get_visible()) m_invis_overlay->queue_draw();
+}
+
+// ── Transient confirmation toast (s46) ───────────────────────────────────────
+// The editor's own snapshot/confirmation toast lands on the hidden surface behind
+// focus, so focus flashes its own bottom-centre pill. Created last (topmost) and
+// never eats clicks. (s46: the old top-left tool strip was retired — spell is now
+// a View toggle and snapshot/link are drawer actions; only this feedback pill and
+// the scene breadcrumb + Exit remain as non-drawer chrome.)
+void FocusWindow::build_toast() {
+    m_toast = Gtk::make_managed<Gtk::Label>("");
+    m_toast->set_name("focus-toast");
+    m_toast->add_css_class("focus-toast");
+    m_toast->set_halign(Gtk::Align::CENTER);
+    m_toast->set_valign(Gtk::Align::END);
+    m_toast->set_margin_bottom(48);
+    m_toast->set_can_target(false);
+    m_overlay.add_overlay(*m_toast);
+}
+
+// Show a brief bottom-centre confirmation, then fade it out. The .show class is
+// driven by CSS opacity transition; a one-shot timer pulls it back after a beat.
+// Re-firing restarts the timer so back-to-back snapshots don't blink.
+void FocusWindow::flash_toast(const std::string& msg) {
+    if (!m_toast) return;
+    m_toast->set_text(msg);
+    m_toast->add_css_class("show");
+    m_toast_conn.disconnect();
+    m_toast_conn = Glib::signal_timeout().connect([this]() {
+        if (m_toast) m_toast->remove_css_class("show");
+        return false;   // one-shot
+    }, 1600);
 }
 
 void FocusWindow::build_drawer() {
@@ -347,6 +562,86 @@ void FocusWindow::build_drawer() {
         if (m_tw_guard) return;
         toggle_typewriter();
     });
+
+    // ── VIEW ────────────────────────────────────────────────────────────────────
+    // Show/hide chrome on the writing surface. Line numbers + invisibles draw on
+    // focus's own overlays (focus-only prefs); annotations + hyperlinks toggle the
+    // SHARED buffer-tag visuals through the editor's refresh (so they also reflect
+    // in the editor — a tag's look is one value across both views).
+    section(body, "View");
+    auto view_switch = [&](const std::string& name, bool initial,
+                           std::function<void(bool)> on_toggle) -> Gtk::Switch* {
+        auto* r = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+        r->add_css_class("focus-setting-row");
+        auto* lbl = Gtk::make_managed<Gtk::Label>(name);
+        lbl->add_css_class("focus-setting-label");
+        lbl->set_halign(Gtk::Align::START);
+        lbl->set_hexpand(true);
+        auto* sw = Gtk::make_managed<Gtk::Switch>();
+        sw->set_valign(Gtk::Align::CENTER);
+        sw->set_active(initial);
+        sw->property_active().signal_changed().connect([this, sw, on_toggle]() {
+            if (m_view_guard) return;
+            on_toggle(sw->get_active());
+        });
+        r->append(*lbl);
+        r->append(*sw);
+        body->append(*r);
+        return sw;
+    };
+    m_spell_sw = view_switch("Spell check", m_prefs.spell_check_enabled,
+        [this](bool on) {
+            m_prefs.spell_check_enabled = on;
+            m_editor.apply_editing_prefs();   // (dis)connect highlighter + re-check; marks live in m_view
+            schedule_save();
+        });
+    m_ann_switch = view_switch("Annotations", m_prefs.show_annotations,
+        [this](bool on) {
+            m_prefs.show_annotations = on; m_editor.refresh_annotation_visibility();
+            schedule_save();
+        });
+    m_links_switch = view_switch("Hyperlinks", m_prefs.show_links,
+        [this](bool on) {
+            m_prefs.show_links = on; m_editor.refresh_link_visibility();
+            schedule_save();
+        });
+    m_ln_switch = view_switch("Line numbers", m_prefs.focus_show_line_numbers,
+        [this](bool on) {
+            m_prefs.focus_show_line_numbers = on; apply_view_chrome(); schedule_save();
+        });
+    m_invis_switch = view_switch("Invisible characters", m_prefs.focus_show_invisibles,
+        [this](bool on) {
+            m_prefs.focus_show_invisibles = on; apply_view_chrome(); schedule_save();
+        });
+
+    // ── TOOLS ───────────────────────────────────────────────────────────────────
+    // Actions (not toggles): one-shot operations on the current scene. Each closes
+    // the drawer so the writer lands back on the page (snapshot flashes the toast;
+    // link opens its picker, which needs the drawer/scrim out of the way). Ctrl+K
+    // still opens the link picker directly without the drawer.
+    section(body, "Tools");
+    auto* snap_btn = Gtk::make_managed<Gtk::Button>("Save snapshot");
+    snap_btn->set_name("focus-snapshot-action");
+    snap_btn->add_css_class("flat");
+    snap_btn->add_css_class("focus-drawer-action");
+    snap_btn->signal_clicked().connect([this]() {
+        close_drawer();
+        m_editor.snapshot_current("Manual snapshot");
+        flash_toast("\xF0\x9F\x93\xB7  Snapshot saved");   // 📷 — matches the editor toast
+        m_view.grab_focus();
+    });
+    body->append(*snap_btn);
+
+    auto* link_btn = Gtk::make_managed<Gtk::Button>("Insert link…");
+    link_btn->set_name("focus-link-action");
+    link_btn->add_css_class("flat");
+    link_btn->add_css_class("focus-drawer-action");
+    link_btn->set_tooltip_text("Link to another scene or page  (Ctrl+K)");
+    link_btn->signal_clicked().connect([this]() {
+        close_drawer();
+        open_link_picker();
+    });
+    body->append(*link_btn);
 
     // ── BACKDROP ──────────────────────────────────────────────────────────────
     section(body, "Backdrop");
@@ -668,7 +963,10 @@ void FocusWindow::wire_keys() {
             const bool ctrl =
                 (mods & Gdk::ModifierType::CONTROL_MASK) == Gdk::ModifierType::CONTROL_MASK;
             if (keyval == GDK_KEY_Escape) {
-                if (m_switcher && m_switcher->get_visible()) {
+                if (m_link_picker && m_link_picker->get_visible()) {
+                    m_link_picker->set_visible(false);
+                    m_view.grab_focus();
+                } else if (m_switcher && m_switcher->get_visible()) {
                     m_switcher->set_visible(false);
                     m_view.grab_focus();
                 } else if (m_drawer && m_drawer->get_reveal_child()) {
@@ -681,6 +979,10 @@ void FocusWindow::wire_keys() {
             if (ctrl && (keyval == GDK_KEY_comma)) { toggle_drawer(); return true; }
             if (ctrl && (keyval == GDK_KEY_p || keyval == GDK_KEY_P)) {
                 open_switcher();
+                return true;
+            }
+            if (ctrl && (keyval == GDK_KEY_k || keyval == GDK_KEY_K)) {
+                open_link_picker();
                 return true;
             }
             if (ctrl && (keyval == GDK_KEY_bracketright)) { goto_relative(+1); return true; }
@@ -994,6 +1296,150 @@ void FocusWindow::open_switcher() {
     if (m_switch_entry) m_switch_entry->grab_focus();
 }
 
+// ── Link picker (s46) ────────────────────────────────────────────────────────
+// Focus's own node picker: the same centred type-to-filter overlay as the scene
+// switcher (reusing its panel CSS), but it lists every linkable node across the
+// four authored sections and inserts a link at the SHARED cursor through
+// Editor::insert_link. It deliberately does NOT use Editor::open_link_picker —
+// that popover parents to the editor's window and points into the editor's view,
+// which is the wrong (hidden) surface while focus is up.
+void FocusWindow::build_link_picker() {
+    auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+    box->set_name("focus-link-picker");
+    box->add_css_class("focus-switcher");   // reuse the switcher panel look
+    box->set_halign(Gtk::Align::CENTER);
+    box->set_valign(Gtk::Align::CENTER);
+    box->set_size_request(440, -1);
+
+    auto* title = Gtk::make_managed<Gtk::Label>("Insert link");
+    title->set_name("focus-link-title");
+    title->add_css_class("focus-link-title");
+    title->set_xalign(0.0f);
+    box->append(*title);
+
+    m_link_entry = Gtk::make_managed<Gtk::SearchEntry>();
+    m_link_entry->set_name("focus-link-entry");
+    m_link_entry->set_placeholder_text("Link to scene, character, place…");
+
+    m_link_list = Gtk::make_managed<Gtk::ListBox>();
+    m_link_list->set_name("focus-link-list");
+    m_link_list->set_selection_mode(Gtk::SelectionMode::SINGLE);
+
+    auto* scroll = Gtk::make_managed<Gtk::ScrolledWindow>();
+    scroll->set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+    scroll->set_min_content_height(300);
+    scroll->set_child(*m_link_list);
+
+    box->append(*m_link_entry);
+    box->append(*scroll);
+
+    m_link_entry->signal_search_changed().connect(
+        [this]() { repopulate_link_picker(); });
+    m_link_entry->signal_activate().connect(
+        [this]() { activate_link_row(m_link_list->get_selected_row()); });
+    m_link_list->signal_row_activated().connect(
+        [this](Gtk::ListBoxRow* row) { activate_link_row(row); });
+    // SearchEntry eats Escape (stop-search) before the window key handler — hide here.
+    m_link_entry->signal_stop_search().connect([this]() {
+        if (m_link_picker) m_link_picker->set_visible(false);
+        m_view.grab_focus();
+    });
+
+    m_link_picker = box;
+    m_overlay.add_overlay(*box);
+    box->set_visible(false);
+}
+
+// Rebuild the linkable-node set from the model (every non-group node across the
+// four authored sections, tagged with its section), then show the overlay. Read
+// through m_model — the same injected reference focus already uses — never the
+// editor's widgets.
+void FocusWindow::open_link_picker() {
+    if (!m_link_picker) return;
+    m_link_entries.clear();
+    struct Sec { Section section; const char* label; };
+    const Sec secs[] = {
+        {Section::Manuscript, "Manuscript"},
+        {Section::Characters, "Characters"},
+        {Section::Places,     "Places"},
+        {Section::References,  "References"},
+    };
+    std::function<void(const std::vector<BinderNode>&, const char*)> collect =
+        [&](const std::vector<BinderNode>& nodes, const char* sec) {
+            for (const auto& n : nodes) {
+                if (!binder_kind_is_group(n.kind))
+                    m_link_entries.push_back(
+                        {n.iid, n.title.empty() ? "(untitled)" : n.title, sec});
+                collect(n.children, sec);
+            }
+        };
+    for (const auto& s : secs) collect(m_model.root(s.section), s.label);
+
+    if (m_link_entry) m_link_entry->set_text("");
+    repopulate_link_picker();
+    m_link_picker->set_visible(true);
+    if (m_link_entry) m_link_entry->grab_focus();
+}
+
+// Refill the list from m_link_entries filtered by the entry text. Row at display
+// index i is the i-th entry passing the filter — activate_link_row recomputes the
+// same filter to resolve index → entry (the switcher uses the same idiom).
+void FocusWindow::repopulate_link_picker() {
+    if (!m_link_list) return;
+    while (auto* row = m_link_list->get_row_at_index(0))
+        m_link_list->remove(*row);
+
+    std::string q = m_link_entry ? std::string(m_link_entry->get_text()) : "";
+    std::transform(q.begin(), q.end(), q.begin(), ::tolower);
+
+    for (const auto& e : m_link_entries) {
+        std::string lt = e.title;
+        std::transform(lt.begin(), lt.end(), lt.begin(), ::tolower);
+        if (!q.empty() && lt.find(q) == std::string::npos) continue;
+
+        auto* row = Gtk::make_managed<Gtk::ListBoxRow>();
+        row->set_name(Folio::widget_name("focus-link-row", e.iid));
+        auto* hb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+        hb->set_margin_top(4);   hb->set_margin_bottom(4);
+        hb->set_margin_start(8); hb->set_margin_end(8);
+        auto* tl = Gtk::make_managed<Gtk::Label>(e.title);
+        tl->set_xalign(0.0f); tl->set_hexpand(true);
+        auto* sl = Gtk::make_managed<Gtk::Label>(e.section);
+        sl->add_css_class("dim-label");
+        sl->set_xalign(1.0f);
+        hb->append(*tl); hb->append(*sl);
+        row->set_child(*hb);
+        m_link_list->append(*row);
+    }
+    if (auto* first = m_link_list->get_row_at_index(0))
+        m_link_list->select_row(*first);
+}
+
+void FocusWindow::activate_link_row(Gtk::ListBoxRow* row) {
+    if (!row) return;
+    std::string q = m_link_entry ? std::string(m_link_entry->get_text()) : "";
+    std::transform(q.begin(), q.end(), q.begin(), ::tolower);
+
+    std::vector<const LinkEntry*> filtered;
+    for (const auto& e : m_link_entries) {
+        std::string lt = e.title;
+        std::transform(lt.begin(), lt.end(), lt.begin(), ::tolower);
+        if (q.empty() || lt.find(q) != std::string::npos) filtered.push_back(&e);
+    }
+    int idx = row->get_index();
+    if (idx < 0 || idx >= (int)filtered.size()) return;
+    const LinkEntry* e = filtered[idx];
+
+    // insert_link tags the selection if there is one, else inserts the title as the
+    // linked text — both at the shared cursor, so it lands where the writer is in
+    // m_view. Empty anchor = link to the node (matches the editor's picker).
+    m_editor.insert_link(e->iid, "", e->title);
+    if (m_link_picker) m_link_picker->set_visible(false);
+    flash_toast("\xF0\x9F\x94\x97  Link inserted");   // 🔗
+    m_view.grab_focus();
+    LOG_DEBUG("focus insert_link -> {} ({})", e->iid, e->title);
+}
+
 // ── Open ─────────────────────────────────────────────────────────────────────
 void FocusWindow::present_focus(BinderNode* start) {
     rebuild_scene_list();
@@ -1004,6 +1450,17 @@ void FocusWindow::present_focus(BinderNode* start) {
         set_title("Focus — " + (node->title.empty() ? std::string("(untitled)")
                                                      : node->title));
     update_navbar();
+    // s46 — sync the View toggles from prefs (spell/annotations/links are shared and
+    // may have changed in the editor; line-number/invisibles are focus-only) and apply
+    // the line-number / invisibles overlays for this session.
+    m_view_guard = true;
+    if (m_spell_sw)     m_spell_sw->set_active(m_prefs.spell_check_enabled);
+    if (m_ann_switch)   m_ann_switch->set_active(m_prefs.show_annotations);
+    if (m_links_switch) m_links_switch->set_active(m_prefs.show_links);
+    if (m_ln_switch)    m_ln_switch->set_active(m_prefs.focus_show_line_numbers);
+    if (m_invis_switch) m_invis_switch->set_active(m_prefs.focus_show_invisibles);
+    m_view_guard = false;
+    apply_view_chrome();
 
     apply_focus_look();   // geometry/padding re-fire on signal_map (see ctor)
     // Snapshot the editor's size+zoom so we can restore them on exit, then show

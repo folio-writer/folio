@@ -39,7 +39,8 @@ Editor::Editor(DocumentModel &model, FolioPrefs &prefs)
       m_paper_inner(Gtk::Orientation::VERTICAL, 12),
       m_avatar_strip(Gtk::Orientation::HORIZONTAL, 12),
       m_multi_placeholder_box(Gtk::Orientation::VERTICAL, 16),
-      m_footer(Gtk::Orientation::HORIZONTAL, 12), m_ruler(prefs) {
+      m_footer(Gtk::Orientation::HORIZONTAL, 12), m_map_canvas(model, prefs),
+      m_ruler(prefs) {
   set_vexpand(true);
   set_hexpand(true);
 
@@ -717,6 +718,24 @@ void Editor::save_current() {
   }
 }
 
+// s46 — snapshot the current node through the editor's own load/save path. Flush
+// first so the snapshot captures exactly what is on screen (content is normally
+// live per keystroke, but the explicit flush also persists cursor/scroll and is
+// the architectural "Editor owns load/save" contract FocusWindow leans on). The
+// callback drives the Inspector's history refresh.
+void Editor::snapshot_current(const std::string& name) {
+  if (!m_current_node)
+    return;
+  save_current();   // buffer -> content (no-op for form-kind nodes / while loading)
+  if (node_is_form_kind(m_current_node))
+    return;         // prose-only; focus never targets these, but stay defensive
+  m_current_node->save_snapshot(name);
+  m_model.mark_modified();
+  if (m_on_snapshot_saved)
+    m_on_snapshot_saved();
+  LOG_INFO("snapshot_current: node={} name='{}'", m_current_node->iid, name);
+}
+
 void Editor::on_text_changed() {
   if (m_loading)
     return;
@@ -910,6 +929,12 @@ void Editor::set_view_mode(ViewMode mode) {
     break;
   case ViewMode::Board:
     m_view_stack.set_visible_child(m_board_overlay);
+    break;
+  case ViewMode::Map:
+    // s48 — the fourth lens. Whole-graph projection; rebuild from the model on
+    // entry (truth → projection, never cached across a mutation), then show it.
+    m_map_canvas.rebuild();
+    m_view_stack.set_visible_child(m_map_canvas);
     break;
   }
 }

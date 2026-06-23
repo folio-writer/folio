@@ -1024,91 +1024,105 @@ DocumentModel DocumentModel::make_demo() {
     m.author        = "Author";
     m.daily_target  = 1500;
 
-    // ── Manuscript ────────────────────────────────────────────────────────────
+    // A scene→entity link (s20): embedded in the scene's prose so the backlink
+    // index makes a real edge the mind map reads (scene Involves character / SetIn
+    // place). Anchor is empty ("iid:").
+    auto link = [](const std::string& iid, const std::string& text) {
+        return "<a data-folio-link=\"" + iid + ":\">" + text + "</a>";
+    };
+
+    // ── Characters — grouped BY TYPE (protagonist / antagonist clusters) ──────
+    std::string mara, iden, lyell, overseer, archivist;
+    {
+        auto add_c = [&](const std::vector<int>& g, const std::string& name,
+                         int color, const std::string& role, const std::string& syn) {
+            auto path = m.add_leaf(Section::Characters, g, name);
+            auto* c = m.node_at(Section::Characters, path);
+            c->color_idx = color; c->role = role; c->synopsis = syn;
+            c->description = role.empty() ? name : role;
+            return c->iid;
+        };
+        auto prot = m.add_group(Section::Characters, {}, "Protagonists");
+        mara = add_c(prot, "Mara Voss", 1, "Protagonist", "Signal analyst. Methodical, perceptive.");
+        iden = add_c(prot, "Iden Cole", 4, "Protagonist", "Field engineer. Loyal to Mara.");
+        auto anta = m.add_group(Section::Characters, {}, "Antagonists");
+        lyell     = add_c(anta, "Director Lyell", 3, "Antagonist", "Head of the Institute. Calculating.");
+        overseer  = add_c(anta, "The Overseer",   6, "Antagonist", "The authority behind the suppression.");
+        archivist = add_c({},   "The Archivist",  5, "",           "Identity and motives unclear.");
+    }
+
+    // ── Places — one group plus a loose place ────────────────────────────────
+    std::string institute, sector7, coast;
+    {
+        auto add_p = [&](const std::vector<int>& g, const std::string& name,
+                         int color, const std::string& syn) {
+            auto path = m.add_leaf(Section::Places, g, name);
+            auto* p = m.node_at(Section::Places, path);
+            p->color_idx = color; p->synopsis = syn; p->description = name;
+            return p->iid;
+        };
+        auto cx = m.add_group(Section::Places, {}, "Institute Complex");
+        institute = add_p(cx, "The Institute",             1, "Key setting for Acts I-II.");
+        sector7   = add_p(cx, "Sector 7 — Northern Array",  5, "Where the signal originated.");
+        coast     = add_p({}, "The Coast Town",             2, "Mara's point of arrival.");
+    }
+
+    // ── Manuscript — standalone Prologue, two Parts of chapter-groups, Epilogue ─
+    // Chapters are GROUPS that hold scene leaves, so the map shows the full
+    // Part ▸ Chapter ▸ Scene nesting; scene colour_idx is its KP colour.
+    auto scene = [&](const std::vector<int>& parent, const std::string& title,
+                     int color, NodeStatus st, const std::string& content) {
+        auto path = m.add_leaf(Section::Manuscript, parent, title);
+        auto* s = m.node_at(Section::Manuscript, path);
+        s->color_idx = color; s->status = st; s->content = content;
+        return s->iid;
+    };
+
+    scene({}, "Prologue", 1, NodeStatus::Polished,       // a scene all by itself
+          "The lights were always on inside " + link(institute, "the Institute") + ".");
+
     auto p1 = m.add_group(Section::Manuscript, {}, "Part I — The Awakening");
     {
-        auto path = m.add_leaf(Section::Manuscript, p1, "Prologue");
-        auto* s = m.node_at(Section::Manuscript, path);
-        s->synopsis = "The Institute in darkness. A signal arrives.";
-        s->content  = "The lights were always on inside the Institute.";
-        s->status = NodeStatus::Polished; s->color_idx = 1; s->word_target = 1200; // teal
-        s->save_snapshot("First draft");
-    }
-    {
-        auto path = m.add_leaf(Section::Manuscript, p1, "Chapter 1 — Emergence");
-        auto* s = m.node_at(Section::Manuscript, path);
-        s->synopsis = "Mara Voss arrives at the Institute for the first time.";
-        s->content  = "The train from the coast took four hours.";
-        s->status = NodeStatus::Polished; s->color_idx = 4; // green
-        s->pov_character_name = "Mara Voss"; s->word_target = 4000;
-    }
-    {
-        auto path = m.add_leaf(Section::Manuscript, p1, "Chapter 2 — The Signal");
-        auto* s = m.node_at(Section::Manuscript, path);
-        s->synopsis = "Routine telemetry shift. Something anomalous appears.";
-        s->status = NodeStatus::InProgress; s->color_idx = 2; // yellow
-        s->pov_character_name = "Mara Voss"; s->word_target = 3500;
+        auto c1 = m.add_group(Section::Manuscript, p1, "Chapter 1 — Emergence");
+        scene(c1, "Arrival", 4, NodeStatus::Polished,
+              link(mara, "Mara") + " stepped off the train at " + link(coast, "the coast town") + ".");
+        scene(c1, "The Gate", 4, NodeStatus::Polished,
+              link(mara, "She") + " presented papers at " + link(institute, "the Institute") + " gate.");
+        auto c2 = m.add_group(Section::Manuscript, p1, "Chapter 2 — The Signal");
+        scene(c2, "Telemetry", 2, NodeStatus::InProgress,
+              link(mara, "Mara") + " ran the night shift over " + link(sector7, "the northern array") + ".");
+        scene(c2, "Anomaly", 2, NodeStatus::InProgress,
+              "Something in the data at " + link(institute, "the Institute") + " did not belong.");
     }
     auto p2 = m.add_group(Section::Manuscript, {}, "Part II — Descent");
     {
-        auto path = m.add_leaf(Section::Manuscript, p2, "Chapter 5 — Echo");
-        auto* s = m.node_at(Section::Manuscript, path);
-        s->synopsis = "The northern array goes dark.";
-        s->status = NodeStatus::InProgress; s->color_idx = 5; // mauve
-        s->pov_character_name = "Mara Voss";
+        auto c5 = m.add_group(Section::Manuscript, p2, "Chapter 5 — Echo");
+        scene(c5, "Blackout", 5, NodeStatus::InProgress,
+              link(lyell, "Director Lyell") + " ordered " + link(sector7, "Sector 7") + " sealed.");
+        scene(c5, "Confrontation", 5, NodeStatus::InProgress,
+              link(mara, "Mara") + " faced " + link(lyell, "Lyell") + " inside " + link(institute, "the Institute") + ".");
+        auto c7 = m.add_group(Section::Manuscript, p2, "Chapter 7 — Hollow Meridian");
+        scene(c7, "Revelation", 1, NodeStatus::InProgress,
+              link(mara, "Mara") + " learned " + link(overseer, "the Overseer") + " had buried "
+              + link(archivist, "the Archivist") + "'s findings.");
+        scene(c7, "Aftermath", 1, NodeStatus::RoughDraft,
+              link(iden, "Iden") + " pulled " + link(mara, "Mara") + " from " + link(sector7, "Sector 7") + ".");
     }
+    scene({}, "Epilogue", 3, NodeStatus::InProgress,     // a scene all by itself
+          link(mara, "Mara") + " left a final message for " + link(archivist, "the Archivist") + ".");
+
+    // ── References — loose scraps (the References cloud) ──────────────────────
     {
-        auto path = m.add_leaf(Section::Manuscript, p2, "Chapter 7 — Hollow Meridian");
-        auto* s = m.node_at(Section::Manuscript, path);
-        s->synopsis = "Mara discovers the signal was real and suppressed.";
-        s->status = NodeStatus::InProgress; s->color_idx = 1; // teal
-        s->word_target = 1500; s->save_snapshot("Before major edit");
+        auto add_r = [&](const std::string& title, const std::string& syn) {
+            auto path = m.add_leaf(Section::References, {}, title);
+            m.node_at(Section::References, path)->synopsis = syn;
+        };
+        add_r("Signal log fragment", "Decoded burst from the array.");
+        add_r("Institute charter (1979)", "Founding document; redacted clauses.");
     }
 
-    // ── Characters ────────────────────────────────────────────────────────────
-    auto cg = m.add_group(Section::Characters, {}, "Main Characters");
-    {
-        auto path = m.add_leaf(Section::Characters, cg, "Mara Voss");
-        auto* c = m.node_at(Section::Characters, path);
-        c->description = "Protagonist · Analyst";
-        c->synopsis    = "Signal analyst at the Institute. Methodical, perceptive.";
-        c->color_idx   = 1; // teal
-        c->role        = "Protagonist";
-    }
-    {
-        auto path = m.add_leaf(Section::Characters, cg, "Director Lyell");
-        auto* c = m.node_at(Section::Characters, path);
-        c->description = "Antagonist · Institute";
-        c->synopsis    = "Head of the Institute. Authoritative and calculating.";
-        c->color_idx   = 3; // red
-        c->role        = "Antagonist";
-    }
-    {
-        auto path = m.add_leaf(Section::Characters, {}, "The Archivist");
-        auto* c = m.node_at(Section::Characters, path);
-        c->description = "Unknown · Cryptic";
-        c->synopsis    = "Identity and motives unclear.";
-        c->color_idx   = 5; // mauve
-        c->role        = "";
-    }
-
-    // ── Places ────────────────────────────────────────────────────────────────
-    {
-        auto path = m.add_leaf(Section::Places, {}, "The Institute");
-        auto* p = m.node_at(Section::Places, path);
-        p->description = "Research complex · Remote";
-        p->content     = "A vast research facility. Nineteen years of continuous operation.";
-        p->synopsis    = "Key setting for most of Act I and II.";
-        p->color_idx   = 1; // teal
-    }
-    {
-        auto path = m.add_leaf(Section::Places, {}, "Sector 7 — Northern Array");
-        auto* p = m.node_at(Section::Places, path);
-        p->description = "Signal array · Restricted";
-        p->synopsis    = "Where the anomalous signal originated.";
-        p->color_idx   = 5; // mauve
-    }
-
+    m.rebuild_object_store();
+    m.rebuild_backlink_index();   // turn the embedded links into real edges
     m.active_path.clear();
     m.is_modified = false;
     return m;

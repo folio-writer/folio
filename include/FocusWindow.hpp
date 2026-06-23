@@ -120,8 +120,17 @@ public:
 private:
     // ── Construction ──────────────────────────────────────────────────────────
     void build_view();          // m_view + set_buffer(editor shared buffer)
+    void build_view_chrome();   // s46 — line-number + invisibles overlays over m_view
+    void apply_view_chrome();   // s46 — set overlay visibility from prefs + redraw
+    void queue_chrome_draw();   // s46 — redraw the visible view-chrome overlays
+    void build_toast();         // s46 — transient bottom-centre confirmation pill
+    void flash_toast(const std::string& msg);  // s46 — show + auto-hide the toast
     void build_drawer();        // s45 — left settings drawer (replaces the hover pill)
     void build_switcher();      // type-to-filter scene overlay
+    void build_link_picker();   // s46 — focus-owned node picker for link insert (mirrors switcher)
+    void open_link_picker();    // s46 — rebuild entries + show the link picker overlay
+    void repopulate_link_picker();              // s46 — refill m_link_list from entries + filter
+    void activate_link_row(Gtk::ListBoxRow* row); // s46 — resolve row → node → Editor::insert_link
     void repopulate_switcher(); // refill m_switch_list from m_scenes + filter text
     void activate_switch_row(Gtk::ListBoxRow* row);  // resolve row → scene → goto
     void wire_keys();           // Esc → close; switcher hotkey; next/prev hotkeys
@@ -214,6 +223,41 @@ private:
     // focus doesn't have (see the cross-section fork in the slice notes).
     Gtk::Box*            m_navbar    = nullptr;
     Gtk::Button*         m_nav_title = nullptr;
+
+    // s46 — top-left text-tool strip. Icon buttons that reach the editor's
+    // existing model/buffer paths (never a focus-local reimplementation of the
+    // underlying op). Spell ships first: its highlights are tags on the SHARED
+    // buffer, so they already render in m_view; the button only flips the pref
+    // and re-applies. Snapshot + link land in the next two slices.
+    // s46 — focus-local transient confirmation (the editor's own toast sits on the
+    // hidden surface behind focus). A bottom-centre pill that fades in then out.
+    Gtk::Label*          m_toast = nullptr;
+    sigc::connection     m_toast_conn;
+
+    // s46 — link picker. Focus owns its own node picker (the switcher precedent)
+    // and delegates the actual tag insertion to Editor::insert_link on the shared
+    // buffer — never the editor's open_link_picker, whose popover parents to the
+    // editor window. Lists non-group nodes across all four authored sections.
+    Gtk::Box*            m_link_picker = nullptr;
+    Gtk::SearchEntry*    m_link_entry  = nullptr;
+    Gtk::ListBox*        m_link_list   = nullptr;
+    struct LinkEntry { std::string iid; std::string title; std::string section; };
+    std::vector<LinkEntry> m_link_entries;   // rebuilt on each open from the model
+
+    // s46 — view-chrome parity. Focus draws its OWN line-number + invisibles
+    // overlays over m_view (the editor's gutter/overlay are sibling widgets focus
+    // doesn't have). These are per-view, so they use focus-specific prefs (default
+    // off). Annotations + hyperlinks are SHARED buffer-tag visuals — a tag's look is
+    // one value across both views, so they can't differ per view — toggled through
+    // the editor's refresh_* on the shared prefs.
+    Gtk::DrawingArea*   m_ln_overlay    = nullptr;
+    Gtk::DrawingArea*   m_invis_overlay = nullptr;
+    Gtk::Switch*        m_spell_sw      = nullptr;
+    Gtk::Switch*        m_ln_switch     = nullptr;
+    Gtk::Switch*        m_invis_switch  = nullptr;
+    Gtk::Switch*        m_ann_switch    = nullptr;
+    Gtk::Switch*        m_links_switch  = nullptr;
+    bool                m_view_guard    = false;  // guard programmatic switch sync
 
     // s45 — left settings drawer. m_drawer is a Revealer (SLIDE_RIGHT) holding the
     // panel; m_drawer_tab is the always-visible pull on the left edge; m_drawer_scrim

@@ -49,6 +49,8 @@
 
 namespace Folio {
 
+class DocumentModel;   // s48 — edges_from_backlinks reads its two edge indices
+
 // ── Node marks — facts that ride a scene and render in every lens ────────────
 // The same two facts Scott draws three ways (sidebar bg / map glyph / timeline
 // track): WHICH SIGNPOST (color) and HOW DONE. Keyed by the scene's stable iid
@@ -216,8 +218,29 @@ public:
     // Involves, to a plc_… is SetIn — decidable from the iid prefix, not guessed).
     // This is the bridge that makes the graph a READING of what s20 already
     // stores, not a parallel structure to keep in sync.
+    //
+    // s48 — WIRED. Unions the two edge indices that already exist over the one
+    // iid body: the s20 prose-link backlink index (DocumentModel::backlinks) and
+    // the s44 object-relation index (ObjectStore::outgoing_edges per object). The
+    // graph is READ here, never owned — every call rebuilds from those two stores,
+    // so a rename or a deleted link is reflected with no parallel state to sync.
     static std::vector<StoryEdge>
-    edges_from_backlinks(/* const DocumentModel& */);   // signature filled at wiring
+    edges_from_backlinks(const DocumentModel& model);
 };
+
+// s48 — pure: the kind a typed edge takes from its TARGET's iid prefix (the only
+// non-trivial decision in edges_from_backlinks, factored out so it is sandbox-
+// testable). A link to a chr_… reads as Involves, to a plc_… as SetIn; anything
+// else (incl. scene→scene) stays Reference — Foreshadow is an author promotion,
+// never guessed (header note above). Inline + header-defined so it stays GTK-free
+// and unit-testable, even though edges_from_backlinks (its only caller) lives in
+// the giomm-tainted DocumentModel TU.
+inline EdgeKind edge_kind_for_target(const std::string& target_iid) {
+    switch (iid_kind_of(target_iid)) {
+        case IidKind::Character: return EdgeKind::Involves;
+        case IidKind::Place:     return EdgeKind::SetIn;
+        default:                 return EdgeKind::Reference;
+    }
+}
 
 }  // namespace Folio

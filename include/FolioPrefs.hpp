@@ -183,6 +183,8 @@ public:
     bool editor_margins_linked     = true;   // left/right move together
     int  focus_page_width_pct      = 80;     // page width in focus mode (15–100)
     bool focus_typewriter_mode     = false;  // typewriter mode independent in focus
+    bool focus_show_line_numbers   = false;  // s46 — focus-only line numbers (opt-in; editor gutter independent)
+    bool focus_show_invisibles     = false;  // s46 — focus-only invisible-char marks (opt-in)
     int  focus_zoom_pct            = 100;    // zoom level in focus mode (50–300)
     int  focus_page_margin_px      = 64;     // page margin in focus mode
     std::string focus_font         = "";     // font family in focus ("" = use editor font)

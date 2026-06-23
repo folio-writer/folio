@@ -118,6 +118,7 @@ private:
   // ── File operations ───────────────────────────────────────────────────────
   void action_new();
   void action_new_from_pattern();   // s23 — scaffold the manuscript from a module
+  void action_open_sample();        // s48 — load the built-in demo project (eval data)
   void action_open();
   void action_save();
   void action_save_as();

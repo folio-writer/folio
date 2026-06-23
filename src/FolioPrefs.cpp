@@ -112,6 +112,8 @@ void FolioPrefs::load() {
     editor_margins_linked  = boolv(GROUP_EDITOR, "margins-linked",         editor_margins_linked);
   focus_page_width_pct   = intv (GROUP_EDITOR, "focus-page-width-pct",   focus_page_width_pct);
     focus_typewriter_mode  = boolv(GROUP_EDITOR, "focus-typewriter-mode",  focus_typewriter_mode);
+    focus_show_line_numbers = boolv(GROUP_EDITOR, "focus-show-line-numbers", focus_show_line_numbers);
+    focus_show_invisibles  = boolv(GROUP_EDITOR, "focus-show-invisibles",  focus_show_invisibles);
     focus_zoom_pct         = intv (GROUP_EDITOR, "focus-zoom-pct",         focus_zoom_pct);
     focus_page_margin_px   = intv (GROUP_EDITOR, "focus-page-margin-px",   focus_page_margin_px);
     focus_font           = str  (GROUP_EDITOR, "focus-font",           focus_font.c_str());
@@ -532,6 +534,8 @@ void FolioPrefs::save() const {
     }
   g_key_file_set_integer(kf, GROUP_EDITOR, "focus-page-width-pct",     focus_page_width_pct);
     g_key_file_set_boolean(kf, GROUP_EDITOR, "focus-typewriter-mode",  focus_typewriter_mode);
+    g_key_file_set_boolean(kf, GROUP_EDITOR, "focus-show-line-numbers", focus_show_line_numbers);
+    g_key_file_set_boolean(kf, GROUP_EDITOR, "focus-show-invisibles",  focus_show_invisibles);
     g_key_file_set_integer(kf, GROUP_EDITOR, "focus-zoom-pct",         focus_zoom_pct);
     g_key_file_set_integer(kf, GROUP_EDITOR, "focus-page-margin-px",   focus_page_margin_px);
     g_key_file_set_string (kf, GROUP_EDITOR, "focus-font",           focus_font.c_str());

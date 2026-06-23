@@ -19,6 +19,25 @@
 #include <string>
 
 namespace Folio {
+
+namespace {
+// This GTK build doesn't reliably apply :checked to GtkToggleButton (see the
+// note in css.hpp), so a toolbar toggle's ON look is carried by a code-synced
+// .active style class — the same idiom the typewriter and pin toggles already
+// use. The .active CSS recolours both the button fill and the symbolic icon
+// mask, so a synced toggle reads as clearly ON. Call once per toggle after its
+// initial set_active(); the connect keeps the class in sync on every flip,
+// including programmatic set_active (e.g. from apply_editing_prefs()).
+void sync_active_class(Gtk::ToggleButton& b) {
+  auto upd = [&b]() {
+    if (b.get_active()) b.add_css_class("active");
+    else                b.remove_css_class("active");
+  };
+  upd();
+  b.signal_toggled().connect(upd);
+}
+}  // namespace
+
 // ─────────────────────────────────────────────────────────────────────────────
 // build_font_controls  (called first inside build_toolbar)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -458,6 +477,7 @@ void Editor::build_toolbar() {
     } catch (...) {
     }
   });
+  sync_active_class(m_btn_line_numbers);   // s46 — code-driven ON state (:checked unreliable here)
   m_toolbar.append(m_btn_line_numbers);
 
   // ── Spell check toggle ────────────────────────────────────────────────────
@@ -473,6 +493,7 @@ void Editor::build_toolbar() {
     } catch (...) {
     }
   });
+  sync_active_class(m_btn_spell_check);   // s46 — code-driven ON state (:checked unreliable here)
   m_toolbar.append(m_btn_spell_check);
 
   // ── Ruler toggle ──────────────────────────────────────────────────────────
@@ -488,6 +509,7 @@ void Editor::build_toolbar() {
     } catch (...) {
     }
   });
+  sync_active_class(m_btn_ruler);   // s46 — code-driven ON state (:checked unreliable here)
   m_toolbar.append(m_btn_ruler);
 
   // ── Show / hide annotations ───────────────────────────────────────────────
@@ -503,6 +525,7 @@ void Editor::build_toolbar() {
     } catch (...) {
     }
   });
+  sync_active_class(m_btn_show_annotations);   // s46 — code-driven ON state (:checked unreliable here)
   m_toolbar.append(m_btn_show_annotations);
 
   // ── Show / hide hyperlinks ────────────────────────────────────────────────
@@ -519,6 +542,7 @@ void Editor::build_toolbar() {
     } catch (...) {
     }
   });
+  sync_active_class(m_btn_show_links);   // s46 — code-driven ON state (:checked unreliable here)
   m_toolbar.append(m_btn_show_links);
 
   // ── Show / hide invisible characters ─────────────────────────────────────
@@ -542,6 +566,7 @@ void Editor::build_toolbar() {
     } catch (...) {
     }
   });
+  sync_active_class(m_btn_show_invisibles);   // s46 — code-driven ON state (:checked unreliable here)
   m_toolbar.append(m_btn_show_invisibles);
 
   // ── Screenplay format reference button (only visible in Screenplay mode) ──
@@ -2639,6 +2664,18 @@ void Editor::build_editor_area() {
   m_board_placeholder.set_visible(true);
 
   m_view_stack.add(m_board_overlay, "board");
+
+  // ── s48 — Map view (the fourth lens) ────────────────────────────────────────
+  // A whole-graph projection, hosted like Board. The canvas reads the model on
+  // each entry (set_view_mode(Map) → rebuild). A node click forwards through the
+  // Editor's map-open hook so MainWindow can switch to Write + select it.
+  m_map_canvas.set_open_callback([this](const std::string& iid) {
+    if (m_on_map_open) m_on_map_open(iid);
+  });
+  m_map_canvas.set_create_callback([this](double wx, double wy) -> std::string {
+    return m_on_map_create ? m_on_map_create(wx, wy) : std::string();
+  });
+  m_view_stack.add(m_map_canvas, "map");
 
   // Extra menu is rebuilt on each right-click via rebuild_extra_menu().
 
