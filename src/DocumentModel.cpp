@@ -567,7 +567,19 @@ void DocumentModel::move_node(Section section,
     BinderNode moving = std::move((*src_vec)[from_idx]);
     src_vec->erase(src_vec->begin() + from_idx);
 
-    auto* dst_vec = children_of(*this, section, to_parent);
+    // The erase shifted every later index in from_parent's vector. If the
+    // destination path descends through from_parent at a sibling index AFTER
+    // from_idx, that component is now off by one — resolving to_parent unadjusted
+    // would drop the node into the wrong sibling (e.g. a leaf, whose children are
+    // never rendered, so the node silently vanishes from the binder while its
+    // content file survives untouched). Shift the affected component down by one.
+    std::vector<int> dst_parent = to_parent;
+    if (dst_parent.size() > from_parent.size() &&
+        std::equal(from_parent.begin(), from_parent.end(), dst_parent.begin()) &&
+        dst_parent[from_parent.size()] > from_idx)
+        --dst_parent[from_parent.size()];
+
+    auto* dst_vec = children_of(*this, section, dst_parent);
     if (!dst_vec) {
         src_vec->insert(src_vec->begin() + from_idx, std::move(moving));
         return;
@@ -583,7 +595,7 @@ void DocumentModel::move_node(Section section,
         if (from_parent == to_parent && from_idx < index)
             --landed;
         std::vector<int> suffix(active_path.begin() + from.size(), active_path.end());
-        active_path = to_parent;
+        active_path = dst_parent;
         active_path.push_back(landed);
         active_path.insert(active_path.end(), suffix.begin(), suffix.end());
     }

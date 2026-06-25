@@ -405,6 +405,14 @@ void Editor::load_node(BinderNode *node) {
       m_chapter_tag.set_text("Mind Map");
       m_cmm_iid = node->iid;
       m_cmm_canvas.load_string(node->iid, node->content);
+    } else if (node_is_journal_form(node)) {
+      // s54 — a journal is an OWNED instrument: hand its stored body to the
+      // surface (which owns the buffer + serializer + caret) the way the MM
+      // canvas is handed its CMMDoc. The shared prose buffer stays untouched —
+      // the journal never borrows the Scene editor again.
+      m_chapter_tag.set_text("Journal");
+      m_journal_iid = node->iid;
+      m_journal_surface.load(node->iid, node->title, node->content);
     } else {
       html_to_buffer(node->content);   // hidden; the form owns the description field
     }
@@ -472,7 +480,8 @@ void Editor::load_node(BinderNode *node) {
   set_editor_mode(m_editor_mode);
   // s41: a Character/Place draws its template form as the Editor document.
   // s51: a Mind Map Reference draws its canvas (loaded above), not the form.
-  if (node_is_form_kind(m_current_node) && !node_is_mindmap_form(m_current_node))
+  if (node_is_form_kind(m_current_node) && !node_is_mindmap_form(m_current_node) &&
+      !node_is_journal_form(m_current_node))
     populate_object_form();
   update_word_count();
 
@@ -605,12 +614,24 @@ void Editor::load_node(BinderNode *node) {
 
 void Editor::load_empty() { load_node(nullptr); }
 
+void Editor::update_open_title() {
+  if (!m_current_node)
+    return;
+  const std::string &t = m_current_node->title;
+  m_title_label.set_text(t.empty() ? "Untitled" : t);
+  // The journal owns its header label (set only on load), so a rename leaves it
+  // stale until this nudge; other surfaces read the model live via the title bar.
+  if (node_is_journal_form(m_current_node))
+    m_journal_surface.set_title(t);
+}
+
 
 void Editor::set_editor_mode(EditorMode mode) {
   m_editor_mode = mode;
   bool is_form_mode =
       (mode == EditorMode::Character || mode == EditorMode::Place ||
-       mode == EditorMode::Reference);   // s42 — all three draw forms
+       mode == EditorMode::Reference) &&   // s42 — all three draw forms
+      !node_is_journal_form(m_current_node); // …except a journal, which is prose
   m_avatar_strip.set_visible(is_form_mode);
   m_btn_snapshot.set_visible(m_current_node != nullptr);
   bool is_empty = (mode == EditorMode::Empty);
@@ -621,6 +642,8 @@ void Editor::set_editor_mode(EditorMode mode) {
   if (m_view_mode == ViewMode::Write || m_view_mode == ViewMode::Joined) {
     if (node_is_mindmap_form(m_current_node))
       m_view_stack.set_visible_child(m_cmm_canvas);   // s51 — owned MM surface
+    else if (node_is_journal_form(m_current_node))
+      m_view_stack.set_visible_child(m_journal_surface); // s54 — owned journal
     else if (is_form_mode)
       m_view_stack.set_visible_child(m_form_scroll);
     else
@@ -714,9 +737,11 @@ void Editor::save_current() {
   }
   if (m_current_node) {
     // s41: form-kind nodes (Character/Place) persist through the ObjectForm's
-    // write-through path, not the prose buffer — the buffer is not their editing
-    // surface and is hidden. Skip the buffer→content write so a stale hidden
-    // buffer can't clobber the form's edits on the next load_node.
+    // write-through path, not the prose buffer. s54: a journal also persists
+    // itself — JournalSurface owns the buffer and writes the node body through
+    // its persist callback — so the shared prose buffer is not its store either.
+    // Skip the buffer→content write for every form-kind (Reference incl. MM and
+    // journal) so a stale hidden buffer can't clobber the owned surface's edits.
     if (node_is_form_kind(m_current_node))
       return;
     m_current_node->content = buffer_to_html();
@@ -882,6 +907,10 @@ void Editor::refresh_chapter_tag() {
   } else {
     m_chapter_tag_css->load_from_data(""); // revert to theme default
   }
+  // s54 — a journal carries its own title in the owned surface; keep it synced
+  // with renames (and any meta change) routed through on_meta_changed.
+  if (node_is_journal_form(m_current_node) && !m_loading)
+    m_journal_surface.set_title(m_current_node->title);
 }
 
 void Editor::update_word_count() {
@@ -923,7 +952,10 @@ void Editor::set_view_mode(ViewMode mode) {
   bool is_grid = (mode == ViewMode::Outline);
   m_toolbar.set_visible(is_write);
   m_grid_toolbar.set_visible(is_grid);
-  m_ruler.set_visible(is_write && m_prefs.show_ruler);
+  // s54 — a journal's owned surface is not a prose page: the ruler (margins/
+  // indents/tabs) is meaningless there, so suppress it whenever a journal is open.
+  m_ruler.set_visible(is_write && m_prefs.show_ruler &&
+                      !node_is_journal_form(m_current_node));
   switch (mode) {
   case ViewMode::Write:
   case ViewMode::Joined:
@@ -931,6 +963,8 @@ void Editor::set_view_mode(ViewMode mode) {
     // s41: form-kind nodes show their form; everything else the prose write view.
     if (node_is_mindmap_form(m_current_node))
       m_view_stack.set_visible_child(m_cmm_canvas);   // s51 — owned MM surface
+    else if (node_is_journal_form(m_current_node))
+      m_view_stack.set_visible_child(m_journal_surface); // s54 — owned journal
     else if (node_is_form_kind(m_current_node))
       m_view_stack.set_visible_child(m_form_scroll);
     else

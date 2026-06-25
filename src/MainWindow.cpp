@@ -1069,6 +1069,43 @@ void MainWindow::wire_callbacks() {
           m_timeline->notify_node_moved(section, mv.first, mv.second);
       });
 
+  // Sidebar: before any trash/remove, drop the editor/inspector if they're bound
+  // to a node in the deleted set (or a deleted group's subtree). Otherwise the
+  // editor keeps a raw m_current_node into the erased vector and the next
+  // save_current()/draw is a use-after-free (segfault on deleting the open node).
+  m_sidebar->set_before_remove_callback(
+      [this](Section section, const std::vector<std::vector<int>> &paths) {
+        if (!m_editor)
+          return;
+        BinderNode *cur = m_editor->current_node();
+        if (!cur)
+          return;
+        const std::string cur_iid = cur->iid;
+        // Collect every iid in the removed subtrees.
+        std::function<bool(const BinderNode &)> contains =
+            [&](const BinderNode &n) -> bool {
+          if (n.iid == cur_iid)
+            return true;
+          for (const auto &c : n.children)
+            if (contains(c))
+              return true;
+          return false;
+        };
+        bool hits_open = false;
+        for (const auto &p : paths) {
+          BinderNode *n = m_model.node_at(section, p);
+          if (n && contains(*n)) {
+            hits_open = true;
+            break;
+          }
+        }
+        if (hits_open) {
+          m_editor->load_empty();
+          if (m_inspector)
+            m_inspector->load_empty();
+        }
+      });
+
   // Sidebar: any selection change → apply_selection broadcasts to all modes
   m_sidebar->set_board_selection_callback([this](std::vector<BoardItem> items) {
     apply_selection(std::move(items), false); // sidebar already has correct state
@@ -1079,6 +1116,17 @@ void MainWindow::wire_callbacks() {
   m_sidebar->set_node_selected_callback([](Section section,
                                                std::vector<int> path) {
     (void)section; (void)path; // handled by board_selection_callback
+  });
+
+  // In-binder rename → refresh the displayed title without reloading the node
+  // (a reload would reset caret/scroll). The model title is already updated when
+  // this fires; we just re-read it into the title bar and the open surface.
+  m_sidebar->set_node_renamed_callback([this](Section section,
+                                              std::vector<int> path) {
+    (void)section; (void)path;
+    update_title_bar();
+    if (m_editor)
+      m_editor->update_open_title();
   });
 
   m_sidebar->set_split_node_callback(

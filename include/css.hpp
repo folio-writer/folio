@@ -1488,5 +1488,62 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
         background-color: alpha(@accent, 0.18);
         color: @accent;
     }
+
+    /* ── s55 journal: the deck-log surface ── */
+    .journal-dt {
+        color: @col_peach; font-size: 11px; font-weight: 700;
+        letter-spacing: 0.3px;
+    }
+    /* the "NOW" pill on the live draft */
+    .journal-now-badge {
+        background-color: @col_peach; color: @adw_bg;
+        font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+        padding: 1px 8px; border-radius: 9px;
+    }
+    .journal-prompt { color: @tx4; font-style: italic; font-size: 17px; }
+    /* the live draft: warm border + amber spine says "this one is wet clay" */
+    .journal-draft {
+        background-color: @adw_surface;
+        border: 1px solid @col_peach;
+        border-left: 4px solid @col_peach;
+        border-radius: 14px; padding: 12px 14px 12px 16px;
+    }
+    .journal-draft-view { background: transparent; color: @tx1; font-size: 15px; }
+    .journal-draft-view text { background: transparent; }
+    /* accepted records: fired clay — quiet surface, amber spine via border-left */
+    .journal-card {
+        background-color: @adw_surface;
+        border: 1px solid @border_subtle;
+        border-left: 4px solid @col_peach;
+        border-radius: 14px; padding: 12px 14px 12px 16px;
+    }
+    .journal-title { color: @tx1; font-size: 17px; font-weight: 700; }
+    .journal-excerpt { color: @tx3; font-size: 13px; }
+    .journal-card-del { opacity: 0; min-height: 0; min-width: 0; padding: 2px; }
+    .journal-card:hover .journal-card-del { opacity: 0.85; }
+    .journal-card-del:hover { opacity: 1; color: @col_red; }
+    .journal-draft .flat { min-height: 0; min-width: 0; padding: 2px; }
+    /* search scroll-to-match: flag the hit card, never hide the others */
+    .journal-card.journal-match {
+        background-color: alpha(@col_peach, 0.12);
+        border-color: @col_peach;
+    }
+    /* calendar navigator (a collapsed disclosure; taps scroll, never hide) */
+    .journal-cal-month { font-weight: 700; color: @tx1; }
+    .journal-cal-wd {
+        font-size: 10px; font-weight: 700; color: @tx3;
+        text-transform: uppercase;
+    }
+    .journal-cal-day {
+        min-width: 30px; min-height: 28px; padding: 2px;
+        color: @tx4; font-size: 12px;
+    }
+    /* days carrying records: legible + amber underline as the "has entries" dot */
+    .journal-cal-day.has-entry {
+        color: @tx1; font-weight: 700;
+        border-bottom: 2px solid @col_peach;
+    }
+    .journal-cal-day.today { background-color: alpha(@accent, 0.18); }
+    .journal-cal-day.selected { box-shadow: inset 0 0 0 2px @col_peach; }
     )CSS";
 } // namespace Folio

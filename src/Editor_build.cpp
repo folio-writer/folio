@@ -1490,6 +1490,19 @@ void Editor::build_editor_area() {
           open_link_picker();
           return true;
         }
+        // Ctrl+J — stamp a new journal entry; Ctrl+Shift+J — resume (jump to the
+        // end of the newest entry). s54: the journal owns its surface + caret, so
+        // these act on it directly (no shared-buffer round-trip). A no-op outside
+        // a journal Reference.
+        if (keyval == GDK_KEY_j || keyval == GDK_KEY_J) {
+          if (!node_is_journal_form(m_current_node))
+            return false;
+          if (shift)
+            m_journal_surface.resume_caret();
+          else
+            m_journal_surface.stamp_new_entry();
+          return true;
+        }
         // ── Special character insertion ──────────────────────────────────────
         // Ctrl+Space             → word joiner           (U+2060)  zero-width
         // no-break Ctrl+Shift+Space       → non-breaking space    (U+00A0) like
@@ -2743,6 +2756,21 @@ void Editor::build_editor_area() {
     return 0;
   });
   m_view_stack.add(m_cmm_canvas, "cmm");
+
+  // ── s54 — the journal as an owned instrument ────────────────────────────────
+  // A journal Reference shows this surface in Write mode; it owns its buffer +
+  // serializer and persists straight into the host node's body cell through this
+  // callback, keyed by the iid it was loaded with (mirrors the MM canvas).
+  m_journal_surface.set_persist_callback(
+      [this](const std::string &iid, const std::string &html) {
+        if (BinderNode *n = m_model.find_node_by_iid(iid)) {
+          n->content = html;
+          m_model.mark_modified();
+          if (n == m_current_node)
+            update_word_count();
+        }
+      });
+  m_view_stack.add(m_journal_surface, "journal");
 
   // Extra menu is rebuilt on each right-click via rebuild_extra_menu().
 

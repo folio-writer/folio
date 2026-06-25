@@ -138,6 +138,15 @@ std::string EditorHtmlSerializer::to_html() const {
                 std::string target = tn.substr(5); // "node_id:anchor_id"
                 oh = "<a data-folio-link=\"" + target + "\">";
                 open_stack.push_back({"a", t});
+            } else if (tn.size() > 3 && tn.substr(0, 3) == "dt:") {
+                // Journal entry stamp: tag name = "dt:<iso8601>"; the run's text
+                // is the human-readable date, the iso is canonical truth.
+                oh = "<span data-folio-dt=\"" + tn.substr(3) + "\">";
+                open_stack.push_back({"span", t});
+            } else if (tn.size() > 8 && tn.substr(0, 8) == "concept:") {
+                // Journal concept tag: tag name = "concept:<label>" (freeform).
+                oh = "<span data-folio-concept=\"" + tn.substr(8) + "\">";
+                open_stack.push_back({"span", t});
             }
             if (!oh.empty()) html += oh;
         }
@@ -283,6 +292,23 @@ void EditorHtmlSerializer::from_html(const std::string& html) {
                     if (ep != std::string::npos) dfs = tc.substr(dpos, ep - dpos);
                 }
                 if (!dfs.empty()) sv = "folio-style:" + dfs;
+                // Journal stamps / concept tags ride on spans too.
+                size_t dtpos = tc.find("data-folio-dt=");
+                if (dtpos != std::string::npos) {
+                    dtpos += 14;
+                    char q = tc[dtpos++];
+                    size_t ep = tc.find(q, dtpos);
+                    if (ep != std::string::npos)
+                        sv = "dt:" + tc.substr(dtpos, ep - dtpos);
+                }
+                size_t cpos = tc.find("data-folio-concept=");
+                if (cpos != std::string::npos) {
+                    cpos += 19;
+                    char q = tc[cpos++];
+                    size_t ep = tc.find(q, cpos);
+                    if (ep != std::string::npos)
+                        sv = "concept:" + tc.substr(cpos, ep - cpos);
+                }
                 stack.push_back({"span", sv, (int)plain.size()});
             }
         } else {
@@ -376,6 +402,16 @@ void EditorHtmlSerializer::from_html(const std::string& html) {
                 std::string stn   = "folio-style:" + sname;
                 auto st = m_buffer->get_tag_table()->lookup(stn);
                 if (!st) st = m_buffer->create_tag(stn);
+                m_buffer->apply_tag(st, s, e);
+                continue;
+            }
+            // Journal stamp / concept tag — create or reuse the named tag; the
+            // visual style is applied by Editor after load (apply_dt_tag_style /
+            // apply_concept_tag_style), like links.
+            if ((r.style.size() > 3 && r.style.substr(0, 3) == "dt:") ||
+                (r.style.size() > 8 && r.style.substr(0, 8) == "concept:")) {
+                auto st = m_buffer->get_tag_table()->lookup(r.style);
+                if (!st) st = m_buffer->create_tag(r.style);
                 m_buffer->apply_tag(st, s, e);
                 continue;
             }

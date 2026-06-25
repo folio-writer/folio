@@ -40,6 +40,11 @@ public:
     // binder sections. No more separate char_idx / place_idx integer callbacks.
     using NodeSelectedCallback   = std::function<void(Section, std::vector<int>)>;
     using NodeOpenedCallback     = std::function<void(Section, std::vector<int>)>;
+    // Fired when an in-binder rename commits. The host refreshes any open
+    // surface's displayed title WITHOUT a full reload (which would reset caret/
+    // scroll). Selection moved to the board model, so the old reselect-to-sync
+    // path is a no-op for the already-open node — this is the title-only channel.
+    using NodeRenamedCallback    = std::function<void(Section, std::vector<int>)>;
     using BoardSelectionCallback = std::function<void(std::vector<BoardItem>)>;
     // Fired after any move (DnD or keyboard). Each pair is { old_path, new_path }.
     using NodesMovedCallback     = std::function<void(Section, std::vector<std::pair<std::vector<int>,std::vector<int>>>)>;
@@ -52,12 +57,19 @@ public:
     using GlobalSearchCallback   = std::function<void(const std::string& query)>;
     // s38 — request the schema builder for a Template binder node (by iid).
     using EditTemplateCallback   = std::function<void(const std::string& tpl_iid)>;
+    // s53 — fired just BEFORE node(s) are trashed/removed, so the host can drop
+    // any editor/inspector still bound to a node in the deleted set (else its raw
+    // m_current_node dangles into the erased vector → use-after-free). Paths are
+    // in the section about to be mutated.
+    using BeforeRemoveCallback   = std::function<void(Section, const std::vector<std::vector<int>>&)>;
 
     explicit Sidebar(DocumentModel& model, FolioPrefs& prefs);
 
     void set_node_selected_callback(NodeSelectedCallback cb)   { m_on_selected   = std::move(cb); }
+    void set_node_renamed_callback(NodeRenamedCallback cb)     { m_on_renamed    = std::move(cb); }
     void set_node_opened_callback(NodeOpenedCallback cb)       { m_on_opened     = std::move(cb); }
     void set_edit_template_callback(EditTemplateCallback cb)   { m_on_edit_template = std::move(cb); }
+    void set_before_remove_callback(BeforeRemoveCallback cb)   { m_on_before_remove = std::move(cb); }
     void set_board_selection_callback(BoardSelectionCallback cb){ m_on_board_sel = std::move(cb); }
     // s20: the internal set is positional (SelPath); convert to iid-keyed
     // BoardItems at the edge. A row whose node no longer resolves is dropped.
@@ -302,7 +314,9 @@ private:
 
     // ── Callbacks ─────────────────────────────────────────────────────────────
     NodeSelectedCallback   m_on_selected;
+    NodeRenamedCallback    m_on_renamed;
     NodeOpenedCallback     m_on_opened;
+    BeforeRemoveCallback   m_on_before_remove;
     EditTemplateCallback   m_on_edit_template;   // s38
     BoardSelectionCallback m_on_board_sel;
     NodesMovedCallback     m_on_nodes_moved;

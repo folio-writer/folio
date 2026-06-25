@@ -12,9 +12,11 @@
 #include "DocumentModel.hpp"
 #include "MindMapCanvas.hpp"   // s48 — the fourth lens, hosted in the view-stack as "map"
 #include "CustomMindMapCanvas.hpp" // s51 — the OWNED mind-map document surface (a Reference form)
+#include "JournalSurface.hpp"      // s54 — the journal's owned writing surface (its own buffer + serializer)
 #include "ObjectForm.hpp"   // s41 — the inversion: the object form is the Editor document
 #include "SearchEngine.hpp"
 #include "EditorHtmlSerializer.hpp"
+#include "Journal.hpp"   // pure journal nav/index model (JEntry/JConcept + queries)
 #include "EditorRuler.hpp"
 #include "RulerManagerDialog.hpp"
 #include "FolioPrefs.hpp"
@@ -64,6 +66,10 @@ public:
   // ── Load content ──────────────────────────────────────────────────────────
   // Load any BinderNode — flushes current content first.
   void load_node(BinderNode* node);
+  // Refresh the open surface's displayed title from the current node (no reload).
+  // Used after an in-binder rename so the journal's own header / the editor's
+  // title label track the new name without resetting caret or scroll.
+  void update_open_title();
 
   // ── Shared-buffer seam (FocusWindow) ──────────────────────────────────────
   // The buffer is created once and reused for every node (load_node swaps
@@ -531,6 +537,13 @@ private:
     return n && n->kind == BinderKind::Reference &&
            n->template_id == Folio::kMindMapTemplateId;
   }
+  // A Reference whose form is "Journal": routed to the PLAIN PROSE editor (not
+  // the ObjectForm, not a canvas). The sentinel template_id marks it; the body
+  // cell holds the journal's prose (DT-delimited entries).
+  bool node_is_journal_form(const BinderNode* n) const {
+    return n && n->kind == BinderKind::Reference &&
+           n->template_id == Folio::kJournalTemplateId;
+  }
   void populate_object_form();   // render m_object_form for m_current_node
 
   // Exit-focus overlay button
@@ -605,6 +618,12 @@ private:
   // in place of the ObjectForm. Reads/writes a CMMDoc serialised in the node's
   // body cell. m_cmm_iid is the host node the canvas's persist callback writes to.
   Folio::CustomMindMapCanvas m_cmm_canvas;
+  // s54 — the journal as an OWNED instrument (mirrors the MM canvas): it owns its
+  // TextView + buffer + serializer and persists straight into the host node's
+  // body via a callback keyed by m_journal_iid. A journal Reference always shows
+  // this surface in Write mode — it never borrows the Scene editor's prose view.
+  Folio::JournalSurface m_journal_surface;
+  std::string m_journal_iid;
   std::string m_cmm_iid;
   // Fired when a node glyph is activated on the map. MainWindow wires it to the
   // app-wide navigate path (switch to Write + select), so map-open == sidebar-open.
@@ -668,6 +687,14 @@ private:
   void remove_anchor_at_cursor();                    // remove anchor: tag from current paragraph
   void apply_link_tag_style(Glib::RefPtr<Gtk::TextTag> tag); // set visual properties on a link tag
   void apply_anchor_tag_style(Glib::RefPtr<Gtk::TextTag> tag); // set visual properties on an anchor tag
+
+  // ── Journal (an owned instrument; see JournalSurface) ──
+  // dt:/concept: runs may appear in a loaded body; html_to_buffer re-applies
+  // their look (header for a stamp, a soft underline for a concept). All journal
+  // editing — stamping, extraction, flair — now lives in JournalSurface over its
+  // OWN buffer; the Editor only routes the node to that surface and persists it.
+  void apply_dt_tag_style(Glib::RefPtr<Gtk::TextTag> tag);
+  void apply_concept_tag_style(Glib::RefPtr<Gtk::TextTag> tag);
   bool detect_dark_mode() const; // true if the current theme is dark
   Gdk::RGBA blend_annotation_bg(const std::string& hex) const; // pre-blend against real page bg
   // Follow the link tag under iter; returns false if no link there.

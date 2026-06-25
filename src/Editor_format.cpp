@@ -77,8 +77,9 @@ void Editor::html_to_buffer(const std::string &html) {
       m_buffer->remove_tag(t, m_buffer->begin(), m_buffer->end());
   }
 
-  // Re-apply visual style to link: and anchor: tags the serializer created,
-  // since tags created by from_html have no visual properties set.
+  // Re-apply visual style to link:, anchor:, dt:, and concept: tags the
+  // serializer created, since tags created by from_html have no visual
+  // properties set.
   m_buffer->get_tag_table()->foreach (
       [this](const Glib::RefPtr<Gtk::TextTag> &t) {
         std::string tn = t->property_name().get_value();
@@ -86,6 +87,10 @@ void Editor::html_to_buffer(const std::string &html) {
           apply_link_tag_style(t);
         else if (tn.size() > 7 && tn.substr(0, 7) == "anchor:")
           apply_anchor_tag_style(t);
+        else if (tn.size() > 3 && tn.substr(0, 3) == "dt:")
+          apply_dt_tag_style(t);
+        else if (tn.size() > 8 && tn.substr(0, 8) == "concept:")
+          apply_concept_tag_style(t);
       });
 }
 

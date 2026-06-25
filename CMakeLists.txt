@@ -162,6 +162,7 @@ set(SOURCES
     src/Editor_format.cpp         # s13 — FORMAT TU (tags/indent/font/outline/screenplay)
     src/Editor_views.cpp          # s13 — VIEWS TU (board/grid/joined/focus)
     src/Editor_text.cpp           # s13 — TEXT TU (find/links/annotations)
+    src/Editor_journal.cpp        # s52+ — JOURNAL TU (DT-stamp/resume verbs + buffer→spans extractor)
     src/EditorHtmlSerializer.cpp  # extracted from Editor.cpp
     src/EditorRuler.cpp           # horizontal ruler above text view
     src/RulerManagerDialog.cpp    # fine-tune ruler values numerically
@@ -179,8 +180,11 @@ set(SOURCES
     src/MindMap.cpp               # s47 — pure mind-map lens: glyph derivation (GTK-free, tested)
     src/CustomMindMap.cpp         # s50 — pure owned mind-map DOCUMENT (Reference form): nodes/edges/subjects/stamp/json (GTK-free, tested)
     src/StoryGraph.cpp            # s48 — the graph reading: edges_from_backlinks bridge (s20 link ∪ s44 relation)
+    src/Journal.cpp               # s52+ — pure journal nav/index: calendar dates, active-entry, resume, concept relief (GTK-free, tested)
+    src/JournalLog.cpp            # s55 — pure deck-log record model: draft/commit/accept/soft-delete + JSON serialization (GTK-free, tested)
     src/MindMapCanvas.cpp         # s48 — the fourth lens, GTK side: thin painter over the pure layer
     src/CustomMindMapCanvas.cpp   # s51 — the OWNED mind-map document surface (a Reference form): canvas + toolbar + subjects
+    src/JournalSurface.cpp        # s53 — journal card/calendar lens: cairo painter over the pure layer (calendar + cards)
     src/ModuleIO.cpp              # s23 — pure (json<->Module) anatomy seam (GTK-free, tested)
     src/ModulePlanner.cpp         # s23 — pure scaffold planner: module+inputs -> Part/Chapter/Scene plan
     src/ModuleMaterializer.cpp    # s23 — Layer 2: materialise a plan into BinderNodes (kp_id stamped)

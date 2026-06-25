@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
   <gresource prefix="/com/folio/app/icons/scalable/apps">
+    <file preprocess="xml-stripblanks" alias="folio-accept-symbolic.svg">icons/folio-accept-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-annotate-symbolic.svg">icons/folio-annotate-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-annotations-symbolic.svg">icons/folio-annotations-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-binder-symbolic.svg">icons/folio-binder-symbolic.svg</file>
@@ -8,6 +9,7 @@
     <file preprocess="xml-stripblanks" alias="folio-character-symbolic.svg">icons/folio-character-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-characters-symbolic.svg">icons/folio-characters-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-clear-format-symbolic.svg">icons/folio-clear-format-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-delete-symbolic.svg">icons/folio-delete-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-focus-symbolic.svg">icons/folio-focus-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-format-symbolic.svg">icons/folio-format-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-group-symbolic.svg">icons/folio-group-symbolic.svg</file>

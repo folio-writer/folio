@@ -5,6 +5,7 @@
 #include "Sidebar.hpp"
 #include "color_utils.hpp"
 #include "CustomMindMap.hpp"   // s51 — seed an empty CMMDoc body for a new Mind Map form
+#include "Journal.hpp"         // journal front-door sentinel (kJournalTemplateId)
 #include "FolioLog.hpp"
 #include "Iid.hpp"
 #include <algorithm>
@@ -1325,6 +1326,29 @@ void Sidebar::show_section_ctx_menu(Section section, double x, double y,
         d.id   = n->iid;            // the fragment owns the doc identity
         d.name = n->title;
         n->content = Folio::cmm_to_string(d, /*pretty=*/false);
+        m_model.mark_modified();
+        m_model.set_active(Section::References, new_path);
+        rebuild_section(Section::References);
+        if (m_on_selected)
+          m_on_selected(Section::References, new_path);
+      });
+    });
+    // "New Journal": the front door for the one-file journal. Creates a Reference
+    // leaf, stamps the reserved Journal form id, and leaves the body empty —
+    // selecting it opens the plain prose editor (Ctrl+J stamps dated entries).
+    sec->append_item(mi("New Journal\xE2\x80\xA6", "ctx.new-journal", ""));
+    ag->add_action("new-journal", [this]() {
+      if (m_ctx_popover)
+        m_ctx_popover->popdown();
+      Glib::signal_idle().connect_once([this]() {
+        auto new_path = m_model.add_leaf(Section::References, {}, "",
+                                         &m_prefs.reference_defaults);
+        BinderNode *n = m_model.node_at(Section::References, new_path);
+        if (!n)
+          return;
+        n->title       = "Journal";
+        n->template_id = Folio::kJournalTemplateId;
+        n->content     = "";   // plain prose, filled by dated entries
         m_model.mark_modified();
         m_model.set_active(Section::References, new_path);
         rebuild_section(Section::References);
@@ -2667,12 +2691,13 @@ void Sidebar::begin_rename(Section section, const std::vector<int> &path) {
       if (text != n->title) {
         n->title = text;
         m_model.mark_modified();
-        // After the popover finishes closing: refresh the row, and reload the
-        // node so the editor header tracks the new title (cursor is restored
-        // from the node's saved offset).
+        // After the popover finishes closing: refresh the row, and refresh any
+        // open surface's title via the rename channel. Selection moved to the
+        // board model, so reselecting the already-open node is a no-op — a full
+        // reload would also reset caret/scroll, so this updates the title only.
         Glib::signal_idle().connect_once([this, sec, p]() {
           rebuild_section(sec);
-          if (m_on_selected) m_on_selected(sec, p);
+          if (m_on_renamed) m_on_renamed(sec, p);
         });
       }
     }
@@ -2817,6 +2842,10 @@ void Sidebar::on_remove_node(Section section, const std::vector<int> &path) {
     } catch (...) {
     }
     if (response == 1) {
+      // Clear any editor/inspector bound to a node in the deleted set first, so
+      // its raw m_current_node can't dangle into the erased vector (use-after-free).
+      if (m_on_before_remove)
+        m_on_before_remove(section, {path});
       if (in_trash)
         m_model.remove_node(section, path);
       else
@@ -2872,6 +2901,10 @@ void Sidebar::on_remove_selected(Section section) {
         return a.size() > b.size();
       return a > b;
     });
+
+    // Drop any editor/inspector bound to a node in the deleted set before mutating.
+    if (m_on_before_remove)
+      m_on_before_remove(section, paths);
 
     for (const auto &p : paths) {
       if (in_trash)
