@@ -49,6 +49,7 @@ private:
     Gtk::Widget* build_page_editing();
     Gtk::Widget* build_page_headings();
     Gtk::Widget* build_page_screenplay();
+    Gtk::Widget* build_page_images();
 
     Gtk::Box* make_section(const std::string& title, Gtk::ListBox*& out_lb);
     void append_row(Gtk::ListBox* lb, const std::string& label,
@@ -163,6 +164,16 @@ private:
     Gtk::Switch  m_sw_sub_em_dash;
     Gtk::Switch  m_sw_sub_ellipsis;
     Gtk::Switch  m_sw_sub_autocorrect;
+
+    // ── Images / Import (§13) ──
+    Gtk::SpinButton m_spin_gallery_base;       // gallery_base_long_edge (1× long edge)
+    Gtk::SpinButton m_spin_gallery_detail;     // gallery_default_detail_tier (1–4)
+    Gtk::SpinButton m_spin_gallery_max;        // gallery_image_max_dim (ceiling)
+    Gtk::SpinButton m_spin_gallery_quality;    // gallery_image_quality (JPEG q)
+    Gtk::SpinButton m_spin_gallery_thumb;      // gallery_thumb_max_dim
+    Gtk::SpinButton m_spin_gallery_import_mb;  // gallery_import_max_mb
+    Gtk::Switch     m_sw_gallery_lossless;     // gallery_prefer_lossless
+    Gtk::Switch     m_sw_gallery_url;          // gallery_allow_url_fetch
 
     // Editing — splitting
     Gtk::Box*    m_sep_list_box  = nullptr;

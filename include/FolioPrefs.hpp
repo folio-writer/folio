@@ -202,6 +202,19 @@ public:
     int  editor_zoom_pct           = 100;    // zoom level (50–300%)
     bool editor_header_visible     = true;   // show title/path header in editor
 
+    // ── Gallery / images (DESIGN_gallery §6 — import normalization) ───────────
+    // Import-time levers; baked at import (lowering a cap later does NOT shrink
+    // existing assets). New fields read older prefs JSON gracefully via the
+    // .value(key, default) pattern; defaults below are the seeded contract.
+    int  gallery_image_max_dim     = 2048;   // long-edge CEILING on import (px)
+    int  gallery_base_long_edge    = 512;    // §13: the 1× "fills the box" long edge (px)
+    int  gallery_default_detail_tier = 4;    // §13: import detail 1–4 (Observe→View into)
+    int  gallery_image_quality     = 85;     // JPEG re-encode quality (1–100)
+    int  gallery_thumb_max_dim     = 512;    // thumbnail long edge (px)
+    int  gallery_import_max_mb     = 40;     // reject-before-decode + URL ceiling
+    bool gallery_prefer_lossless   = false;  // true → PNG-always (fidelity > size)
+    bool gallery_allow_url_fetch   = true;   // false → disable outbound fetches
+
     // ── Ruler ─────────────────────────────────────────────────────────────────
     bool        show_ruler          = false;
     std::string ruler_unit          = "cm";    // "mm"|"cm"|"inch"|"pt"|"pc"
@@ -482,6 +495,7 @@ private:
     static constexpr const char* GROUP_GLOBAL_TEMPLATES = "GlobalTemplates";
     static constexpr const char* GROUP_WINDOW           = "Window";
     static constexpr const char* GROUP_EDITING          = "Editing"; // spell + substitution
+    static constexpr const char* GROUP_GALLERY          = "Gallery"; // image import prefs
 };
 
 } // namespace Folio

@@ -134,6 +134,7 @@ PreferencesDialog::PreferencesDialog(Gtk::Window& parent, FolioPrefs& prefs)
         {"editing",    "Editing"},
         {"headings",   "Outlining"},
         {"screenplay", "Screenplay"},
+        {"images",     "Images"},
     };
     using B = Gtk::Widget* (PreferencesDialog::*)();
     static const B builders[] = {
@@ -147,8 +148,9 @@ PreferencesDialog::PreferencesDialog(Gtk::Window& parent, FolioPrefs& prefs)
         &PreferencesDialog::build_page_editing,
         &PreferencesDialog::build_page_headings,
         &PreferencesDialog::build_page_screenplay,
+        &PreferencesDialog::build_page_images,
     };
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 11; ++i) {
         auto* page = (this->*builders[i])();
         m_stack.add(*page, pages[i].id, pages[i].label);
         auto* rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 0);
@@ -167,10 +169,10 @@ PreferencesDialog::PreferencesDialog(Gtk::Window& parent, FolioPrefs& prefs)
     m_nav_list.signal_row_selected().connect([this](Gtk::ListBoxRow* row) {
         if (!row) return;
         static const char* ids[] = {
-            "typography","editor","appearance","tags","saving","defaults","pomodoro","editing","headings","screenplay"
+            "typography","editor","appearance","tags","saving","defaults","pomodoro","editing","headings","screenplay","images"
         };
         int idx = row->get_index();
-        if (idx >= 0 && idx < 10) m_stack.set_visible_child(ids[idx]);
+        if (idx >= 0 && idx < 11) m_stack.set_visible_child(ids[idx]);
     });
 }
 
@@ -298,6 +300,19 @@ void PreferencesDialog::apply_and_close() {
     m_prefs.sub_ellipsis      = m_sw_sub_ellipsis.get_active();
     m_prefs.sub_autocorrect   = m_sw_sub_autocorrect.get_active();
     m_prefs.autocorrect_pairs = m_working_ac_pairs;
+
+    // Images / Import (§13)
+    m_prefs.gallery_default_detail_tier = (int)m_spin_gallery_detail.get_value();
+    m_prefs.gallery_base_long_edge      = (int)m_spin_gallery_base.get_value();
+    m_prefs.gallery_image_max_dim       = (int)m_spin_gallery_max.get_value();
+    m_prefs.gallery_thumb_max_dim       = (int)m_spin_gallery_thumb.get_value();
+    m_prefs.gallery_image_quality       = (int)m_spin_gallery_quality.get_value();
+    m_prefs.gallery_import_max_mb       = (int)m_spin_gallery_import_mb.get_value();
+    m_prefs.gallery_prefer_lossless     = m_sw_gallery_lossless.get_active();
+    m_prefs.gallery_allow_url_fetch     = m_sw_gallery_url.get_active();
+    // Keep the §13 invariant: base never exceeds the ceiling.
+    if (m_prefs.gallery_base_long_edge > m_prefs.gallery_image_max_dim)
+        m_prefs.gallery_base_long_edge = m_prefs.gallery_image_max_dim;
 
     // Flush separator entry text from live widgets — avoids dangling-pointer
     // signal_changed handlers during teardown.
@@ -2303,6 +2318,78 @@ Gtk::Widget* PreferencesDialog::build_page_screenplay() {
             save_cycle();
             refresh_buttons();
         });
+
+    return scroll;
+}
+
+Gtk::Widget* PreferencesDialog::build_page_images() {
+    auto* scroll = Gtk::make_managed<Gtk::ScrolledWindow>();
+    scroll->set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+    auto* page = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+    page->add_css_class("prefs-page"); scroll->set_child(*page);
+
+    auto* tl = Gtk::make_managed<Gtk::Label>("Images");
+    tl->add_css_class("prefs-page-title"); tl->set_halign(Gtk::Align::START);
+    page->append(*tl);
+
+    // ── Detail & size: the §13 tier model (1× base × tier, clamped) ──
+    Gtk::ListBox* lb = nullptr;
+    page->append(*make_section("Detail & Size", lb));
+
+    m_spin_gallery_detail.set_width_chars(5);
+    setup_spin(m_spin_gallery_detail, m_prefs.gallery_default_detail_tier, 1, 4, 1, 1, 0);
+    append_row(lb, "Import Detail",
+               "1 = Observe (fits the view) … 4 = View into (room to zoom in)",
+               m_spin_gallery_detail);
+
+    m_spin_gallery_base.set_width_chars(6);
+    setup_spin(m_spin_gallery_base, m_prefs.gallery_base_long_edge, 64, 8192, 64, 256, 0);
+    append_row(lb, "Base Size (1×)",
+               "Long edge in px at detail 1 — the size that fills the lightbox",
+               m_spin_gallery_base);
+
+    m_spin_gallery_max.set_width_chars(6);
+    setup_spin(m_spin_gallery_max, m_prefs.gallery_image_max_dim, 64, 8192, 64, 256, 0);
+    append_row(lb, "Maximum Size",
+               "Long-edge ceiling in px — no stored image exceeds this",
+               m_spin_gallery_max);
+
+    m_spin_gallery_thumb.set_width_chars(6);
+    setup_spin(m_spin_gallery_thumb, m_prefs.gallery_thumb_max_dim, 32, 2048, 32, 128, 0);
+    append_row(lb, "Thumbnail Size",
+               "Long edge in px for wall thumbnails", m_spin_gallery_thumb);
+
+    // ── Format & compression: content-driven, lossless override ──
+    Gtk::ListBox* lb_fmt = nullptr;
+    page->append(*make_section("Format & Compression", lb_fmt));
+
+    m_spin_gallery_quality.set_width_chars(5);
+    setup_spin(m_spin_gallery_quality, m_prefs.gallery_image_quality, 1, 100, 1, 5, 0);
+    append_row(lb_fmt, "JPEG Quality",
+               "Re-encode quality for opaque photos (1–100)", m_spin_gallery_quality);
+
+    m_sw_gallery_lossless.set_active(m_prefs.gallery_prefer_lossless);
+    m_sw_gallery_lossless.set_halign(Gtk::Align::START);
+    append_row(lb_fmt, "Prefer Lossless",
+               "Store every image as PNG (fidelity over file size). Off = JPEG for "
+               "opaque photos, PNG only when transparency is present",
+               m_sw_gallery_lossless);
+
+    // ── Import limits ──
+    Gtk::ListBox* lb_imp = nullptr;
+    page->append(*make_section("Import Limits", lb_imp));
+
+    m_spin_gallery_import_mb.set_width_chars(5);
+    setup_spin(m_spin_gallery_import_mb, m_prefs.gallery_import_max_mb, 1, 1024, 1, 10, 0);
+    append_row(lb_imp, "Maximum File Size",
+               "Reject a source larger than this many MB before decoding",
+               m_spin_gallery_import_mb);
+
+    m_sw_gallery_url.set_active(m_prefs.gallery_allow_url_fetch);
+    m_sw_gallery_url.set_halign(Gtk::Align::START);
+    append_row(lb_imp, "Allow Web Fetch",
+               "Permit importing an image from a pasted or dropped URL",
+               m_sw_gallery_url);
 
     return scroll;
 }

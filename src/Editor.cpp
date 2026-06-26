@@ -413,6 +413,12 @@ void Editor::load_node(BinderNode *node) {
       m_chapter_tag.set_text("Journal");
       m_journal_iid = node->iid;
       m_journal_surface.load(node->iid, node->title, node->content);
+    } else if (node_is_gallery_form(node)) {
+      // s61 — a Gallery is an OWNED lens over the shared image pool. Its body is
+      // the lens-def (wall order); the surface reads the pool via set_context.
+      m_chapter_tag.set_text("Gallery");
+      m_gallery_iid = node->iid;
+      m_gallery_surface.load(node->iid, node->title, node->content);
     } else {
       html_to_buffer(node->content);   // hidden; the form owns the description field
     }
@@ -623,6 +629,8 @@ void Editor::update_open_title() {
   // stale until this nudge; other surfaces read the model live via the title bar.
   if (node_is_journal_form(m_current_node))
     m_journal_surface.set_title(t);
+  if (node_is_gallery_form(m_current_node))
+    m_gallery_surface.set_title(t);
 }
 
 
@@ -631,7 +639,8 @@ void Editor::set_editor_mode(EditorMode mode) {
   bool is_form_mode =
       (mode == EditorMode::Character || mode == EditorMode::Place ||
        mode == EditorMode::Reference) &&   // s42 — all three draw forms
-      !node_is_journal_form(m_current_node); // …except a journal, which is prose
+      !node_is_journal_form(m_current_node) && // …except a journal, which is prose
+      !node_is_gallery_form(m_current_node);   // …and a gallery, an owned lens
   m_avatar_strip.set_visible(is_form_mode);
   m_btn_snapshot.set_visible(m_current_node != nullptr);
   bool is_empty = (mode == EditorMode::Empty);
@@ -644,6 +653,8 @@ void Editor::set_editor_mode(EditorMode mode) {
       m_view_stack.set_visible_child(m_cmm_canvas);   // s51 — owned MM surface
     else if (node_is_journal_form(m_current_node))
       m_view_stack.set_visible_child(m_journal_surface); // s54 — owned journal
+    else if (node_is_gallery_form(m_current_node))
+      m_view_stack.set_visible_child(m_gallery_surface); // s61 — owned gallery
     else if (is_form_mode)
       m_view_stack.set_visible_child(m_form_scroll);
     else
@@ -911,6 +922,8 @@ void Editor::refresh_chapter_tag() {
   // with renames (and any meta change) routed through on_meta_changed.
   if (node_is_journal_form(m_current_node) && !m_loading)
     m_journal_surface.set_title(m_current_node->title);
+  if (node_is_gallery_form(m_current_node) && !m_loading)
+    m_gallery_surface.set_title(m_current_node->title);
 }
 
 void Editor::update_word_count() {
@@ -955,7 +968,8 @@ void Editor::set_view_mode(ViewMode mode) {
   // s54 — a journal's owned surface is not a prose page: the ruler (margins/
   // indents/tabs) is meaningless there, so suppress it whenever a journal is open.
   m_ruler.set_visible(is_write && m_prefs.show_ruler &&
-                      !node_is_journal_form(m_current_node));
+                      !node_is_journal_form(m_current_node) &&
+                      !node_is_gallery_form(m_current_node));
   switch (mode) {
   case ViewMode::Write:
   case ViewMode::Joined:
@@ -965,6 +979,8 @@ void Editor::set_view_mode(ViewMode mode) {
       m_view_stack.set_visible_child(m_cmm_canvas);   // s51 — owned MM surface
     else if (node_is_journal_form(m_current_node))
       m_view_stack.set_visible_child(m_journal_surface); // s54 — owned journal
+    else if (node_is_gallery_form(m_current_node))
+      m_view_stack.set_visible_child(m_gallery_surface); // s61 — owned gallery
     else if (node_is_form_kind(m_current_node))
       m_view_stack.set_visible_child(m_form_scroll);
     else

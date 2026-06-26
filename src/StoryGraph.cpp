@@ -15,6 +15,8 @@
 #include "StoryGraph.hpp"
 
 #include "DocumentModel.hpp"   // backlinks() + object_store(); pulls no GTK
+#include "Gallery.hpp"         // instrument_object_links — the 4th-source scan
+#include "ImagePool.hpp"       // image_pool().all() for image→object links
 
 namespace Folio {
 
@@ -59,6 +61,30 @@ StoryGraph::edges_from_backlinks(const DocumentModel& model) {
         if (!t) continue;
         for (const std::string& target : o.outgoing_edges(*t))
             add(o.iid, target, edge_kind_for_target(target), "");
+    }
+
+    // (3) image→object links: each live pool fragment's links (the author's
+    //     "this image depicts X"). from = the ast_ fragment, to = the object —
+    //     so gallery_objects_of (forward) and gallery_images_of (reverse) read.
+    for (const ImageFragment& f : model.image_pool().all()) {
+        if (f.deleted) continue;
+        for (const std::string& target : f.links)
+            add(f.iid, target, edge_kind_for_target(target), "");
+    }
+
+    // (4) instrument→object associations: an owned instrument (Gallery, Mind Map)
+    //     that is ABOUT objects, with the link stored in its node BODY as
+    //     structured JSON — NOT prose, so sources (1)–(3) never saw it and the
+    //     Map never drew it. from = the instrument NODE, to = the object; both are
+    //     real binder nodes, so the Map renders the edge and its hover highlight/
+    //     dim apply with no view-side change (instrument_object_links is the pure,
+    //     sandbox-tested scan). Journals are absent by design: their entry links
+    //     are prose folio-links, already unioned in by source (1).
+    for (const BinderNode* n : model.all_node_ptrs()) {
+        if (!n || n->kind != BinderKind::Reference) continue;
+        for (const std::string& target :
+                 instrument_object_links(n->template_id, n->content))
+            add(n->iid, target, edge_kind_for_target(target), "");
     }
 
     return out;

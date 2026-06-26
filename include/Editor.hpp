@@ -13,6 +13,8 @@
 #include "MindMapCanvas.hpp"   // s48 — the fourth lens, hosted in the view-stack as "map"
 #include "CustomMindMapCanvas.hpp" // s51 — the OWNED mind-map document surface (a Reference form)
 #include "JournalSurface.hpp"      // s54 — the journal's owned writing surface (its own buffer + serializer)
+#include "GallerySurface.hpp"      // s61 — the gallery's owned surface (lens over the image pool)
+#include "Gallery.hpp"             // s61 — gallery front-door sentinel (kGalleryTemplateId) + lens reads
 #include "ObjectForm.hpp"   // s41 — the inversion: the object form is the Editor document
 #include "SearchEngine.hpp"
 #include "EditorHtmlSerializer.hpp"
@@ -544,6 +546,13 @@ private:
     return n && n->kind == BinderKind::Reference &&
            n->template_id == Folio::kJournalTemplateId;
   }
+  // A Reference whose form is "Gallery": routed to the owned GallerySurface (a
+  // lens over the shared image pool). The sentinel template_id marks it; the
+  // body cell holds the lens-def (wall order), NOT the images.
+  bool node_is_gallery_form(const BinderNode* n) const {
+    return n && n->kind == BinderKind::Reference &&
+           n->template_id == Folio::kGalleryTemplateId;
+  }
   void populate_object_form();   // render m_object_form for m_current_node
 
   // Exit-focus overlay button
@@ -624,6 +633,11 @@ private:
   // this surface in Write mode — it never borrows the Scene editor's prose view.
   Folio::JournalSurface m_journal_surface;
   std::string m_journal_iid;
+  // s61 — the Gallery as an owned instrument (a LENS over the shared image
+  // pool). Owns its lens-def (wall order) in the host node body; reads the pool
+  // handed in via set_context. Shown in Write mode for a gallery Reference.
+  Folio::GallerySurface m_gallery_surface;
+  std::string m_gallery_iid;
   std::string m_cmm_iid;
   // Fired when a node glyph is activated on the map. MainWindow wires it to the
   // app-wide navigate path (switch to Write + select), so map-open == sidebar-open.

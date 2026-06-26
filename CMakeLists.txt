@@ -182,9 +182,15 @@ set(SOURCES
     src/StoryGraph.cpp            # s48 — the graph reading: edges_from_backlinks bridge (s20 link ∪ s44 relation)
     src/Journal.cpp               # s52+ — pure journal nav/index: calendar dates, active-entry, resume, concept relief (GTK-free, tested)
     src/JournalLog.cpp            # s55 — pure deck-log record model: draft/commit/accept/soft-delete + JSON serialization (GTK-free, tested)
+    src/ImageNormalize.cpp        # s57 — pure Gallery asset-layer policy: guard/downscale/format-choice/plan (GTK-free, tested)
+    src/ImagePool.cpp             # s57 — pure shared image POOL: fragment model + soft-delete + JSON serialization (GTK-free, tested)
+    src/Gallery.cpp               # s57 — pure Gallery LENS reads: image↔object link directions + lightbox prev/next (GTK-free, tested)
+    src/ObjectImage.cpp           # s72 — pure object PORTRAIT helpers: dual-read iid/path resolver + long-edge display math (GTK-free, tested)
+    src/ImageImport.cpp           # s60 — gdk-pixbuf import pipeline: decode→normalize→write assets/+thumbs/→pool.add (GTK seam)
     src/MindMapCanvas.cpp         # s48 — the fourth lens, GTK side: thin painter over the pure layer
     src/CustomMindMapCanvas.cpp   # s51 — the OWNED mind-map document surface (a Reference form): canvas + toolbar + subjects
     src/JournalSurface.cpp        # s53 — journal card/calendar lens: cairo painter over the pure layer (calendar + cards)
+    src/GallerySurface.cpp        # s61 — owned Gallery surface: wall/lightbox shell + file-picker import door (GTK)
     src/ModuleIO.cpp              # s23 — pure (json<->Module) anatomy seam (GTK-free, tested)
     src/ModulePlanner.cpp         # s23 — pure scaffold planner: module+inputs -> Part/Chapter/Scene plan
     src/ModuleMaterializer.cpp    # s23 — Layer 2: materialise a plan into BinderNodes (kp_id stamped)

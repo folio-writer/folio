@@ -81,6 +81,25 @@ public:
     using BacklinkProvider =
         std::function<std::vector<Backlink>(const std::string& iid)>;
 
+    // s70 — the gallery's reverse view (DESIGN_gallery §3, spine #3): "the images
+    // that point at me." On a Character/Place, a read-only strip of the image
+    // fragments that link TO this object — the SAME image→object links the
+    // lightbox draws, surfaced from the other side, computed never stored. The
+    // provider returns one entry per linked asset (gallery_images_of, asset
+    // sources only); the form stays decoupled from the pool/edges/bundle by taking
+    // only resolved display strings (a thumb path + a caption), exactly as the
+    // relation/backlink providers hand it plain rows. Empty / no provider → no
+    // section (the strip only appears where an image actually points here). Scenes
+    // have no form, so "images of a scene" has no home here — that lands later in
+    // the editor rail / timeline and does NOT block this strip.
+    struct LinkedImage {
+        std::string iid;          // the ast_… fragment (stable handle)
+        std::string thumb_path;   // absolute path to thumbs/<iid>.<ext> (may be absent on disk)
+        std::string caption;      // lightbox caption, used as the tooltip
+    };
+    using ImageStripProvider =
+        std::function<std::vector<LinkedImage>(const std::string& iid)>;
+
     ObjectForm();
 
     // Render `obj` through `tmpl`. editable=false (this slice) renders read-only;
@@ -97,6 +116,11 @@ public:
     // consulted at the end of every populate. Absent / empty → no section shown.
     void set_backlink_provider(BacklinkProvider cb) { m_backlink_provider = std::move(cb); }
 
+    // s70 — wire the reverse image strip's source (gallery_images_of, resolved to
+    // thumb path + caption). Set once; consulted at the end of every populate.
+    // Absent / empty → no strip shown.
+    void set_image_strip_provider(ImageStripProvider cb) { m_image_strip_provider = std::move(cb); }
+
     // Show an empty state (no object selected / no template resolved).
     void clear();
 
@@ -105,6 +129,7 @@ private:
     Gtk::Label m_heading;   // type_name heading
     RelationProvider m_relation_provider;   // s37 — candidate source for relations
     BacklinkProvider m_backlink_provider;   // s44 — the relief (incoming edges)
+    ImageStripProvider m_image_strip_provider;  // s70 — reverse image strip (gallery_images_of)
     json             m_obj_values;          // s44 — current object's values (preview state)
 
     void clear_body();
@@ -125,6 +150,7 @@ private:
     void append_editable_relation_multi(const FormRow& row, const OnChange& on_change);  // CheckButtons(candidates)
     void append_editable_list(const FormRow& row, const OnChange& on_change);            // [entry][x]+add card
     void append_backlinks(const std::string& iid);              // s44 — the relief section
+    void append_image_strip(const std::string& iid);            // s70 — reverse image strip
 };
 
 }  // namespace Folio

@@ -10,6 +10,10 @@
 #include <Editor_internal.hpp>
 #include <FolioLog.hpp>
 #include <UnicodePickerPopover.hpp>
+#include <Gallery.hpp>        // s70 — gallery_images_of (reverse read for the strip)
+#include <ImagePool.hpp>      // s70 — ImageFragment lookup for thumb path + caption
+#include <ProjectBundle.hpp>  // s70 — thumb_path resolution
+#include <StoryGraph.hpp>     // s70 — edges_from_backlinks (the typed edge list)
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -2529,6 +2533,28 @@ void Editor::build_editor_area() {
     return out;
   });
 
+  // s70 — the reverse image strip (DESIGN_gallery §3, spine #3): the image
+  // fragments that point AT this object, computed live from the one typed edge
+  // list (image→object links = edge source 3) via gallery_images_of (asset
+  // sources only). Resolved here to plain display strings — a thumb path + a
+  // caption — so the form never touches the pool / edges / bundle directly,
+  // exactly like the relation + backlink providers. Recomputed on every populate,
+  // so a freshly drawn or removed link is always reflected.
+  m_object_form.set_image_strip_provider([this](const std::string& iid) {
+    std::vector<Folio::ObjectForm::LinkedImage> out;
+    if (iid.empty()) return out;
+    const auto edges = Folio::StoryGraph::edges_from_backlinks(m_model);
+    const Folio::ImagePool& pool = m_model.image_pool();
+    for (const std::string& aid : Folio::gallery_images_of(edges, iid)) {
+      const Folio::ImageFragment* f = pool.find(aid);
+      if (!f || f->deleted) continue;   // edges already skip deleted; belt-and-suspenders
+      out.push_back({ f->iid,
+                      Folio::thumb_path(m_model.current_path, f->iid, f->ext).string(),
+                      f->caption });
+    }
+    return out;
+  });
+
   m_form_scroll.set_policy(Gtk::PolicyType::AUTOMATIC, Gtk::PolicyType::AUTOMATIC);
   m_form_scroll.set_vexpand(true);
   m_form_scroll.set_hexpand(true);
@@ -2771,6 +2797,25 @@ void Editor::build_editor_area() {
         }
       });
   m_view_stack.add(m_journal_surface, "journal");
+
+  // ── s61 — the Gallery as an owned lens over the shared image pool ───────────
+  // Its body is the lens-def (wall order), persisted here; the surface reads the
+  // pool + bundle root + import policy from the model/prefs via set_context.
+  m_gallery_surface.set_persist_callback(
+      [this](const std::string &iid, const std::string &body) {
+        if (BinderNode *n = m_model.find_node_by_iid(iid)) {
+          n->content = body;
+          m_model.mark_modified();
+        }
+      });
+  m_gallery_surface.set_context(&m_model, &m_prefs);
+  // Chip click in the lightbox → open that object, reusing the navigate-by-iid
+  // path the map glyphs use (set by MainWindow).
+  m_gallery_surface.set_open_object_callback(
+      [this](const std::string &iid) {
+        if (m_on_map_open) m_on_map_open(iid);
+      });
+  m_view_stack.add(m_gallery_surface, "gallery");
 
   // Extra menu is rebuilt on each right-click via rebuild_extra_menu().
 

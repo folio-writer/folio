@@ -337,6 +337,26 @@ std::vector<DocumentModel::NodeRef> DocumentModel::collect_all_nodes() {
     return out;
 }
 
+static void collect_ptrs_recursive(const std::vector<BinderNode>& vec,
+                                   std::vector<const BinderNode*>& out) {
+    for (const BinderNode& n : vec) {
+        out.push_back(&n);
+        if (!n.children.empty())
+            collect_ptrs_recursive(n.children, out);
+    }
+}
+
+std::vector<const BinderNode*> DocumentModel::all_node_ptrs() const {
+    std::vector<const BinderNode*> out;
+    collect_ptrs_recursive(manuscript, out);
+    collect_ptrs_recursive(characters, out);
+    collect_ptrs_recursive(places,     out);
+    collect_ptrs_recursive(references, out);
+    collect_ptrs_recursive(templates,  out);
+    // Trash intentionally excluded, mirroring collect_all_nodes().
+    return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DocumentModel — add helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -854,6 +874,12 @@ void DocumentModel::save_to(const std::string& path) {
     rebuild_object_store();
     j["object_store"] = m_object_store.to_json();
 
+    // s58: the image pool rides as a bare top-level "images" array. explode()
+    // copies the whole blob and only rewrites the tree keys, so this survives the
+    // bundle round-trip untouched; ProjectBundle's reconcile validates each
+    // fragment's asset file (missing/drift/orphan) on load.
+    j["images"] = m_image_pool.to_json();
+
     // s19: write the v5 bundle. The blob `j` carries an iid on every node
     // (minted at creation / on migrate); ProjectBundle::explode strips each
     // node's content to content/<iid>.md and snapshots to snapshots/<iid>.json,
@@ -1005,6 +1031,12 @@ void DocumentModel::parse_blob(const json& j) {
     else
         rebuild_object_store();
     m_object_store.seed_builtins();
+
+    // s58: load the image pool. Absent (a pre-s58 project) → an empty pool; the
+    // reconcile already ran in implode() and surfaced any asset faults in
+    // last_load_report.
+    m_image_pool = ImagePool::from_json(
+        j.contains("images") ? j["images"] : json(nullptr));
 
     active_section = Section::Manuscript;
     active_path.clear();

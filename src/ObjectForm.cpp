@@ -26,6 +26,12 @@ namespace {
 // the inner HBox so an editable widget appends its value control at the END —
 // identical structure to ObjectForm::append_compact_row, so an editable row sits
 // flush with the read-only rows around it.
+// s71 — this INLINE (label-left / control-right) shape is now reserved for the
+// boolean Switch only: a tiny terminal control reads naturally at the end of its
+// label line, and stacking it looks orphaned. Every other field uses the STACKED
+// scaffold below. (At the Inspector's ~300px width label-left/value-right sat
+// close; on the 680px form-as-document card it stretched the pair to opposite
+// edges with a dead gulf, so the scalar fields move to label-on-top.)
 Gtk::Box& compact_scaffold(Gtk::Box& body, const Glib::ustring& label) {
     auto* lb = Gtk::make_managed<Gtk::ListBox>();
     lb->set_selection_mode(Gtk::SelectionMode::NONE);
@@ -48,6 +54,37 @@ Gtk::Box& compact_scaffold(Gtk::Box& body, const Glib::ustring& label) {
     lb->append(*lbr);
     body.append(*lb);
     return *rb;
+}
+
+// s71 — the STACKED scaffold (pref-listbox > row > vbox): the field label on top,
+// the caller's control appended directly UNDER it, left-aligned. Returns the inner
+// VBox. This is the form's default scalar idiom now (text/date/number/slider/
+// dropdown/relation-single + the read-only rows), keeping the label adjacent to
+// its control at any card width and visually consistent with the already-stacked
+// block fields (richtext / list / multiselect / image). Callers set their control
+// to halign START (or hexpand for a slider) so it sits under the label, not at the
+// far edge.
+Gtk::Box& stacked_scaffold(Gtk::Box& body, const Glib::ustring& label) {
+    auto* lb = Gtk::make_managed<Gtk::ListBox>();
+    lb->set_selection_mode(Gtk::SelectionMode::NONE);
+    lb->add_css_class("pref-listbox");
+
+    auto* lbr = Gtk::make_managed<Gtk::ListBoxRow>();
+    auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
+    col->set_margin_start(12);
+    col->set_margin_end(12);
+    col->set_margin_top(4);
+    col->set_margin_bottom(4);
+
+    auto* l = Gtk::make_managed<Gtk::Label>(label);
+    l->add_css_class("pref-row-label");
+    l->set_halign(Gtk::Align::START);
+    col->append(*l);
+
+    lbr->set_child(*col);
+    lb->append(*lbr);
+    body.append(*lb);
+    return *col;
 }
 
 // s37 — (re)build the editable rows of a List value card: one [entry][trash] row
@@ -120,36 +157,20 @@ void ObjectForm::clear() {
     clear_body();
 }
 
-// Compact label / value row — read-only display (a right-aligned value label).
+// Compact label / value row — read-only display. s71 — STACKED: the label on
+// top, the value beneath it left-aligned (dim), so a read-only field reads the
+// same shape as an editable one.
 void ObjectForm::append_compact_row(const Folio::FormRow& row) {
-    auto* lb  = Gtk::make_managed<Gtk::ListBox>();
-    lb->set_selection_mode(Gtk::SelectionMode::NONE);
-    lb->add_css_class("pref-listbox");
-
-    auto* lbr = Gtk::make_managed<Gtk::ListBoxRow>();
-    auto* rb  = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    rb->set_margin_start(12);
-    rb->set_margin_end(12);
-    rb->set_margin_top(3);
-    rb->set_margin_bottom(3);
-
-    auto* l = Gtk::make_managed<Gtk::Label>(row.label);
-    l->add_css_class("pref-row-label");
-    l->set_hexpand(true);
-    l->set_halign(Gtk::Align::START);
+    Gtk::Box& col = stacked_scaffold(m_body, row.label);
 
     const std::string text = field_display_string(row.type, row.value, row.config);
     auto* v = Gtk::make_managed<Gtk::Label>(text.empty() ? "—" : text);
-    v->set_halign(Gtk::Align::END);
+    v->set_halign(Gtk::Align::START);
+    v->set_hexpand(true);
     v->set_ellipsize(Pango::EllipsizeMode::END);
-    v->set_max_width_chars(28);
+    v->set_max_width_chars(48);
     if (text.empty() || row.read_only) v->add_css_class("dim-label");
-
-    rb->append(*l);
-    rb->append(*v);
-    lbr->set_child(*rb);
-    lb->append(*lbr);
-    m_body.append(*lb);
+    col.append(*v);
 }
 
 // Full-width block — richtext (the dissertation floor) / list. Read-only: a
@@ -197,40 +218,23 @@ void ObjectForm::append_full_width(const Folio::FormRow& row) {
     }
 }
 
-// Editable single-line entry (s32) — name (text) and the image path. Reports the
-// raw string through on_change; the Inspector coerces + writes it through to the
-// backing leaf. A real image picker is a later slice; the path entry is the floor.
+// Editable single-line entry (s32) — name (text) and date. Reports the raw string
+// through on_change; the Inspector coerces + writes it through to the backing
+// leaf. s71 — STACKED: the entry sits under its label, left-aligned at a
+// comfortable width (not pinned to the far edge).
 void ObjectForm::append_editable_text(const Folio::FormRow& row, const OnChange& on_change) {
-    auto* lb  = Gtk::make_managed<Gtk::ListBox>();
-    lb->set_selection_mode(Gtk::SelectionMode::NONE);
-    lb->add_css_class("pref-listbox");
-
-    auto* lbr = Gtk::make_managed<Gtk::ListBoxRow>();
-    auto* rb  = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    rb->set_margin_start(12);
-    rb->set_margin_end(12);
-    rb->set_margin_top(3);
-    rb->set_margin_bottom(3);
-
-    auto* l = Gtk::make_managed<Gtk::Label>(row.label);
-    l->add_css_class("pref-row-label");
-    l->set_hexpand(true);
-    l->set_halign(Gtk::Align::START);
+    Gtk::Box& col = stacked_scaffold(m_body, row.label);
 
     auto* e = Gtk::make_managed<Gtk::Entry>();
     e->set_text(field_display_string(row.type, row.value));
-    e->set_halign(Gtk::Align::END);
-    e->set_size_request(140, -1);
+    e->set_halign(Gtk::Align::START);
+    e->set_size_request(320, -1);
     std::string field_id = row.field_id;
     e->signal_changed().connect([e, field_id, on_change]() {
         if (on_change) on_change(field_id, json(std::string(e->get_text())));
     });
 
-    rb->append(*l);
-    rb->append(*e);
-    lbr->set_child(*rb);
-    lb->append(*lbr);
-    m_body.append(*lb);
+    col.append(*e);
 }
 
 // Editable Image (s44) — a bounded preview plus a "Set image…" / "Clear" control,
@@ -453,7 +457,7 @@ void ObjectForm::append_editable_richtext(const Folio::FormRow& row, const OnCha
 // configured band widens the band to admit it (never silently clamp the model);
 // integer step shows 0 decimals, otherwise 2.
 void ObjectForm::append_editable_number(const Folio::FormRow& row, const OnChange& on_change) {
-    Gtk::Box& rb = compact_scaffold(m_body, row.label);
+    Gtk::Box& col = stacked_scaffold(m_body, row.label);
 
     double mn = config_num(row.config, "min", 0.0);
     double mx = config_num(row.config, "max", 1000000.0);
@@ -468,20 +472,20 @@ void ObjectForm::append_editable_number(const Folio::FormRow& row, const OnChang
     auto adj  = Gtk::Adjustment::create(cur, mn, mx, st, st * 10.0, 0.0);
     auto* sb  = Gtk::make_managed<Gtk::SpinButton>(adj);
     sb->set_digits((st == std::floor(st)) ? 0 : 2);
-    sb->set_halign(Gtk::Align::END);
+    sb->set_halign(Gtk::Align::START);
 
     std::string field_id = row.field_id;
     sb->signal_value_changed().connect([sb, field_id, on_change]() {       // after seed
         if (on_change) on_change(field_id, json(sb->get_value()));
     });
 
-    rb.append(*sb);
+    col.append(*sb);
 }
 
 // Slider → horizontal Scale with the value drawn at the right; same band rules as
 // number (widen to fit a stored out-of-band value).
 void ObjectForm::append_editable_slider(const Folio::FormRow& row, const OnChange& on_change) {
-    Gtk::Box& rb = compact_scaffold(m_body, row.label);
+    Gtk::Box& col = stacked_scaffold(m_body, row.label);
 
     double mn = config_num(row.config, "min", 0.0);
     double mx = config_num(row.config, "max", 100.0);
@@ -498,15 +502,14 @@ void ObjectForm::append_editable_slider(const Folio::FormRow& row, const OnChang
     sc->set_draw_value(true);
     sc->set_value_pos(Gtk::PositionType::RIGHT);
     sc->set_digits((st == std::floor(st)) ? 0 : 2);
-    sc->set_size_request(200, -1);
-    sc->set_halign(Gtk::Align::END);
+    sc->set_hexpand(true);                 // a slider reads better spanning the row
 
     std::string field_id = row.field_id;
     sc->signal_value_changed().connect([sc, field_id, on_change]() {
         if (on_change) on_change(field_id, json(sc->get_value()));
     });
 
-    rb.append(*sc);
+    col.append(*sc);
 }
 
 // Toggle → a plain Switch. GTK styles it via :checked natively (no custom class),
@@ -532,7 +535,7 @@ void ObjectForm::append_editable_toggle(const Folio::FormRow& row, const OnChang
 // dropdown back to a read-only row). An unset / orphaned value selects index 0.
 void ObjectForm::append_editable_dropdown(const Folio::FormRow& row, const OnChange& on_change) {
     auto options = config_options(row.config);
-    Gtk::Box& rb = compact_scaffold(m_body, row.label);
+    Gtk::Box& col = stacked_scaffold(m_body, row.label);
 
     std::vector<Glib::ustring> labels;
     std::vector<std::string>   ids;
@@ -542,7 +545,7 @@ void ObjectForm::append_editable_dropdown(const Folio::FormRow& row, const OnCha
 
     auto  sl = Gtk::StringList::create(labels);
     auto* dd = Gtk::make_managed<Gtk::DropDown>(sl);
-    dd->set_halign(Gtk::Align::END);
+    dd->set_halign(Gtk::Align::START);
 
     std::string cur = row.value.is_string() ? row.value.get<std::string>() : std::string{};
     guint sel = 0;
@@ -556,7 +559,7 @@ void ObjectForm::append_editable_dropdown(const Folio::FormRow& row, const OnCha
             on_change(field_id, json(ids[i]));
     });
 
-    rb.append(*dd);
+    col.append(*dd);
 }
 
 // MultiSelect → a full-width card of fixed CheckButtons (the option set is closed
@@ -632,7 +635,7 @@ void ObjectForm::append_editable_relation_single(const Folio::FormRow& row, cons
     std::vector<FieldChoice> cands =
         m_relation_provider ? m_relation_provider(target) : std::vector<FieldChoice>{};
 
-    Gtk::Box& rb = compact_scaffold(m_body, row.label);
+    Gtk::Box& col = stacked_scaffold(m_body, row.label);
 
     std::vector<Glib::ustring> labels; labels.push_back("(none)");
     std::vector<std::string>   ids;    ids.push_back(std::string{});
@@ -640,7 +643,7 @@ void ObjectForm::append_editable_relation_single(const Folio::FormRow& row, cons
 
     auto  sl = Gtk::StringList::create(labels);
     auto* dd = Gtk::make_managed<Gtk::DropDown>(sl);
-    dd->set_halign(Gtk::Align::END);
+    dd->set_halign(Gtk::Align::START);
 
     std::string cur = row.value.is_string() ? row.value.get<std::string>() : std::string{};
     guint sel = 0;
@@ -654,7 +657,7 @@ void ObjectForm::append_editable_relation_single(const Folio::FormRow& row, cons
             on_change(field_id, json(ids[i]));
     });
 
-    rb.append(*dd);
+    col.append(*dd);
 }
 
 // Relation (multi) → a full-width card of CheckButtons over the candidate objects,
@@ -854,7 +857,82 @@ void ObjectForm::append_backlinks(const std::string& iid) {
     m_body.append(*lb);
 }
 
-// s44 §11 — the instance-side "Edit fields…"/"Customize fields…" door is retired.
+// s70 — the gallery's reverse view (DESIGN_gallery §3, spine #3): "the images
+// that point at me." A read-only horizontal strip of the image fragments linked
+// TO this object — the same image→object links the lightbox draws, surfaced from
+// the other side and computed live by the provider (gallery_images_of, asset
+// sources only) on every populate, so a new link or a removed image is always
+// reflected. Hidden entirely when nothing points here — the strip, like the
+// relief, only appears where there is contact. Tiles are read-only this slice
+// (tooltip = caption); opening the lightbox from a tile is a clean follow (the
+// lightbox lives on the GallerySurface and wants a gallery-node route to land in).
+void ObjectForm::append_image_strip(const std::string& iid) {
+    if (iid.empty() || !m_image_strip_provider) return;
+    const std::vector<LinkedImage> imgs = m_image_strip_provider(iid);
+    if (imgs.empty()) return;
+
+    // One shared, display-level provider for the tile's clip/background (rounded
+    // corners on a Picture need a clipping box). Installed once; reused by every
+    // tile — never restacked per populate.
+    static bool s_css_installed = false;
+    if (!s_css_installed) {
+        if (auto disp = Gdk::Display::get_default()) {
+            auto p = Gtk::CssProvider::create();
+            p->load_from_data(
+                ".object-image-strip-thumb{background-color:#313244;border-radius:6px;}");
+            Gtk::StyleContext::add_provider_for_display(
+                disp, p, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+            s_css_installed = true;
+        }
+    }
+
+    auto* h = Gtk::make_managed<Gtk::Label>("Images");
+    h->add_css_class("inspector-section-label");
+    h->set_halign(Gtk::Align::START);
+    h->set_margin_start(12);
+    h->set_margin_top(12);
+    h->set_margin_bottom(2);
+    m_body.append(*h);
+
+    constexpr int kThumbW = 104;
+    constexpr int kThumbH = 78;   // 4:3 — matches the wall tile's feel
+
+    // Horizontal scroller (NEVER vertical) so a well-photographed object doesn't
+    // grow the form; the strip pans sideways instead.
+    auto* scroller = Gtk::make_managed<Gtk::ScrolledWindow>();
+    scroller->set_policy(Gtk::PolicyType::AUTOMATIC, Gtk::PolicyType::NEVER);
+    scroller->set_margin_start(12);
+    scroller->set_margin_end(12);
+    scroller->set_margin_bottom(3);
+
+    auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+    row->set_margin_top(2);
+    row->set_margin_bottom(2);
+
+    for (const LinkedImage& im : imgs) {
+        auto* tile = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+        tile->add_css_class("object-image-strip-thumb");
+        tile->set_overflow(Gtk::Overflow::HIDDEN);   // clip the Picture to the rounded box
+        tile->set_size_request(kThumbW, kThumbH);
+        tile->set_tooltip_text(im.caption.empty() ? "Untitled image" : im.caption);
+
+        auto* pic = Gtk::make_managed<Gtk::Picture>();
+        pic->set_size_request(kThumbW, kThumbH);
+        pic->set_can_shrink(true);
+        pic->set_content_fit(Gtk::ContentFit::COVER);
+        try {
+            auto pix = Gdk::Pixbuf::create_from_file(im.thumb_path);
+            if (pix) pic->set_paintable(Gdk::Texture::create_for_pixbuf(pix));
+        } catch (...) {
+            // missing / undecodable thumb → the bare rounded box stands in
+        }
+        tile->append(*pic);
+        row->append(*tile);
+    }
+
+    scroller->set_child(*row);
+    m_body.append(*scroller);
+}
 // Schema is edited only on the Template node (no-mutate); append_edit_template_button
 // and its clone-to-customize path are gone.
 
@@ -945,6 +1023,7 @@ void ObjectForm::populate(const Folio::Template& tmpl, const Folio::Object& obj,
                 break;
         }
     }
+    append_image_strip(obj.iid);                               // s70 — reverse image strip
     append_backlinks(obj.iid);                                 // s44 — the relief
     // s44 §11 — NO schema door on the instance. Editing fields lives only on the
     // Template node now (no-mutate); a Character is born on a Template and reshaped

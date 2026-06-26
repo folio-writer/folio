@@ -36,6 +36,11 @@ fs::path asset_path(const fs::path& root, const std::string& iid,
     std::string name = iid + (ext.empty() ? "" : (ext[0] == '.' ? ext : "." + ext));
     return root / bundle_dir::kAssets / name;
 }
+fs::path thumb_path(const fs::path& root, const std::string& iid,
+                    const std::string& ext) {
+    std::string name = iid + (ext.empty() ? "" : (ext[0] == '.' ? ext : "." + ext));
+    return root / bundle_dir::kThumbs / name;
+}
 fs::path manifest_path(const fs::path& root) {
     return root / bundle_dir::kManifest;
 }
@@ -147,6 +152,22 @@ static std::string read_file(const fs::path& p) {
     return ss.str();
 }
 
+// Copy a binary subdirectory (assets/ or thumbs/) forward into the freshly
+// built tmp bundle. These hold bytes that are NOT reconstructed from the blob
+// (unlike content/snapshots), so explode MUST carry the live bundle's copies
+// across or the swap would delete every imported image. No-op if `src` is
+// absent (a project with no images, or a first save). Overwrites existing.
+static void copy_tree_if_exists(const fs::path& src, const fs::path& dst) {
+    std::error_code ec;
+    if (!fs::is_directory(src, ec)) return;
+    fs::copy(src, dst,
+             fs::copy_options::recursive | fs::copy_options::overwrite_existing,
+             ec);
+    if (ec)
+        throw std::runtime_error("ProjectBundle::explode: cannot carry forward "
+                                 + src.string());
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPLODE — blob → bundle
 //
@@ -207,6 +228,8 @@ void explode(const json& blob, const fs::path& root) {
     fs::remove_all(tmp_root, ec);
     fs::create_directories(tmp_root / bundle_dir::kContent, ec);
     fs::create_directories(tmp_root / bundle_dir::kSnapshots, ec);
+    fs::create_directories(tmp_root / bundle_dir::kAssets, ec);
+    fs::create_directories(tmp_root / bundle_dir::kThumbs, ec);
     if (ec) throw std::runtime_error("ProjectBundle::explode: cannot create bundle dirs");
 
     // Build the manifest: copy the blob, replace each tree's nodes with their
@@ -223,6 +246,14 @@ void explode(const json& blob, const fs::path& root) {
 
     // project.json LAST.
     write_file_atomic(manifest_path(tmp_root), manifest.dump(2));
+
+    // Carry binary dirs forward (assets/ + thumbs/) — their bytes are not in the
+    // blob, so they would be lost in the swap otherwise. `root` still exists here.
+    // NOTE: a save-AS to a different root will not see the source's binaries here
+    // (they sit at the old root); copying those is the save-orchestration slice's
+    // job, flagged as a known follow-on.
+    copy_tree_if_exists(root / bundle_dir::kAssets, tmp_root / bundle_dir::kAssets);
+    copy_tree_if_exists(root / bundle_dir::kThumbs, tmp_root / bundle_dir::kThumbs);
 
     // Swap tmp_root into place atomically: stash any existing bundle, move tmp
     // in, then drop the stash.
@@ -320,6 +351,56 @@ static void scan_orphans(const fs::path& dir, const std::string& ext,
     }
 }
 
+// Ext-agnostic orphan scan for the binary dirs (assets/, thumbs/): an image is
+// stored as .jpg OR .png, so orphan-ness keys on the stem (iid) regardless of
+// extension. Used for both dirs.
+static void scan_binary_orphans(const fs::path& dir,
+                                const std::set<std::string>& referenced,
+                                ReconcileReport& rep) {
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) return;
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
+        if (!entry.is_regular_file()) continue;
+        fs::path p = entry.path();
+        if (p.filename().string().size() && p.filename().string()[0] == '.')
+            continue;  // skip dotfiles / stray .tmp
+        std::string iid = p.stem().string();
+        if (referenced.find(iid) == referenced.end())
+            rep.orphans.push_back({iid, std::string(dir.filename().string()) +
+                                            "/" + p.filename().string()});
+    }
+}
+
+// §9 asset class: validate the manifest's `images` pool against the files on
+// disk. Each image-fragment {iid, ext, hash} must have its assets/<iid>.<ext>;
+// absent → missing, hash mismatch → drift (the file wins, as with content).
+// Fragment iids are added to `referenced` so legitimate assets are not then
+// flagged as orphans. Thumbnails are a regenerable cache, so a missing thumb is
+// NOT an error here (the surface re-derives it); only orphan thumbs are swept.
+static void reconcile_assets(const fs::path& root, const json& blob,
+                             std::set<std::string>& referenced,
+                             ReconcileReport& rep) {
+    if (!blob.contains("images") || !blob["images"].is_array())
+        return;
+    for (const auto& frag : blob["images"]) {
+        std::string iid = frag.value("iid", "");
+        if (iid.empty()) continue;
+        referenced.insert(iid);
+        std::string ext = frag.value("ext", "");
+        std::string rel = std::string(bundle_dir::kAssets) + "/" + iid +
+                          (ext.empty() ? "" : ("." + ext));
+        fs::path file = asset_path(root, iid, ext);
+        std::error_code ec;
+        if (!fs::exists(file, ec)) {
+            rep.missing.push_back({iid, rel});       // the image itself is gone
+            continue;
+        }
+        std::string want = frag.value("hash", "");
+        if (!want.empty() && content_hash(read_file(file)) != want)
+            rep.drifted.push_back({iid, rel});       // file wins; flag it
+    }
+}
+
 json implode(const fs::path& root, ReconcileReport& report) {
     fs::path man = manifest_path(root);
     std::ifstream f(man);
@@ -337,6 +418,13 @@ json implode(const fs::path& root, ReconcileReport& report) {
 
     scan_orphans(root / bundle_dir::kContent,   ".md",   referenced, report);
     scan_orphans(root / bundle_dir::kSnapshots, ".json", referenced, report);
+
+    // §9 asset class: validate the image pool, then sweep orphan binaries. The
+    // asset check must run BEFORE the orphan sweep so fragment iids are in
+    // `referenced` and their files are not mistaken for orphans.
+    reconcile_assets(root, blob, referenced, report);
+    scan_binary_orphans(root / bundle_dir::kAssets, referenced, report);
+    scan_binary_orphans(root / bundle_dir::kThumbs, referenced, report);
 
     return blob;
 }

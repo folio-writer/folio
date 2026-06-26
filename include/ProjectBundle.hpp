@@ -47,7 +47,8 @@
 //       meta/<iid>.json       ← per-part sidecar (notes/annotations/view-state)
 //                               [SHAPE DEFINED — stays inline this slice; the
 //                                next fill-in splits it out, no model change]
-//       assets/<iid>.<ext>    ← full-res cover / research binaries  [PLANNED]
+//       assets/<iid>.<ext>    ← full-res images / research binaries [IMPLEMENTED]
+//       thumbs/<iid>.<ext>    ← bounded gallery-wall thumbnails       [IMPLEMENTED]
 //       fonts/                ← embedded faces so the book travels  [PLANNED]
 //
 // What ships in this slice: structure-in-manifest + content & snapshots out to
@@ -76,6 +77,7 @@ inline constexpr const char* kContent   = "content";
 inline constexpr const char* kSnapshots = "snapshots";
 inline constexpr const char* kMeta      = "meta";
 inline constexpr const char* kAssets    = "assets";
+inline constexpr const char* kThumbs    = "thumbs";
 inline constexpr const char* kFonts     = "fonts";
 inline constexpr const char* kManifest  = "project.json";
 }  // namespace bundle_dir
@@ -88,6 +90,8 @@ fs::path content_path  (const fs::path& root, const std::string& iid);
 fs::path snapshot_path (const fs::path& root, const std::string& iid);
 fs::path meta_path     (const fs::path& root, const std::string& iid);
 fs::path asset_path    (const fs::path& root, const std::string& iid,
+                        const std::string& ext);
+fs::path thumb_path    (const fs::path& root, const std::string& iid,
                         const std::string& ext);
 fs::path manifest_path (const fs::path& root);
 

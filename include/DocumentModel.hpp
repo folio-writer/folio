@@ -16,6 +16,7 @@
 #include <algorithm>
 #include "FolioPrefs.hpp"
 #include "ObjectStore.hpp"   // s31 — objects & templates registry + instances
+#include "ImagePool.hpp"     // s58 — the shared image pool (gallery data layer)
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -584,6 +585,12 @@ public:
     // Returns a flat list of every leaf and group node across all three trees.
     std::vector<NodeRef> collect_all_nodes();
 
+    // Const flat list of every node POINTER across the five trees (Trash
+    // excluded), mirroring collect_all_nodes() for read-only callers — notably
+    // the StoryGraph edge projection (const), which scans instrument node bodies
+    // for their object associations. Do not cache across tree mutations.
+    std::vector<const BinderNode*> all_node_ptrs() const;
+
     // Manuscript nodes (groups + scenes) in reading/DFS order, as a flat list
     // of mutable pointers. Unlike compile_nodes(), this does NOT filter on
     // include_in_export — navigation (e.g. FocusWindow's switcher / next-prev)
@@ -632,6 +639,15 @@ public:
     // save time and on loading a legacy project that has no stored object_store.
     void rebuild_object_store();
 
+    // s58 — the shared image POOL. Owns every image-fragment (the Gallery is a
+    // lens over this, never an owner). Persisted at the PROJECT level as the
+    // manifest's "images" array — shared across all gallery lenses — and read
+    // back at load. Unlike the object store it is NOT a projection of leaves; it
+    // is owned data, mutated by the import pipeline. Asset file integrity
+    // (missing/drift/orphan) is reported through the load reconcile (§9).
+    const ImagePool& image_pool() const { return m_image_pool; }
+    ImagePool&       image_pool()       { return m_image_pool; }
+
     // Backlink index — maps target node IID → list of incoming link locations.
     // s20: keyed by the stable iid (was the int id), so it survives reorder/move
     // and joins the cross-layer iid thread. Rebuilt on project load; updated
@@ -671,6 +687,10 @@ private:
     // s31: objects & templates store — the durable/serialised form of the
     // character/place leaves (projection this slice; editable surface later).
     ObjectStore m_object_store;
+
+    // s58: the shared image pool — owned image-fragments (assets/<iid>.<ext>),
+    // serialised as the manifest's "images" array. The Gallery reads it as a lens.
+    ImagePool m_image_pool;
 
     // s19: parse a full in-memory project blob (the shape save_to builds and
     // load paths reassemble) into the model. load_from obtains the blob (from a

@@ -6,6 +6,7 @@
 #include "color_utils.hpp"
 #include "CustomMindMap.hpp"   // s51 — seed an empty CMMDoc body for a new Mind Map form
 #include "Journal.hpp"         // journal front-door sentinel (kJournalTemplateId)
+#include "Gallery.hpp"         // gallery front-door sentinel (kGalleryTemplateId)
 #include "FolioLog.hpp"
 #include "Iid.hpp"
 #include <algorithm>
@@ -791,32 +792,52 @@ void Sidebar::refresh_pomodoro_tile(double progress, int remaining_sec,
 // Section header
 // ─────────────────────────────────────────────────────────────────────────────
 
-void Sidebar::expand_all_in_section(Section section) {
-  for (int i = 0; i < (int)m_collapse_entries.size(); ++i) {
-    auto &ce = m_collapse_entries[i];
-    if (ce.section != section || ce.expanded)
+void Sidebar::set_subtree_expanded(Section section, const std::vector<int>& root,
+                                   bool expand) {
+  auto in_subtree = [&](const std::vector<int>& p) {
+    if (p.size() < root.size()) return false;
+    for (std::size_t k = 0; k < root.size(); ++k)
+      if (p[k] != root[k]) return false;
+    return true;  // p == root, or p extends root (a descendant group)
+  };
+  for (auto& ce : m_collapse_entries) {
+    if (ce.section != section || !in_subtree(ce.path))
       continue;
-    ce.expanded = true;
-    if (ce.revealer) ce.revealer->set_reveal_child(true);
+    ce.expanded = expand;
+    if (ce.revealer) ce.revealer->set_reveal_child(expand);
     if (ce.arrow) {
-      ce.arrow->set_text("▾");
-      ce.arrow->remove_css_class("section-arrow-collapsed");
+      ce.arrow->set_text(expand ? "▾" : "▸");
+      if (expand) {
+        ce.arrow->add_css_class("expanded");
+        ce.arrow->remove_css_class("collapsed");
+      } else {
+        ce.arrow->add_css_class("collapsed");
+        ce.arrow->remove_css_class("expanded");
+      }
     }
   }
 }
 
-void Sidebar::collapse_all_in_section(Section section) {
-  for (int i = 0; i < (int)m_collapse_entries.size(); ++i) {
-    auto &ce = m_collapse_entries[i];
-    if (ce.section != section || !ce.expanded)
+bool Sidebar::any_collapsed_in_subtree(Section section,
+                                       const std::vector<int>& root) const {
+  for (const auto& ce : m_collapse_entries) {
+    if (ce.section != section || ce.path.size() < root.size())
       continue;
-    ce.expanded = false;
-    if (ce.revealer) ce.revealer->set_reveal_child(false);
-    if (ce.arrow) {
-      ce.arrow->set_text("▸");
-      ce.arrow->add_css_class("section-arrow-collapsed");
-    }
+    bool inside = true;
+    for (std::size_t k = 0; k < root.size(); ++k)
+      if (ce.path[k] != root[k]) { inside = false; break; }
+    if (inside && !ce.expanded)
+      return true;
   }
+  return false;
+}
+
+void Sidebar::expand_all_in_section(Section section) {
+  set_subtree_expanded(section, {}, true);
+}
+
+void Sidebar::collapse_all_in_section(Section section) {
+  set_subtree_expanded(section, {}, false);
 }
 
 void Sidebar::build_section_header(Section section) {
@@ -839,8 +860,8 @@ void Sidebar::build_section_header(Section section) {
                                        : "user-trash-symbolic";
 
   const char *tip = section == Section::Trash
-                        ? "Click to collapse · Ctrl+click to expand all · Alt+click to collapse all · Right-click to empty trash"
-                        : "Click to collapse · Ctrl+click to expand all in section · Alt+click to collapse all in section · Right-click to add\nCtrl+Alt+E = expand all · Ctrl+Alt+K = collapse all";
+                        ? "Click to toggle · Ctrl+click to expand/collapse all · Right-click to empty trash"
+                        : "Click to toggle · Ctrl+click to expand/collapse all · Right-click to add\nCtrl+Alt+E = expand all · Ctrl+Alt+K = collapse all";
 
   auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 4);
   row->set_cursor(Gdk::Cursor::create("pointer"));
@@ -879,13 +900,19 @@ void Sidebar::build_section_header(Section section) {
       [this, gc_left, section](int, double, double) {
         Gdk::ModifierType mods = gc_left->get_current_event_state();
         bool ctrl = (mods & Gdk::ModifierType::CONTROL_MASK) != Gdk::ModifierType{};
-        bool alt  = (mods & Gdk::ModifierType::ALT_MASK)     != Gdk::ModifierType{};
-        if (ctrl)
-          expand_all_in_section(section);
-        else if (alt)
-          collapse_all_in_section(section);
-        else
+        if (ctrl) {
+          // Expand/collapse the WHOLE category: the section's own disclosure AND
+          // every group within, so the result is always visible. Smart toggle:
+          // if the section is closed or anything inside is collapsed, open
+          // everything; otherwise collapse everything.
+          bool expand = !section_header(section).expanded ||
+                        any_collapsed_in_subtree(section, {});
+          if (section_header(section).expanded != expand)
+            toggle_section(section);                 // open/close the category itself
+          set_subtree_expanded(section, {}, expand);  // and all groups within
+        } else {
           toggle_section(section);
+        }
       });
   row->add_controller(gc_left);
 
@@ -1349,6 +1376,30 @@ void Sidebar::show_section_ctx_menu(Section section, double x, double y,
         n->title       = "Journal";
         n->template_id = Folio::kJournalTemplateId;
         n->content     = "";   // plain prose, filled by dated entries
+        m_model.mark_modified();
+        m_model.set_active(Section::References, new_path);
+        rebuild_section(Section::References);
+        if (m_on_selected)
+          m_on_selected(Section::References, new_path);
+      });
+    });
+    // s61 — "New Gallery": the front door for the owned image Gallery. Creates a
+    // Reference leaf, stamps the reserved Gallery form id, leaves the body empty
+    // (an empty lens-def = a lens over the whole pool); selecting it opens the
+    // owned GallerySurface (wall + Import…), not the ObjectForm.
+    sec->append_item(mi("New Gallery\xE2\x80\xA6", "ctx.new-gallery", ""));
+    ag->add_action("new-gallery", [this]() {
+      if (m_ctx_popover)
+        m_ctx_popover->popdown();
+      Glib::signal_idle().connect_once([this]() {
+        auto new_path = m_model.add_leaf(Section::References, {}, "",
+                                         &m_prefs.reference_defaults);
+        BinderNode *n = m_model.node_at(Section::References, new_path);
+        if (!n)
+          return;
+        n->title       = "Gallery";
+        n->template_id = Folio::kGalleryTemplateId;
+        n->content     = "";   // empty lens-def → lens over the whole pool
         m_model.mark_modified();
         m_model.set_active(Section::References, new_path);
         rebuild_section(Section::References);
@@ -2040,6 +2091,33 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
     auto *arrow = Gtk::make_managed<Gtk::Label>("▾");
     arrow->add_css_class("part-arrow");
     arrow->add_css_class("expanded");
+
+    // The triangle IS the disclosure: clicking it toggles this node; Ctrl+click
+    // expands/collapses the whole subtree. It claims the press so the row's
+    // select gesture does not also fire (the row body still selects).
+    arrow->set_cursor(Gdk::Cursor::create("pointer"));
+    arrow->set_tooltip_text("Click to expand/collapse · Ctrl+click for all");
+    auto arrow_gc = Gtk::GestureClick::create();
+    arrow_gc->set_button(1);
+    arrow_gc->signal_pressed().connect(
+        [this, arrow_gc, section, path](int, double, double) {
+          arrow_gc->set_state(Gtk::EventSequenceState::CLAIMED);
+          Gdk::ModifierType mods = arrow_gc->get_current_event_state();
+          bool ctrl =
+              (mods & Gdk::ModifierType::CONTROL_MASK) != Gdk::ModifierType{};
+          if (ctrl) {
+            set_subtree_expanded(section, path,
+                                 any_collapsed_in_subtree(section, path));
+          } else {
+            for (int i = 0; i < (int)m_collapse_entries.size(); ++i)
+              if (m_collapse_entries[i].section == section &&
+                  m_collapse_entries[i].path == path) {
+                toggle_node(i);
+                break;
+              }
+          }
+        });
+    arrow->add_controller(arrow_gc);
 
     // Status indicator — dot summary of all descendant leaf statuses, right
     // side

@@ -128,6 +128,27 @@ void FolioPrefs::load() {
     if (editor_zoom_pct < 50)  editor_zoom_pct = 50;
     if (editor_zoom_pct > 300) editor_zoom_pct = 300;
     editor_header_visible  = boolv(GROUP_EDITOR, "header-visible",         editor_header_visible);
+
+    // Gallery image-import prefs (DESIGN_gallery §6). intv/boolv pass the field's
+    // own default when the key is absent → older prefs files migrate cleanly.
+    gallery_image_max_dim   = intv (GROUP_GALLERY, "image-max-dim",     gallery_image_max_dim);
+    gallery_base_long_edge  = intv (GROUP_GALLERY, "base-long-edge",     gallery_base_long_edge);
+    gallery_default_detail_tier = intv(GROUP_GALLERY, "default-detail-tier", gallery_default_detail_tier);
+    gallery_image_quality   = intv (GROUP_GALLERY, "image-quality",     gallery_image_quality);
+    gallery_thumb_max_dim   = intv (GROUP_GALLERY, "thumb-max-dim",     gallery_thumb_max_dim);
+    gallery_import_max_mb   = intv (GROUP_GALLERY, "import-max-mb",      gallery_import_max_mb);
+    gallery_prefer_lossless = boolv(GROUP_GALLERY, "prefer-lossless",    gallery_prefer_lossless);
+    gallery_allow_url_fetch = boolv(GROUP_GALLERY, "allow-url-fetch",    gallery_allow_url_fetch);
+    if (gallery_image_max_dim  < 64)  gallery_image_max_dim  = 64;
+    if (gallery_base_long_edge < 64)  gallery_base_long_edge = 64;
+    if (gallery_base_long_edge > gallery_image_max_dim) gallery_base_long_edge = gallery_image_max_dim;
+    if (gallery_default_detail_tier < 1) gallery_default_detail_tier = 1;
+    if (gallery_default_detail_tier > 4) gallery_default_detail_tier = 4;
+    if (gallery_thumb_max_dim  < 32)  gallery_thumb_max_dim  = 32;
+    if (gallery_image_quality  < 1)   gallery_image_quality  = 1;
+    if (gallery_image_quality  > 100) gallery_image_quality  = 100;
+    if (gallery_import_max_mb  < 1)   gallery_import_max_mb  = 1;
+
     show_ruler             = boolv(GROUP_EDITOR, "show-ruler",             show_ruler);
     ruler_unit             = str  (GROUP_EDITOR, "ruler-unit",             ruler_unit);
     ruler_tab_type         = str  (GROUP_EDITOR, "ruler-tab-type",         ruler_tab_type);
@@ -548,6 +569,16 @@ void FolioPrefs::save() const {
     g_key_file_set_string (kf, GROUP_EDITOR, "focus-panel-color",     focus_panel_color.c_str());
     g_key_file_set_integer(kf, GROUP_EDITOR, "zoom-pct",                 editor_zoom_pct);
     g_key_file_set_boolean(kf, GROUP_EDITOR, "header-visible",           editor_header_visible);
+
+    g_key_file_set_integer(kf, GROUP_GALLERY, "image-max-dim",   gallery_image_max_dim);
+    g_key_file_set_integer(kf, GROUP_GALLERY, "base-long-edge",  gallery_base_long_edge);
+    g_key_file_set_integer(kf, GROUP_GALLERY, "default-detail-tier", gallery_default_detail_tier);
+    g_key_file_set_integer(kf, GROUP_GALLERY, "image-quality",   gallery_image_quality);
+    g_key_file_set_integer(kf, GROUP_GALLERY, "thumb-max-dim",   gallery_thumb_max_dim);
+    g_key_file_set_integer(kf, GROUP_GALLERY, "import-max-mb",    gallery_import_max_mb);
+    g_key_file_set_boolean(kf, GROUP_GALLERY, "prefer-lossless",  gallery_prefer_lossless);
+    g_key_file_set_boolean(kf, GROUP_GALLERY, "allow-url-fetch",  gallery_allow_url_fetch);
+
 
     g_key_file_set_string (kf, GROUP_APPEARANCE, "theme",                theme.c_str());
     g_key_file_set_boolean(kf, GROUP_APPEARANCE, "show-word-count",      show_word_count);

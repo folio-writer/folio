@@ -102,6 +102,11 @@ public:
     void refresh_session();
     void expand_all_in_section(Section section);
     void collapse_all_in_section(Section section);
+    // Expand/collapse a whole subtree rooted at `root` (an empty root == every
+    // group in the section). Used by the disclosure triangle's Ctrl+click and by
+    // the section-wide expand/collapse helpers above.
+    void set_subtree_expanded(Section section, const std::vector<int>& root, bool expand);
+    bool any_collapsed_in_subtree(Section section, const std::vector<int>& root) const;
 
     // ── Disclosure state: read back (for saving to prefs on close) ────────────
     bool sec_manuscript_expanded() const { return m_sec_manuscript.expanded; }
