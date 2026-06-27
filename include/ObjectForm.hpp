@@ -100,6 +100,35 @@ public:
     using ImageStripProvider =
         std::function<std::vector<LinkedImage>(const std::string& iid)>;
 
+    // s79 — the editable Image field's pool door. The form has no model access
+    // (same reason the strip is a provider), so the owner injects two seams:
+    //   • ImageResolveFn turns a stored field VALUE (an ast_ pool-fragment iid OR
+    //     a legacy external path) into a loadable display path — the s72 dual-read
+    //     (image_display_path). Both the on-open preview seed AND the post-set
+    //     render route through it; absent → the value is treated as a literal path
+    //     (the pre-s79 behaviour).
+    //   • ImageImportFn imports a chosen file through the ONE pipeline
+    //     (ImageImporter::import_file) and reports the new fragment iid or a clear
+    //     error; absent → the Set handler stores the raw path (pre-s79 behaviour).
+    // Together they make a Character/Place template image a normalized in-bundle
+    // fragment (pool/gallery-visible, survives the source file moving), consistent
+    // with gallery import — without coupling this header to the import engine.
+    struct ImageImportOutcome {
+        bool ok = false;
+        std::string iid;       // the new ast_… fragment (on ok)
+        std::string error;     // a clear, user-facing message (on failure)
+        bool low_res = false;  // imported, but below the chosen detail tier (a cue)
+    };
+    using ImageResolveFn = std::function<std::string(const std::string& value)>;
+    using ImageImportFn  = std::function<ImageImportOutcome(const std::string& path)>;
+    // s79 — sibling of ImageImportFn for bytes-sourced imports (texture-drop /
+    // paste): already-encoded image bytes + an optional caption → outcome (via
+    // ImageImporter::import_bytes). Absent → an image drop/paste is ignored (there
+    // is no raw-path fallback for in-memory bytes, unlike a dropped file).
+    using ImageImportBytesFn =
+        std::function<ImageImportOutcome(const std::string& data,
+                                         const std::string& caption)>;
+
     ObjectForm();
 
     // Render `obj` through `tmpl`. editable=false (this slice) renders read-only;
@@ -121,6 +150,13 @@ public:
     // Absent / empty → no strip shown.
     void set_image_strip_provider(ImageStripProvider cb) { m_image_strip_provider = std::move(cb); }
 
+    // s79 — wire the editable Image field's resolve + import seams (see above).
+    // Set once; consulted while populating any Image field. Both optional; when
+    // unset the field falls back to its pre-s79 raw-path behaviour.
+    void set_image_resolve_fn(ImageResolveFn cb) { m_image_resolve_fn = std::move(cb); }
+    void set_image_import_fn(ImageImportFn cb) { m_image_import_fn = std::move(cb); }
+    void set_image_import_bytes_fn(ImageImportBytesFn cb) { m_image_import_bytes_fn = std::move(cb); }
+
     // Show an empty state (no object selected / no template resolved).
     void clear();
 
@@ -130,6 +166,9 @@ private:
     RelationProvider m_relation_provider;   // s37 — candidate source for relations
     BacklinkProvider m_backlink_provider;   // s44 — the relief (incoming edges)
     ImageStripProvider m_image_strip_provider;  // s70 — reverse image strip (gallery_images_of)
+    ImageResolveFn   m_image_resolve_fn;        // s79 — value -> loadable display path (dual-read)
+    ImageImportFn    m_image_import_fn;         // s79 — chosen file -> pool fragment
+    ImageImportBytesFn m_image_import_bytes_fn; // s79 — texture-drop / paste -> pool fragment
     json             m_obj_values;          // s44 — current object's values (preview state)
 
     void clear_body();

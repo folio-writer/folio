@@ -11,7 +11,9 @@
 #include <FolioLog.hpp>
 #include <UnicodePickerPopover.hpp>
 #include <Gallery.hpp>        // s70 — gallery_images_of (reverse read for the strip)
+#include <ImageImport.hpp>    // s79 — ImageImporter + normalize_policy_from_prefs (Image-field pool import)
 #include <ImagePool.hpp>      // s70 — ImageFragment lookup for thumb path + caption
+#include <ObjectImage.hpp>    // s79 — image_display_path (dual-read resolve for the Image-field preview)
 #include <ProjectBundle.hpp>  // s70 — thumb_path resolution
 #include <StoryGraph.hpp>     // s70 — edges_from_backlinks (the typed edge list)
 #include <algorithm>
@@ -2554,6 +2556,57 @@ void Editor::build_editor_area() {
     }
     return out;
   });
+
+  // s79 — the editable Image field's pool door (unparks the s72 portrait wiring).
+  // RESOLVE: a stored value (ast_ iid OR legacy path) → a loadable display path
+  // via the dual-read resolver, so the preview renders pool fragments and old
+  // raw-path values alike with no migration.
+  m_object_form.set_image_resolve_fn([this](const std::string& value) -> std::string {
+    if (value.empty()) return {};
+    return Folio::image_display_path(value, m_model.image_pool(), m_model.current_path);
+  });
+  // IMPORT: a chosen file → the ONE import pipeline (copy into assets/ + thumbs/,
+  // normalize at the project's detail tier, add the fragment to the pool) → the
+  // new ast_ iid. Guarded on a saved project (assets/ must exist on disk). The
+  // form stores the returned iid and marks the model modified via on_change.
+  m_object_form.set_image_import_fn(
+      [this](const std::string& path) -> Folio::ObjectForm::ImageImportOutcome {
+        Folio::ObjectForm::ImageImportOutcome out;
+        if (m_model.current_path.empty()) {
+          out.error = "Save the project before adding images.";
+          return out;
+        }
+        Folio::ImageImporter imp(m_model.current_path,
+                                 Folio::normalize_policy_from_prefs(m_prefs));
+        const Folio::ImportResult r = imp.import_file(
+            path, m_model.image_pool(), m_prefs.gallery_default_detail_tier);
+        out.ok = r.ok;
+        out.iid = r.iid;
+        out.error = r.error;
+        out.low_res = r.low_res;
+        return out;
+      });
+  // s79 — the bytes door (texture-drop / paste): already-encoded image bytes →
+  // the same pipeline (import_bytes decodes, guards, normalizes, pools).
+  m_object_form.set_image_import_bytes_fn(
+      [this](const std::string& data, const std::string& caption)
+          -> Folio::ObjectForm::ImageImportOutcome {
+        Folio::ObjectForm::ImageImportOutcome out;
+        if (m_model.current_path.empty()) {
+          out.error = "Save the project before adding images.";
+          return out;
+        }
+        Folio::ImageImporter imp(m_model.current_path,
+                                 Folio::normalize_policy_from_prefs(m_prefs));
+        const Folio::ImportResult r = imp.import_bytes(
+            data, m_model.image_pool(), caption,
+            m_prefs.gallery_default_detail_tier);
+        out.ok = r.ok;
+        out.iid = r.iid;
+        out.error = r.error;
+        out.low_res = r.low_res;
+        return out;
+      });
 
   m_form_scroll.set_policy(Gtk::PolicyType::AUTOMATIC, Gtk::PolicyType::AUTOMATIC);
   m_form_scroll.set_vexpand(true);

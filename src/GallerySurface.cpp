@@ -117,6 +117,10 @@ GallerySurface::GallerySurface() : Gtk::Box(Gtk::Orientation::VERTICAL, 0) {
   m_import_btn.add_css_class("suggested-action");
   m_import_btn.signal_clicked().connect(
       sigc::mem_fun(*this, &GallerySurface::do_import));
+  m_paste_btn.set_label("Paste");
+  m_paste_btn.set_tooltip_text("Paste an image (or a copied image file) from the clipboard");
+  m_paste_btn.signal_clicked().connect(
+      sigc::mem_fun(*this, &GallerySurface::paste_from_clipboard));
   m_add_btn.set_label("Add\xE2\x80\xA6");
   m_add_btn.set_tooltip_text("Hang an image already in the project on this wall");
   m_add_btn.signal_clicked().connect(
@@ -127,6 +131,7 @@ GallerySurface::GallerySurface() : Gtk::Box(Gtk::Orientation::VERTICAL, 0) {
   m_header.append(m_count);
   m_header.append(*spacer);
   m_header.append(m_add_btn);
+  m_header.append(m_paste_btn);
   m_header.append(m_import_btn);
   append(m_header);
   append(*Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL));
@@ -158,7 +163,7 @@ GallerySurface::GallerySurface() : Gtk::Box(Gtk::Orientation::VERTICAL, 0) {
   m_scroller.set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
   m_scroller.set_vexpand(true);
 
-  m_empty.set_text("No images yet — use Import\xE2\x80\xA6 to add some.");
+  m_empty.set_text("No images yet — Import, Paste, or drop images here.");
   m_empty.add_css_class("dim-label");
   m_empty.set_halign(Gtk::Align::CENTER);
   m_empty.set_valign(Gtk::Align::CENTER);
@@ -168,6 +173,60 @@ GallerySurface::GallerySurface() : Gtk::Box(Gtk::Orientation::VERTICAL, 0) {
   m_body.add(m_empty, "empty");
   m_body.set_vexpand(true);
   m_overlay.set_child(m_body);
+
+  // s79 — drop files / images onto the wall (covers the empty state too). Internal
+  // tile reorder uses a G_TYPE_INT target on each tile; this matches the external
+  // FILE_LIST / TEXTURE types, so the two never collide.
+  {
+    auto drop = Gtk::DropTarget::create(GDK_TYPE_TEXTURE, Gdk::DragAction::COPY);
+    drop->set_gtypes({GDK_TYPE_TEXTURE, GDK_TYPE_FILE_LIST});
+    drop->signal_drop().connect(
+        [this](const Glib::ValueBase& value, double, double) -> bool {
+          const GValue* gv = value.gobj();
+          if (G_VALUE_HOLDS(gv, GDK_TYPE_TEXTURE)) {
+            GdkTexture* t = GDK_TEXTURE(g_value_get_object(gv));
+            if (!t) return false;
+            auto tex = Glib::wrap(t, /*take_copy=*/true);
+            auto bytes = tex->save_to_png_bytes();
+            gsize n = 0;
+            gconstpointer d = g_bytes_get_data(bytes->gobj(), &n);
+            import_bytes_blob(std::string(static_cast<const char*>(d), n));
+            return true;
+          }
+          if (G_VALUE_HOLDS(gv, GDK_TYPE_FILE_LIST)) {
+            GdkFileList* fl = static_cast<GdkFileList*>(g_value_get_boxed(gv));
+            if (!fl) return false;
+            GSList* files = gdk_file_list_get_files(fl);
+            std::vector<std::string> paths;
+            for (GSList* l = files; l; l = l->next) {
+              char* p = g_file_get_path(G_FILE(l->data));
+              if (p) { paths.emplace_back(p); g_free(p); }
+            }
+            g_slist_free(files);
+            if (paths.empty()) return false;
+            import_files(paths);
+            return true;
+          }
+          return false;
+        }, false);
+    m_overlay.add_controller(drop);
+  }
+  // Ctrl+V anywhere on the surface → paste (the Paste button is the discoverable
+  // route; this serves keyboard users when the surface has focus).
+  {
+    auto keys = Gtk::EventControllerKey::create();
+    keys->signal_key_pressed().connect(
+        [this](guint keyval, guint, Gdk::ModifierType state) -> bool {
+          if ((state & Gdk::ModifierType::CONTROL_MASK) ==
+                  Gdk::ModifierType::CONTROL_MASK &&
+              (keyval == GDK_KEY_v || keyval == GDK_KEY_V)) {
+            paste_from_clipboard();
+            return true;
+          }
+          return false;
+        }, false);
+    add_controller(keys);
+  }
 
   // ── the lightbox (overlay child; hidden until a tile is clicked) ──
   m_lightbox.add_css_class("gallery-lightbox");
@@ -409,63 +468,135 @@ void GallerySurface::do_import() {
   filter->add_mime_type("image/tiff");
   filter->add_mime_type("image/bmp");
   dlg->add_filter(filter);
-  dlg->signal_response().connect([this, dlg, win](int response) {
+  dlg->signal_response().connect([this, dlg](int response) {
     if (response != Gtk::ResponseType::ACCEPT) return;
     auto files = dlg->get_files();
     if (!files) return;
-
-    ImageImporter imp(m_model->current_path, normalize_policy_from_prefs(*m_prefs));
-    int ok = 0;
-    std::vector<std::string> failures;   // one line per failed file
-    std::vector<std::string> lowres;     // §13b — imported, but below the chosen detail
-    const int tier = m_prefs->gallery_default_detail_tier;
     // Read paths through the GIO C API: glibmm can't wrap the concrete GLocalFile
     // items (it warns and would drop them), so go straight to g_file_get_path.
+    std::vector<std::string> paths;
     GListModel* lm = files->gobj();
     const guint n = g_list_model_get_n_items(lm);
     for (guint i = 0; i < n; ++i) {
       GFile* gf = G_FILE(g_list_model_get_item(lm, i));   // transfer full
       if (!gf) continue;
       char* cpath = g_file_get_path(gf);
-      std::string path = cpath ? std::string(cpath) : std::string{};
-      if (cpath) g_free(cpath);
+      if (cpath) { paths.emplace_back(cpath); g_free(cpath); }
       g_object_unref(gf);
-      if (path.empty()) continue;
-      ImportResult r = imp.import_file(path, m_model->image_pool(), tier);
-      if (r.ok) {
-        m_order.push_back(r.iid);
-        ++ok;
-        if (r.low_res) {
-          const std::string base = std::filesystem::path(path).filename().string();
-          lowres.push_back(base.empty() ? path : base);
-        }
-      } else {
-        failures.push_back(r.error);
-      }
     }
-
-    if (ok > 0) {
-      m_model->mark_modified();
-      persist();
-      refresh();
-    }
-    // Never silent: one consolidated report if anything failed OR came in low-res.
-    if (!failures.empty() || !lowres.empty()) {
-      std::string msg = std::to_string(ok) + " imported";
-      if (!failures.empty()) msg += ", " + std::to_string(failures.size()) + " failed";
-      msg += ".";
-      for (const std::string& e : failures)
-        msg += "\n\xE2\x80\xA2 " + e;
-      if (!lowres.empty()) {
-        msg += "\n\nLower resolution than the chosen detail (stored at native size, "
-               "not upscaled):";
-        for (const std::string& nm : lowres)
-          msg += "\n\xE2\x80\xA2 " + nm;
-      }
-      Gtk::AlertDialog::create(msg)->show(*win);
-    }
+    import_files(paths);
   });
   dlg->show();
+}
+
+// s79 — the shared file import path: picker AND drag-and-drop of files funnel
+// here. Loops the file door, appends new fragments to the wall, persists, and
+// reports anything that failed or came in low-res. Guarded on a saved project.
+void GallerySurface::import_files(const std::vector<std::string>& paths) {
+  if (!m_model || !m_prefs) return;
+  if (m_model->current_path.empty()) {
+    if (auto* win = dynamic_cast<Gtk::Window*>(get_root()))
+      Gtk::AlertDialog::create("Save the project before importing images.")->show(*win);
+    return;
+  }
+  ImageImporter imp(m_model->current_path, normalize_policy_from_prefs(*m_prefs));
+  const int tier = m_prefs->gallery_default_detail_tier;
+  int ok = 0;
+  std::vector<std::string> failures;   // one line per failed file
+  std::vector<std::string> lowres;     // §13b — imported, but below the chosen detail
+  for (const std::string& path : paths) {
+    if (path.empty()) continue;
+    ImportResult r = imp.import_file(path, m_model->image_pool(), tier);
+    if (r.ok) {
+      m_order.push_back(r.iid);
+      ++ok;
+      if (r.low_res) {
+        const std::string base = std::filesystem::path(path).filename().string();
+        lowres.push_back(base.empty() ? path : base);
+      }
+    } else {
+      failures.push_back(r.error);
+    }
+  }
+  if (ok > 0) { m_model->mark_modified(); persist(); refresh(); }
+  report_import(ok, failures, lowres);
+}
+
+// s79 — the shared bytes import path: paste AND image-drop (texture) funnel here.
+void GallerySurface::import_bytes_blob(const std::string& data) {
+  if (!m_model || !m_prefs || data.empty()) return;
+  if (m_model->current_path.empty()) {
+    if (auto* win = dynamic_cast<Gtk::Window*>(get_root()))
+      Gtk::AlertDialog::create("Save the project before importing images.")->show(*win);
+    return;
+  }
+  ImageImporter imp(m_model->current_path, normalize_policy_from_prefs(*m_prefs));
+  ImportResult r = imp.import_bytes(data, m_model->image_pool(), std::string{},
+                                    m_prefs->gallery_default_detail_tier);
+  if (r.ok) {
+    m_order.push_back(r.iid);
+    m_model->mark_modified();
+    persist();
+    refresh();
+    if (r.low_res) report_import(1, {}, {"pasted image"});
+  } else {
+    report_import(0, {r.error}, {});
+  }
+}
+
+void GallerySurface::report_import(int ok, const std::vector<std::string>& failures,
+                                   const std::vector<std::string>& lowres) {
+  if (failures.empty() && lowres.empty()) return;   // silent only on full success
+  auto* win = dynamic_cast<Gtk::Window*>(get_root());
+  if (!win) return;
+  std::string msg = std::to_string(ok) + " imported";
+  if (!failures.empty()) msg += ", " + std::to_string(failures.size()) + " failed";
+  msg += ".";
+  for (const std::string& e : failures)
+    msg += "\n\xE2\x80\xA2 " + e;
+  if (!lowres.empty()) {
+    msg += "\n\nLower resolution than the chosen detail (stored at native size, "
+           "not upscaled):";
+    for (const std::string& nm : lowres)
+      msg += "\n\xE2\x80\xA2 " + nm;
+  }
+  Gtk::AlertDialog::create(msg)->show(*win);
+}
+
+// s79 — read an image off the clipboard. Image DATA → bytes door; otherwise a
+// copied FILE path / file:// URI → file door (arbitrary text ignored).
+void GallerySurface::paste_from_clipboard() {
+  auto clip = get_clipboard();
+  if (!clip) return;
+  clip->read_texture_async([this, clip](Glib::RefPtr<Gio::AsyncResult>& res) {
+    try {
+      auto tex = clip->read_texture_finish(res);
+      if (tex) {
+        auto bytes = tex->save_to_png_bytes();
+        gsize n = 0;
+        gconstpointer d = g_bytes_get_data(bytes->gobj(), &n);
+        import_bytes_blob(std::string(static_cast<const char*>(d), n));
+        return;
+      }
+    } catch (const Glib::Error&) {
+      // No image data — fall through to the file/path fallback.
+    }
+    clip->read_text_async([this, clip](Glib::RefPtr<Gio::AsyncResult>& r2) {
+      std::string path;
+      try {
+        path = clip->read_text_finish(r2).raw();
+      } catch (const Glib::Error&) {
+        return;
+      }
+      while (!path.empty() &&
+             (path.back() == '\n' || path.back() == '\r' || path.back() == ' '))
+        path.pop_back();
+      if (path.rfind("file://", 0) == 0)
+        path = Gio::File::create_for_uri(path)->get_path();
+      if (!path.empty() && path.front() == '/')
+        import_files({path});
+    });
+  });
 }
 
 Gtk::Widget* GallerySurface::make_tile(int pos) {

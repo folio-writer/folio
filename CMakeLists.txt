@@ -186,6 +186,7 @@ set(SOURCES
     src/ImagePool.cpp             # s57 — pure shared image POOL: fragment model + soft-delete + JSON serialization (GTK-free, tested)
     src/Gallery.cpp               # s57 — pure Gallery LENS reads: image↔object link directions + lightbox prev/next (GTK-free, tested)
     src/ObjectImage.cpp           # s72 — pure object PORTRAIT helpers: dual-read iid/path resolver + long-edge display math (GTK-free, tested)
+    src/TimelineRelief.cpp        # s79 — pure Relationship Timeline relief fn: told-order spine + claimed set -> bars/dots/gaps (iid-keyed, GTK-free, tested)
     src/ImageImport.cpp           # s60 — gdk-pixbuf import pipeline: decode→normalize→write assets/+thumbs/→pool.add (GTK seam)
     src/MindMapCanvas.cpp         # s48 — the fourth lens, GTK side: thin painter over the pure layer
     src/CustomMindMapCanvas.cpp   # s51 — the OWNED mind-map document surface (a Reference form): canvas + toolbar + subjects

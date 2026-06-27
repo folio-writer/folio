@@ -57,6 +57,11 @@ public:
 
 private:
   void do_import();                       // file-picker door → ImageImporter (NEW files)
+  void import_files(const std::vector<std::string>& paths);  // s79 — picker/DnD file door
+  void import_bytes_blob(const std::string& data);           // s79 — paste/texture-drop door
+  void paste_from_clipboard();                               // s79 — clipboard → import
+  void report_import(int ok, const std::vector<std::string>& failures,
+                     const std::vector<std::string>& lowres);  // s79 — consolidated notice
   void open_add_existing();               // pool-picker door → hang EXISTING fragments
   void refresh();                         // rebuild the wall + count from m_order
   void persist();                         // write the lens-def back to the body
@@ -96,6 +101,7 @@ private:
   Gtk::Label  m_count;
   Gtk::Button m_add_btn;       // "Add…" — hang an EXISTING pool image on this wall
   Gtk::Button m_import_btn;    // "Import…" — bring NEW files into the pool + wall
+  Gtk::Button m_paste_btn;     // s79 — "Paste" — clipboard image / file → pool + wall
 
   // ── association sub-row (under the header separator): the objects this gallery
   //    is about, as removable chips, plus an always-present ＋ Link picker ──

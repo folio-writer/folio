@@ -22,9 +22,9 @@
 //
 // The header is deliberately GTK-free (only <filesystem>, std, the pure
 // NormalizePolicy, and a forward-declared FolioPrefs), so callers need not pull
-// in gdkmm; all pixbuf work lives in ImageImport.cpp. THIS SLICE builds the file
-// door (import_file); paste-bytes / URL doors (import_bytes) land next, sharing
-// the same private pipeline.
+// in gdkmm; all pixbuf work lives in ImageImport.cpp. The file door (import_file)
+// and the bytes door (import_bytes — paste / image-drop) share one private
+// post-decode pipeline (finish_from_pixbuf); only the guard + decode front differ.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <filesystem>
@@ -64,6 +64,18 @@ public:
   // Does NOT save the project — the caller marks the model modified.
   ImportResult import_file(const std::string& path, ImagePool& pool,
                            int tier = kMaxDetailTier);
+
+  // Door 2 (paste / image-drop): import an image from already-encoded bytes — a
+  // clipboard payload or a dropped texture the caller has serialized (e.g.
+  // Gdk::Texture::save_to_png_bytes). Decodes internally, guards on the decoded
+  // dimensions + an estimated in-memory size, then runs the SAME normalize/write/
+  // pool path as import_file. `caption` seeds the fragment caption (an embedded
+  // pixbuf text field wins if present); empty → Untitled. The signature is
+  // deliberately byte-based, not pixbuf-based, so this header stays GTK-free.
+  // Does NOT save the project — the caller marks the model modified.
+  ImportResult import_bytes(const std::string& data, ImagePool& pool,
+                            const std::string& caption = {},
+                            int tier = kMaxDetailTier);
 
 private:
   fs::path        m_root;

@@ -10,6 +10,7 @@
 #include "ObjectForm.hpp"
 
 #include <gtkmm.h>
+#include <gdk/gdkkeysyms.h>
 
 #include <algorithm>
 #include <cmath>
@@ -246,7 +247,12 @@ void ObjectForm::append_editable_text(const Folio::FormRow& row, const OnChange&
 // the external path.)
 void ObjectForm::append_editable_image(const Folio::FormRow& row, const OnChange& on_change) {
     const std::string field_id = row.field_id;
-    const std::string cur_path = field_display_string(row.type, row.value);
+    // The stored field VALUE (an ast_ pool-fragment iid OR a legacy external
+    // path). Button state ("Set" vs "Change", Clear visibility) keys on whether a
+    // value exists; the PREVIEW keys on the resolved display path (s79 dual-read).
+    const std::string cur_value = field_display_string(row.type, row.value);
+    const std::string seed_path =
+        m_image_resolve_fn ? m_image_resolve_fn(cur_value) : cur_value;
 
     auto* lb  = Gtk::make_managed<Gtk::ListBox>();
     lb->set_selection_mode(Gtk::SelectionMode::NONE);
@@ -275,7 +281,39 @@ void ObjectForm::append_editable_image(const Folio::FormRow& row, const OnChange
     pic->set_can_shrink(true);
     pic->set_content_fit(Gtk::ContentFit::SCALE_DOWN);  // never upscale → never fuzzy
     pic->add_css_class("object-image-preview");
-    col->append(*pic);
+
+    // s79 — the WELL: the framed, focusable surface that IS the interaction (click
+    // to choose, drop a file/image, Ctrl+V to paste). The preview lives inside it;
+    // an empty-state hint shows when no image is set. Controllers are attached
+    // below, once the import/preview helpers exist.
+    static bool s_well_css = false;
+    if (!s_well_css) {
+        if (auto disp = Gdk::Display::get_default()) {
+            auto p = Gtk::CssProvider::create();
+            p->load_from_data(
+                ".object-image-well{border:2px dashed #45475a;border-radius:8px;"
+                "padding:8px;}"
+                ".object-image-well:focus{border-color:#89b4fa;}"
+                ".object-image-well.filled{border-style:solid;border-color:#313244;}");
+            Gtk::StyleContext::add_provider_for_display(
+                disp, p, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+            s_well_css = true;
+        }
+    }
+    auto* well = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+    well->add_css_class("object-image-well");
+    well->set_focusable(true);
+    well->set_hexpand(true);
+    auto* empty_hint = Gtk::make_managed<Gtk::Label>(
+        "Drop or paste an image, or click to choose");
+    empty_hint->add_css_class("dim-label");
+    empty_hint->set_justify(Gtk::Justification::CENTER);
+    empty_hint->set_wrap(true);
+    empty_hint->set_margin_top(24);
+    empty_hint->set_margin_bottom(24);
+    well->append(*pic);
+    well->append(*empty_hint);
+    col->append(*well);
 
     // Sizer: drag to scale the preview's height (48–720px). Seeded from the
     // remembered per-instance height (object values, reserved key) and persisted
@@ -301,12 +339,13 @@ void ObjectForm::append_editable_image(const Folio::FormRow& row, const OnChange
     err->set_visible(false);
     col->append(*err);
 
-    // The full-res source is loaded ONCE and cached. The sizer sets the WIDGET
-    // height (H); the image is scaled DOWN to fit that height when larger, shown at
-    // natural size when smaller (never upscaled → never fuzzy), and centered in the
-    // widget. We pre-scale to ≤H so the source paintable's natural height never
-    // exceeds H — that lets size_request(-1, H) pin the widget to exactly H with
-    // the (possibly smaller) image centered inside it.
+    // The full-res source is loaded ONCE and cached. The sizer scales the
+    // PAINTABLE down to the chosen height (never up — never fuzzy); the widget's
+    // natural height follows the paintable. We deliberately do NOT pin a hard
+    // minimum height: doing so (s44's set_size_request) made each image field's
+    // MINIMUM equal the slider value, which inflated the whole form's minimum past
+    // the viewport and tripped a "measure for N, needs M" warning instead of
+    // letting the scroller scroll. can_shrink keeps the field's minimum small.
     auto orig = std::make_shared<Glib::RefPtr<Gdk::Pixbuf>>();
 
     auto render_at = [pic, orig](int H) {
@@ -322,7 +361,8 @@ void ObjectForm::append_editable_image(const Folio::FormRow& row, const OnChange
             (th == oh) ? *orig
                        : (*orig)->scale_simple(tw, th, Gdk::InterpType::BILINEAR);
         pic->set_paintable(Gdk::Texture::create_for_pixbuf(shown));
-        pic->set_size_request(-1, H);                   // the WIDGET height = slider
+        // No set_size_request here — the paintable's height (th) is the displayed
+        // height; a hard min would re-inflate the form's minimum (see above).
     };
     auto apply_height = [size_adj, render_at]() {
         render_at(static_cast<int>(size_adj->get_value()));
@@ -337,69 +377,249 @@ void ObjectForm::append_editable_image(const Folio::FormRow& row, const OnChange
             if (on_change) on_change(size_key, json(static_cast<double>(H)));
         });
 
-    auto load_preview = [pic, sizer, err, orig, apply_height](const std::string& path) {
+    auto load_preview = [pic, empty_hint, well, sizer, err, orig, apply_height](
+                            const std::string& path) {
         if (path.empty()) {
             *orig = Glib::RefPtr<Gdk::Pixbuf>{};
             pic->set_visible(false); sizer->set_visible(false); err->set_visible(false);
+            empty_hint->set_visible(true);
+            well->remove_css_class("filled");
             return;
         }
         try {
             *orig = Gdk::Pixbuf::create_from_file(path);
             pic->set_visible(true); sizer->set_visible(true); err->set_visible(false);
+            empty_hint->set_visible(false);
+            well->add_css_class("filled");
             apply_height();
         } catch (...) {
             *orig = Glib::RefPtr<Gdk::Pixbuf>{};
             pic->set_paintable(Glib::RefPtr<Gdk::Paintable>{});
             pic->set_visible(false); sizer->set_visible(false); err->set_visible(true);
+            empty_hint->set_visible(true);
+            well->remove_css_class("filled");
         }
     };
-    load_preview(cur_path);
+    load_preview(seed_path);
 
     auto* btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
     auto* set_btn = Gtk::make_managed<Gtk::Button>(
-        cur_path.empty() ? "Set image…" : "Change image…");
+        cur_value.empty() ? "Set image…" : "Change image…");
     set_btn->add_css_class("flat");
     auto* clear_btn = Gtk::make_managed<Gtk::Button>("Clear");
     clear_btn->add_css_class("flat");
-    clear_btn->set_visible(!cur_path.empty());
+    clear_btn->set_visible(!cur_value.empty());
     btn_row->append(*set_btn);
     btn_row->append(*clear_btn);
     col->append(*btn_row);
 
-    set_btn->signal_clicked().connect(
-        [this, field_id, on_change, load_preview, set_btn, clear_btn]() {
-            auto* win = dynamic_cast<Gtk::Window*>(get_root());
-            if (!win) return;
-            auto dlg = Gtk::FileChooserNative::create(
-                "Choose Image", *win, Gtk::FileChooser::Action::OPEN, "Open", "Cancel");
-            auto filter = Gtk::FileFilter::create();
-            filter->set_name("Images (PNG, JPG, WebP)");
-            filter->add_mime_type("image/png");
-            filter->add_mime_type("image/jpeg");
-            filter->add_mime_type("image/webp");
-            dlg->add_filter(filter);
-            dlg->signal_response().connect(
-                [dlg, field_id, on_change, load_preview, set_btn, clear_btn](int response) {
-                    if (response != Gtk::ResponseType::ACCEPT) return;
-                    auto file = dlg->get_file();
-                    if (!file) return;
-                    const std::string path = file->get_path();
-                    if (path.empty()) return;
-                    if (on_change) on_change(field_id, json(path));
-                    load_preview(path);
-                    set_btn->set_label("Change image…");
-                    clear_btn->set_visible(true);
-                });
-            dlg->show();
-        });
+    // ── Shared import sink ──────────────────────────────────────────────────
+    // Every gesture (picker, file-drop, texture-drop, paste) funnels through one
+    // updater: store the value, refresh the preview, sync the buttons. A picker /
+    // file path with no import seam synthesizes a raw-path outcome (pre-s79
+    // behaviour); resolve passes a raw path straight through.
+    auto apply_outcome = [this, field_id, on_change, load_preview, set_btn,
+                          clear_btn, err, pic](const ImageImportOutcome& out) {
+        if (!out.ok) {
+            err->set_text(out.error.empty() ? "Image could not be imported."
+                                            : out.error);
+            err->set_visible(true);
+            return;   // leave any existing value untouched
+        }
+        if (on_change) on_change(field_id, json(out.iid));
+        const std::string shown =
+            m_image_resolve_fn ? m_image_resolve_fn(out.iid) : out.iid;
+        load_preview(shown);
+        pic->set_tooltip_text(
+            out.low_res ? "Imported below the chosen detail level — the source "
+                          "image was small."
+                        : "");
+        set_btn->set_label("Change image…");
+        clear_btn->set_visible(true);
+    };
 
-    clear_btn->signal_clicked().connect(
-        [field_id, on_change, load_preview, set_btn, clear_btn]() {
-            if (on_change) on_change(field_id, json(std::string{}));
-            load_preview("");
-            set_btn->set_label("Set image…");
-            clear_btn->set_visible(false);
+    // A chosen / dropped FILE path → import seam if wired, else raw-path fallback.
+    auto import_path = [this, apply_outcome](const std::string& path) {
+        ImageImportOutcome out;
+        if (m_image_import_fn) out = m_image_import_fn(path);
+        else { out.ok = true; out.iid = path; }   // pre-s79 raw-path store
+        apply_outcome(out);
+    };
+
+    // The file picker (shared by the Set button AND a click on the well).
+    auto open_picker = [this, import_path]() {
+        auto* win = dynamic_cast<Gtk::Window*>(get_root());
+        if (!win) return;
+        auto dlg = Gtk::FileChooserNative::create(
+            "Choose Image", *win, Gtk::FileChooser::Action::OPEN, "Open", "Cancel");
+        auto filter = Gtk::FileFilter::create();
+        filter->set_name("Images (PNG, JPG, WebP)");
+        filter->add_mime_type("image/png");
+        filter->add_mime_type("image/jpeg");
+        filter->add_mime_type("image/webp");
+        dlg->add_filter(filter);
+        dlg->signal_response().connect([dlg, import_path](int response) {
+            if (response != Gtk::ResponseType::ACCEPT) return;
+            auto file = dlg->get_file();
+            if (!file) return;
+            const std::string path = file->get_path();
+            if (!path.empty()) import_path(path);
         });
+        dlg->show();
+    };
+
+    // Paste: read an image off the clipboard (async). Image DATA (screenshot,
+    // copy-image-from-browser) → bytes door. If there is no image but the
+    // clipboard holds a FILE (copied in a file manager), fall back to its path →
+    // file door.
+    auto do_paste = [this, apply_outcome, import_path, well]() {
+        if (!m_image_import_bytes_fn && !m_image_import_fn) return;
+        auto clip = well->get_clipboard();
+        if (!clip) return;
+        clip->read_texture_async(
+            [this, apply_outcome, import_path, clip](Glib::RefPtr<Gio::AsyncResult>& res) {
+                try {
+                    auto tex = clip->read_texture_finish(res);
+                    if (tex && m_image_import_bytes_fn) {
+                        auto bytes = tex->save_to_png_bytes();
+                        gsize n = 0;
+                        gconstpointer d = g_bytes_get_data(bytes->gobj(), &n);
+                        std::string data(static_cast<const char*>(d), n);
+                        apply_outcome(m_image_import_bytes_fn(data, std::string{}));
+                        return;
+                    }
+                } catch (const Glib::Error&) {
+                    // No image data — fall through to the file/path fallback.
+                }
+                // Fallback: the clipboard may carry a file path or file:// URI
+                // (a file copied in a file manager). Only act on something that
+                // plausibly names a local file; ignore arbitrary pasted text.
+                clip->read_text_async(
+                    [import_path, clip](Glib::RefPtr<Gio::AsyncResult>& r2) {
+                        std::string path;
+                        try {
+                            Glib::ustring text = clip->read_text_finish(r2);
+                            path = text.raw();
+                        } catch (const Glib::Error&) {
+                            return;
+                        }
+                        while (!path.empty() &&
+                               (path.back() == '\n' || path.back() == '\r' ||
+                                path.back() == ' '))
+                            path.pop_back();
+                        if (path.rfind("file://", 0) == 0)
+                            path = Gio::File::create_for_uri(path)->get_path();
+                        if (!path.empty() && path.front() == '/')
+                            import_path(path);
+                    });
+            });
+    };
+
+    set_btn->signal_clicked().connect([open_picker]() { open_picker(); });
+
+    auto do_clear = [field_id, on_change, load_preview, set_btn, clear_btn, pic]() {
+        if (on_change) on_change(field_id, json(std::string{}));
+        load_preview("");
+        pic->set_tooltip_text("");
+        set_btn->set_label("Set image…");
+        clear_btn->set_visible(false);
+    };
+    clear_btn->signal_clicked().connect([do_clear]() { do_clear(); });
+
+    // ── Well controllers: click-to-pick, drop (file + image), Ctrl+V paste ──────
+    auto click = Gtk::GestureClick::create();
+    click->set_button(GDK_BUTTON_PRIMARY);
+    click->signal_pressed().connect(
+        [open_picker, well](int, double, double) {
+            well->grab_focus();   // so a subsequent Ctrl+V lands here
+            open_picker();
+        });
+    well->add_controller(click);
+
+    auto drop = Gtk::DropTarget::create(GDK_TYPE_TEXTURE, Gdk::DragAction::COPY);
+    drop->set_gtypes({GDK_TYPE_TEXTURE, GDK_TYPE_FILE_LIST});
+    drop->signal_drop().connect(
+        [this, apply_outcome, import_path](const Glib::ValueBase& value, double,
+                                           double) -> bool {
+            const GValue* gv = value.gobj();
+            // A dropped IMAGE (browser, screenshot tool) → bytes door.
+            if (G_VALUE_HOLDS(gv, GDK_TYPE_TEXTURE)) {
+                if (!m_image_import_bytes_fn) return false;
+                GdkTexture* t = GDK_TEXTURE(g_value_get_object(gv));
+                if (!t) return false;
+                auto tex = Glib::wrap(t, /*take_copy=*/true);
+                auto bytes = tex->save_to_png_bytes();
+                gsize n = 0;
+                gconstpointer d = g_bytes_get_data(bytes->gobj(), &n);
+                std::string data(static_cast<const char*>(d), n);
+                apply_outcome(m_image_import_bytes_fn(data, std::string{}));
+                return true;
+            }
+            // A dropped FILE → file door (first file only).
+            if (G_VALUE_HOLDS(gv, GDK_TYPE_FILE_LIST)) {
+                GdkFileList* fl = static_cast<GdkFileList*>(g_value_get_boxed(gv));
+                if (!fl) return false;
+                GSList* files = gdk_file_list_get_files(fl);
+                std::string path;
+                if (files) {
+                    char* p = g_file_get_path(G_FILE(files->data));
+                    if (p) { path = p; g_free(p); }
+                }
+                g_slist_free(files);
+                if (path.empty()) return false;
+                import_path(path);
+                return true;
+            }
+            return false;
+        }, false);
+    well->add_controller(drop);
+
+    auto keys = Gtk::EventControllerKey::create();
+    keys->signal_key_pressed().connect(
+        [do_paste](guint keyval, guint, Gdk::ModifierType state) -> bool {
+            if ((state & Gdk::ModifierType::CONTROL_MASK) ==
+                    Gdk::ModifierType::CONTROL_MASK &&
+                (keyval == GDK_KEY_v || keyval == GDK_KEY_V)) {
+                do_paste();
+                return true;
+            }
+            return false;
+        }, false);
+    well->add_controller(keys);
+
+    // Right-click → a small menu. This is the DISCOVERABLE home for Paste (which
+    // otherwise needs the well focused for Ctrl+V) plus Set and Clear.
+    auto rc = Gtk::GestureClick::create();
+    rc->set_button(GDK_BUTTON_SECONDARY);
+    rc->signal_pressed().connect(
+        [open_picker, do_paste, do_clear, pic, well](int, double x, double y) {
+            auto* pop = Gtk::make_managed<Gtk::Popover>();
+            pop->set_parent(*well);
+            pop->set_pointing_to(Gdk::Rectangle(static_cast<int>(x),
+                                                static_cast<int>(y), 1, 1));
+            auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 2);
+            box->set_margin(4);
+            auto mk = [&box](const std::string& label) {
+                auto* b = Gtk::make_managed<Gtk::Button>(label);
+                b->add_css_class("flat");
+                b->set_halign(Gtk::Align::FILL);
+                if (auto* l = dynamic_cast<Gtk::Label*>(b->get_child()))
+                    l->set_xalign(0.0);
+                box->append(*b);
+                return b;
+            };
+            mk("Set image…")->signal_clicked().connect(
+                [pop, open_picker]() { pop->popdown(); open_picker(); });
+            mk("Paste image")->signal_clicked().connect(
+                [pop, do_paste]() { pop->popdown(); do_paste(); });
+            if (pic->get_visible())   // only when an image is currently shown
+                mk("Clear image")->signal_clicked().connect(
+                    [pop, do_clear]() { pop->popdown(); do_clear(); });
+            pop->set_child(*box);
+            pop->signal_closed().connect([pop]() { pop->unparent(); });
+            pop->popup();
+        });
+    well->add_controller(rc);
 
     lbr->set_child(*col);
     lb->append(*lbr);

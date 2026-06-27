@@ -36,6 +36,12 @@ GuardResult guard_import(const SourceProbe& src, const NormalizePolicy& pol) {
   return r;  // ok
 }
 
+long long estimated_decoded_bytes(int w, int h, bool has_alpha) {
+  if (w <= 0 || h <= 0) return 0;
+  const long long channels = has_alpha ? 4 : 3;
+  return static_cast<long long>(w) * static_cast<long long>(h) * channels;
+}
+
 OutFormat choose_format(bool has_alpha, const NormalizePolicy& pol) {
   // Alpha must be preserved; lossless is the writer's fidelity-over-size verdict.
   if (has_alpha || pol.prefer_lossless)

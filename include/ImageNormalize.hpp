@@ -76,6 +76,12 @@ struct GuardResult {
 // always set on rejection so the door can surface it (never silent — §5).
 GuardResult guard_import(const SourceProbe& src, const NormalizePolicy& pol);
 
+// Estimate the in-memory byte size of a decoded image (width × height × channels,
+// 4 channels if alpha else 3). Lets the byte-ceiling guard (import_max_mb) stay
+// meaningful for sources that arrive ALREADY DECODED — paste / texture-drop — with
+// no file size on disk to reject before decode. Pure; saturates to 0 on bad dims.
+long long estimated_decoded_bytes(int w, int h, bool has_alpha);
+
 // ── Output format choice (by content, §4a step 4) ─────────────────────────────
 // Alpha present (cutouts/diagrams) OR the writer asked for lossless => PNG.
 // Otherwise JPEG (opaque photos, small). One rule, applied to asset AND thumb so
