@@ -358,6 +358,44 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
     .chip-accent-bar-blue    { background-color: #89b4fa; }
     .chip-accent-bar-flamingo{ background-color: @col_red; }
     
+    /* ── Relationship Timeline resource rail (s82, §3) ─────────────────────────── */
+    .timeline-rail {
+        background-color: @adw_bg2;
+        border-right: 1px solid @border_strong;
+        padding: 6px 4px;
+    }
+    .timeline-rail-header {
+        font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+        text-transform: uppercase; color: @tx3;
+        padding: 8px 6px 2px 6px;
+    }
+    .timeline-rail-row {
+        border: 1px solid transparent;
+        border-radius: 5px;
+        padding: 3px 6px;
+        margin: 1px 2px;
+        min-height: 0;
+    }
+    .timeline-rail-row:hover { background-color: @adw_overlay; }
+    .timeline-rail-row.armed {
+        background-color: @accent_dim;
+        border-color: @accent_border;
+    }
+    .timeline-rail-name  { font-size: 11px; color: @tx2; }
+    .timeline-rail-row.armed .timeline-rail-name { color: @tx1; }
+    .timeline-rail-count {
+        font-size: 9px; color: @tx3;
+        font-family: "Source Code Pro", monospace;
+    }
+    /* category disclosures (binder-style): the expander title carries the
+       header label + the disclosure arrow; the body holds the subject rows. */
+    .timeline-rail-group { margin: 2px 0 0 0; }
+    .timeline-rail-group > title,
+    .timeline-rail-group > box.title { padding: 0; }
+    .timeline-rail-group > title:hover { background-color: @adw_overlay; border-radius: 5px; }
+    .timeline-rail-group .timeline-rail-header { padding: 6px 4px 4px 2px; }
+    .timeline-rail-group-body { margin: 0 0 2px 2px; }
+    
     /* ── Editor viewbar ─────────────────────────────────────────────────────── */
     .folio-viewbar {
         background-color: @adw_bg; border-bottom: 1px solid @border_strong;

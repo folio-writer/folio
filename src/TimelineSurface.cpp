@@ -51,6 +51,12 @@ constexpr int TRACK_H       = 26;   // track row height
 constexpr int TRACK_GAP     = 6;    // vertical gap between tracks
 constexpr int BAR_H         = 12;   // relief bar thickness
 constexpr int DOT_R         = 6;    // relief dot / bar-cap radius
+// s82 — the staging row: when a rail subject is armed, a single dashed lane in
+// its hue appears above the relief tracks; sweeping it places the armed subject
+// on the spine (the §3 build gesture). Reserves space only while armed.
+constexpr int STAGE_PAD     = 12;   // gap above the staging row
+constexpr int STAGE_H       = 28;   // staging row height
+constexpr int RAIL_W        = 184;  // resource-rail panel width
 
 // Category → HUE (§9.6), the fixed semantic hues — NOT theme chrome, so they are
 // the design's exact literals rather than palette tokens. (Focus-brightness and
@@ -63,6 +69,17 @@ const char* category_hue(TrackCategory c) {
     case TrackCategory::Image:     return "#fab387";  // peach
   }
   return "#cdd6f4";
+}
+
+// Category → rail section header (§9.6 order). Plural — a roster heading.
+const char* category_heading(TrackCategory c) {
+  switch (c) {
+    case TrackCategory::Character: return "Characters";
+    case TrackCategory::Place:     return "Places";
+    case TrackCategory::Reference: return "References";
+    case TrackCategory::Image:     return "Images";
+  }
+  return "Resources";
 }
 
 inline int x0() { return LEFT_PAD + GUTTER; }            // left edge of column 0
@@ -129,13 +146,48 @@ std::vector<SpineInputNode> spine_input_from_manuscript(const DocumentModel& mod
   return roots;
 }
 
+// ── Resource-rail candidate collector (s82) ──────────────────────────────────
+// Walk a section tree, emitting every LEAF (a linkable subject) as a candidate
+// in the given category; groups are descended, not listed. Mirrors the spine
+// walk but keeps the leaves, not the order.
+namespace {
+void collect_resource_leaves(const std::vector<BinderNode>& nodes,
+                             TrackCategory cat,
+                             std::vector<ResourceCandidate>& out) {
+  for (const BinderNode& n : nodes) {
+    if (binder_kind_is_group(n.kind)) {
+      collect_resource_leaves(n.children, cat, out);
+    } else if (!n.iid.empty()) {
+      out.push_back(ResourceCandidate{n.iid, n.title, cat});
+    }
+  }
+}
+}  // namespace
+
 // ── Surface ──────────────────────────────────────────────────────────────────
 
 TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
-    : Gtk::Box(Gtk::Orientation::VERTICAL, 0), m_model(model), m_prefs(prefs) {
+    : Gtk::Box(Gtk::Orientation::HORIZONTAL, 0), m_model(model), m_prefs(prefs) {
   set_hexpand(true);
   set_vexpand(true);
   set_name("timeline-surface");
+
+  // ── Resource rail (s82, §3) — the left-panel armer ─────────────────────────
+  m_rail_box.set_name("timeline-rail-box");
+  m_rail_box.add_css_class("timeline-rail");
+  m_rail_empty.set_text("No resources yet \u2014 add characters, places or references in the binder.");
+  m_rail_empty.set_name("timeline-rail-empty");
+  m_rail_empty.add_css_class("dim-label");
+  m_rail_empty.set_wrap(true);
+  m_rail_empty.set_xalign(0.0f);
+  m_rail_empty.set_margin(10);
+  m_rail_empty.set_visible(false);
+  m_rail_box.append(m_rail_empty);
+
+  m_rail_scroll.set_name("timeline-rail-scroll");
+  m_rail_scroll.set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+  m_rail_scroll.set_child(m_rail_box);
+  m_rail_scroll.set_vexpand(true);
 
   m_area.set_name("timeline-area");
   m_area.set_draw_func(sigc::mem_fun(*this, &TimelineSurface::draw));
@@ -154,16 +206,54 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
 
   m_overlay.set_child(m_scroll);
   m_overlay.add_overlay(m_empty_hint);
-  append(m_overlay);
+  m_overlay.set_hexpand(true);
+  m_overlay.set_vexpand(true);
+
+  // s82 — adjustable split: rail (start) | spine canvas (end). The rail keeps
+  // its width when the window resizes (the canvas takes the slack) but the
+  // author can drag the divider; it can be dragged narrow but not collapsed.
+  m_paned.set_name("timeline-split");
+  m_paned.set_start_child(m_rail_scroll);
+  m_paned.set_end_child(m_overlay);
+  m_paned.set_resize_start_child(false);
+  m_paned.set_shrink_start_child(false);
+  m_paned.set_resize_end_child(true);
+  m_paned.set_shrink_end_child(true);
+  m_paned.set_position(RAIL_W);
+  m_paned.set_hexpand(true);
+  m_paned.set_vexpand(true);
+  append(m_paned);
 
   // Click a scene card → open it (read-only navigation, like the Map lens).
+  // s82 (Scott review) — with Alt or Ctrl held, a click instead TOGGLES one
+  // scene's association on the row under the cursor (precise non-contiguous
+  // edit; the sweep remains the span gesture). Either modifier works so a WM
+  // that grabs Alt+click (some GNOME setups) still leaves Ctrl+click free.
   auto click = Gtk::GestureClick::create();
   click->set_button(GDK_BUTTON_PRIMARY);
-  click->signal_released().connect([this](int /*n*/, double x, double y) {
+  Gtk::GestureClick* clickp = click.get();   // raw: m_area owns the controller
+  click->signal_released().connect([this, clickp](int /*n*/, double x, double y) {
+    const Gdk::ModifierType st = clickp->get_current_event_state();
+    const bool mod = (st & Gdk::ModifierType::ALT_MASK)     != Gdk::ModifierType{} ||
+                     (st & Gdk::ModifierType::CONTROL_MASK) != Gdk::ModifierType{};
+    if (mod) { toggle_cell(x, y); return; }
     const std::string iid = scene_at(x, y);
     if (!iid.empty() && m_on_open) m_on_open(iid);
   });
   m_area.add_controller(click);
+
+  // s82 — secondary (right) click on a relief track row opens its context menu
+  // (remove the subject from the timeline / unlink the scene under the cursor).
+  auto sec = Gtk::GestureClick::create();
+  sec->set_button(GDK_BUTTON_SECONDARY);
+  Gtk::GestureClick* secp = sec.get();   // raw: m_area owns the controller (no cycle)
+  sec->signal_pressed().connect([this, secp](int /*n*/, double x, double y) {
+    const int trk = track_row_at(y);
+    if (trk < 0) return;
+    secp->set_state(Gtk::EventSequenceState::CLAIMED);
+    show_track_menu(trk, x, y);
+  });
+  m_area.add_controller(sec);
 
   // s80 step 4 — hover focus. Motion sets the isolated track / lit column;
   // leaving clears both. Presentation only; a redraw reflects the new focus.
@@ -191,13 +281,28 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
   });
   m_area.add_controller(motion);
 
-  // s80 step 5c — the subject-first sweep. A primary drag that BEGINS on a track
-  // row arms that row's subject and sweeps a span of scene columns; on release a
-  // real drag links the subject across the swept span (plan_sweep → subject_links).
-  // A bare press (no movement) commits nothing — a click on a track is a no-op.
+  // s80 step 5c / s82 — the subject-first sweep. A primary drag that BEGINS on a
+  // track row (or the armed staging row) sweeps a span of scene columns; on
+  // release the verb is resolved by sweep_range (drag onto empty → add the span;
+  // drag onto a linked cell → remove the cells swept). A bare press (no movement)
+  // adds the single anchor cell only once a real drag is detected.
   auto drag = Gtk::GestureDrag::create();
   drag->set_button(GDK_BUTTON_PRIMARY);
   drag->signal_drag_begin().connect([this](double x, double y) {
+    // s82 — a sweep that begins on the STAGING row arms the rail subject across
+    // the swept span (the §3 build gesture); otherwise a sweep on an existing
+    // track row edits that subject (s80). Staging takes priority when armed.
+    if (staging_active() && over_staging(y)) {
+      m_sweep_is_armed = true;
+      m_sweep_track = -1;
+      m_sweep_start_x = x;
+      m_sweep_from_col = clamped_col(x);
+      m_sweep_to_col = m_sweep_from_col;
+      m_sweep_moved = false;
+      m_area.queue_draw();
+      return;
+    }
+    m_sweep_is_armed = false;
     const int trk = track_row_at(y);
     if (trk < 0) { m_sweep_track = -1; return; }   // only sweeps from a track row
     m_sweep_track = trk;
@@ -208,14 +313,15 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
     m_area.queue_draw();
   });
   drag->signal_drag_update().connect([this](double ox, double oy) {
-    if (m_sweep_track < 0) return;
+    if (m_sweep_track < 0 && !m_sweep_is_armed) return;
     if (std::abs(ox) > 2.0 || std::abs(oy) > 2.0) m_sweep_moved = true;
     m_sweep_to_col = clamped_col(m_sweep_start_x + ox);
     m_area.queue_draw();
   });
   drag->signal_drag_end().connect([this](double /*ox*/, double /*oy*/) {
-    if (m_sweep_track >= 0 && m_sweep_moved) commit_sweep();
+    if ((m_sweep_track >= 0 || m_sweep_is_armed) && m_sweep_moved) commit_sweep();
     m_sweep_track = -1;
+    m_sweep_is_armed = false;
     m_sweep_moved = false;
     m_area.queue_draw();
   });
@@ -237,23 +343,211 @@ int TimelineSurface::clamped_col(double x) const {
 }
 
 void TimelineSurface::commit_sweep() {
-  if (m_sweep_track < 0 || m_sweep_track >= static_cast<int>(m_tracks.size())) return;
-  const TimelineTrack& tk = m_tracks[static_cast<std::size_t>(m_sweep_track)];
-  const std::string subject = tk.iid;
-  const SweepPlan plan =
-      plan_sweep(m_spine_iids, m_sweep_from_col, m_sweep_to_col, tk.claimed);
-  if (plan.add.empty()) return;   // span fully covered already — nothing to write
+  // s82 — the subject + its current claimed set come from one of two places:
+  // the armed rail subject (staging-row sweep — may have NO track yet, the
+  // builder case), or an existing track row (s80 edit case).
+  std::string subject;
+  std::unordered_set<std::string> claimed;
+  if (m_sweep_is_armed) {
+    if (m_armed_iid.empty()) return;
+    subject = m_armed_iid;
+    if (const auto* c = armed_claimed()) claimed = *c;  // else stays empty (no track)
+  } else {
+    if (m_sweep_track < 0 || m_sweep_track >= static_cast<int>(m_tracks.size())) return;
+    const TimelineTrack& tk = m_tracks[static_cast<std::size_t>(m_sweep_track)];
+    subject = tk.iid;
+    claimed = tk.claimed;
+  }
 
-  for (const std::string& scene_iid : plan.add) {
+  // s82 (Scott review) — the verb comes from the cell you drag ONTO (see
+  // sweep_range): drag onto empty → ADD the span (anchor included); drag onto a
+  // linked cell → REMOVE the cells you swept (anchor left intact). Not direction.
+  const SweepRange sr = sweep_range(&claimed);
+  if (!sr.valid) {
+    if (m_sweep_is_armed) disarm();   // consume the arm (the gesture happened)
+    return;
+  }
+
+  bool changed = false;
+  for (int p = sr.lo; p <= sr.hi; ++p) {
+    const std::string scene_iid = scene_iid_at_col(p);
+    if (scene_iid.empty()) continue;
     BinderNode* sn = m_model.find_node_by_iid(scene_iid);
     if (!sn) continue;
-    // dedupe: a subject is linked to a scene at most once in the store.
-    if (std::find(sn->subject_links.begin(), sn->subject_links.end(), subject)
-        == sn->subject_links.end())
-      sn->subject_links.push_back(subject);
+    auto& v = sn->subject_links;
+    if (sr.remove) {
+      const auto before = v.size();
+      v.erase(std::remove(v.begin(), v.end(), subject), v.end());
+      changed = changed || (v.size() != before);
+    } else {
+      // dedupe: a subject is linked to a scene at most once in the store.
+      if (std::find(v.begin(), v.end(), subject) == v.end()) {
+        v.push_back(subject);
+        changed = true;
+      }
+    }
   }
+  if (changed) m_model.mark_modified();
+  if (m_sweep_is_armed) m_armed_iid.clear();  // placed — clear the arm before rebuild
+  rebuild();   // re-read edges → tracks recompute; the bar appears live
+}
+
+// s82 (Scott review) — resolve the swept columns + verb from the press/cursor
+// columns and the subject's current claim. The cell first ENTERED past the
+// anchor decides: already-linked → REMOVE the entered cells (anchor is the
+// handle, kept); empty → ADD the whole span (anchor included). A press with no
+// column change adds the anchor cell.
+TimelineSurface::SweepRange
+TimelineSurface::sweep_range(const std::unordered_set<std::string>* claimed) const {
+  SweepRange r;
+  const int from = m_sweep_from_col, to = m_sweep_to_col;
+  if (from <= 0 || to <= 0) return r;          // invalid
+  if (from == to) { r.remove = false; r.lo = from; r.hi = from; r.valid = true; return r; }
+
+  const int first_entered = (to > from) ? from + 1 : from - 1;
+  bool first_on = false;
+  if (claimed) {
+    const std::string sid = scene_iid_at_col(first_entered);
+    first_on = !sid.empty() && claimed->count(sid) > 0;
+  }
+  if (first_on) {                              // REMOVE the cells dragged over
+    r.remove = true;
+    r.lo = (to > from) ? from + 1 : to;        // exclude the anchor (the handle)
+    r.hi = (to > from) ? to       : from - 1;
+  } else {                                     // ADD the whole span (incl. anchor)
+    r.remove = false;
+    r.lo = std::min(from, to);
+    r.hi = std::max(from, to);
+  }
+  r.valid = (r.hi >= r.lo);
+  return r;
+}
+
+// s82 — erase EVERY subject_links edge that targets this subject, across all
+// nodes (on-spine and off). The inverse of a full sweep; "remove from timeline."
+void TimelineSurface::remove_subject(const std::string& subject) {
+  if (subject.empty()) return;
+  // Collect the scene iids that link the subject (const scan), then erase via the
+  // mutable handle (all_node_ptrs() is const-only).
+  std::vector<std::string> scenes;
+  for (const BinderNode* n : m_model.all_node_ptrs()) {
+    if (!n) continue;
+    if (std::find(n->subject_links.begin(), n->subject_links.end(), subject)
+        != n->subject_links.end())
+      scenes.push_back(n->iid);
+  }
+  bool changed = false;
+  for (const std::string& scene_iid : scenes) {
+    BinderNode* sn = m_model.find_node_by_iid(scene_iid);
+    if (!sn) continue;
+    auto& v = sn->subject_links;
+    const auto before = v.size();
+    v.erase(std::remove(v.begin(), v.end(), subject), v.end());
+    changed = changed || (v.size() != before);
+  }
+  if (!changed) return;
+  if (m_armed_iid == subject) m_armed_iid.clear();  // armed row may have vanished
   m_model.mark_modified();
-  rebuild();   // re-read edges → tracks recompute; the new bar appears live
+  rebuild();
+}
+
+// s82 — erase a single subject↔scene edge (the scene under a right-click).
+void TimelineSurface::unlink_subject_scene(const std::string& subject,
+                                           const std::string& scene_iid) {
+  if (subject.empty() || scene_iid.empty()) return;
+  BinderNode* sn = m_model.find_node_by_iid(scene_iid);
+  if (!sn) return;
+  auto& v = sn->subject_links;
+  const auto before = v.size();
+  v.erase(std::remove(v.begin(), v.end(), subject), v.end());
+  if (v.size() == before) return;   // edge was not present
+  m_model.mark_modified();
+  rebuild();
+}
+
+// s82 — the told-order scene iid at a 1-based column, or "" if out of range.
+std::string TimelineSurface::scene_iid_at_col(int col) const {
+  if (col <= 0) return {};
+  for (const auto& s : m_proj.spine)
+    if (s.position == col) return s.iid;
+  return {};
+}
+
+// s82 (Scott review) — toggle ONE scene's association for the row under the
+// cursor: a track row (its subject) or the armed staging row (the armed
+// subject, the builder case — lets a non-contiguous claim be built a cell at a
+// time before any track exists). Add if absent, remove if present.
+void TimelineSurface::toggle_cell(double x, double y) {
+  std::string subject;
+  if (staging_active() && over_staging(y)) {
+    subject = m_armed_iid;
+  } else {
+    const int trk = track_row_at(y);
+    if (trk < 0) return;
+    subject = m_tracks[static_cast<std::size_t>(trk)].iid;
+  }
+  if (subject.empty()) return;
+
+  const int col = column_at(x);
+  if (col <= 0) return;
+  const std::string scene_iid = scene_iid_at_col(col);
+  if (scene_iid.empty()) return;
+
+  BinderNode* sn = m_model.find_node_by_iid(scene_iid);
+  if (!sn) return;
+  auto& v = sn->subject_links;
+  auto it = std::find(v.begin(), v.end(), subject);
+  if (it != v.end()) v.erase(it);            // toggle off
+  else               v.push_back(subject);   // toggle on
+  m_model.mark_modified();
+  rebuild();
+}
+
+void TimelineSurface::show_track_menu(int track_idx, double x, double y) {
+  if (track_idx < 0 || track_idx >= static_cast<int>(m_tracks.size())) return;
+  const TimelineTrack& tk = m_tracks[static_cast<std::size_t>(track_idx)];
+  const std::string subject = tk.iid;
+  const std::string label   = tk.label.empty() ? tk.iid : tk.label;
+
+  // The scene under the cursor (if any) — offered as a per-scene unlink when the
+  // subject is actually claimed there.
+  const int col = column_at(x);     // 1-based told-order column, or 0
+  const std::string scene_iid = scene_iid_at_col(col);
+  const int scene_pos = scene_iid.empty() ? 0 : col;
+  const bool over_claim = !scene_iid.empty() && tk.claimed.count(scene_iid) > 0;
+
+  auto menu = Gio::Menu::create();
+  auto ag   = Gio::SimpleActionGroup::create();
+
+  if (over_claim) {
+    auto a = ag->add_action("unlink-scene", [this, subject, scene_iid]() {
+      unlink_subject_scene(subject, scene_iid);
+    });
+    (void)a;
+    menu->append(Glib::ustring::compose("Unlink from Scene %1", scene_pos),
+                 "tlctx.unlink-scene");
+  }
+  ag->add_action("remove-track", [this, subject]() { remove_subject(subject); });
+  menu->append(Glib::ustring::compose("Remove \u201c%1\u201d from timeline", label),
+               "tlctx.remove-track");
+
+  if (m_ctx_popover) { m_ctx_popover->unparent(); m_ctx_popover = nullptr; }
+  m_ctx_popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
+  m_ctx_popover->insert_action_group("tlctx", ag);
+  m_ctx_popover->set_parent(m_area);
+  m_ctx_popover->set_has_arrow(false);
+  Gdk::Rectangle r;
+  r.set_x(static_cast<int>(x));
+  r.set_y(static_cast<int>(y));
+  r.set_width(1);
+  r.set_height(1);
+  m_ctx_popover->set_pointing_to(r);
+  m_ctx_popover->signal_closed().connect([this]() {
+    Glib::signal_idle().connect_once([this]() {
+      if (m_ctx_popover) { m_ctx_popover->unparent(); m_ctx_popover = nullptr; }
+    });
+  });
+  m_ctx_popover->popup();
 }
 
 int TimelineSurface::track_row_at(double y) const {
@@ -278,13 +572,37 @@ int TimelineSurface::kp_top() const {
   return spine_top() + CARD_H + KP_PAD;
 }
 
-// The relief tracks start below the KP strip when the project has KPs, else
-// directly below the cards (the strip reserves no space when empty, §9.4).
+// The staging row sits below the spine/KP strip when a rail subject is armed.
+int TimelineSurface::staging_top() const {
+  const int after_spine = spine_top() + CARD_H;
+  const int after_kp = m_kp_lanes.empty() ? after_spine : kp_top() + KP_H;
+  return after_kp + STAGE_PAD;
+}
+
+bool TimelineSurface::over_staging(double y) const {
+  if (!staging_active()) return false;
+  const int t = staging_top();
+  return y >= t && y <= t + STAGE_H;
+}
+
+// The relief tracks start below the staging row (when armed) or the KP strip /
+// cards otherwise. The staging row reserves space only while armed (§3).
 int TimelineSurface::track_top() const {
+  if (staging_active()) return staging_top() + STAGE_H + TRACK_PAD;
   const int after_spine = spine_top() + CARD_H;
   const int after_kp = m_kp_lanes.empty() ? after_spine
                                           : kp_top() + KP_H;
   return after_kp + TRACK_PAD;
+}
+
+// The armed subject's current claimed scene-set (from its track, if it has one).
+// Returns nullptr when nothing is armed or the armed subject has no track yet —
+// the builder case, where a sweep adds every column in the span.
+const std::unordered_set<std::string>* TimelineSurface::armed_claimed() const {
+  if (m_armed_iid.empty()) return nullptr;
+  for (const TimelineTrack& t : m_tracks)
+    if (t.iid == m_armed_iid) return &t.claimed;
+  return nullptr;
 }
 
 // A KP's hue: its stamped color_idx into the project palette (the spectrum the
@@ -303,9 +621,10 @@ int TimelineSurface::content_width() const {
 int TimelineSurface::content_height() const {
   const int n_tracks = static_cast<int>(m_tracks.size());
   if (n_tracks == 0) {
-    // No tracks: bottom is the KP strip if present, else the spine cards.
-    const int floor_y = m_kp_lanes.empty() ? spine_top() + CARD_H
-                                           : kp_top() + KP_H;
+    // No tracks: the floor is the staging row (if armed), else the KP strip (if
+    // present), else the spine cards.
+    int floor_y = m_kp_lanes.empty() ? spine_top() + CARD_H : kp_top() + KP_H;
+    if (staging_active()) floor_y = staging_top() + STAGE_H;
     return floor_y + BOT_PAD;
   }
   return track_top() + n_tracks * (TRACK_H + TRACK_GAP) + BOT_PAD;
@@ -344,8 +663,165 @@ void TimelineSurface::rebuild() {
   }
   m_kp_lanes = assemble_kp_lanes(m_spine_iids, scene_kp);
 
+  // s82 — the resource rail roster: every linkable subject (Characters / Places
+  // / References binder leaves + the live image pool), claimed or not, so the
+  // author can arm one with no track yet and place it on the spine (§3). Claim
+  // counts come from the tracks just assembled (no claim-rule duplication).
+  std::vector<ResourceCandidate> candidates;
+  collect_resource_leaves(m_model.root(Section::Characters),
+                          TrackCategory::Character, candidates);
+  collect_resource_leaves(m_model.root(Section::Places),
+                          TrackCategory::Place, candidates);
+  collect_resource_leaves(m_model.root(Section::References),
+                          TrackCategory::Reference, candidates);
+  for (const ImageFragment& f : m_model.image_pool().all())
+    if (!f.deleted && !f.iid.empty())
+      candidates.push_back(ResourceCandidate{f.iid, f.caption, TrackCategory::Image});
+
+  // If the armed subject was deleted since arming, drop the (now dangling) arm.
+  if (!m_armed_iid.empty()) {
+    bool still = false;
+    for (const auto& c : candidates)
+      if (c.iid == m_armed_iid) { still = true; break; }
+    if (!still) m_armed_iid.clear();
+  }
+  build_rail(assemble_resources(candidates, m_tracks));
+
   m_empty_hint.set_visible(m_proj.spine.empty());
   m_area.set_content_width(std::max(content_width(), 1));
+  m_area.set_content_height(std::max(content_height(), 1));
+  m_area.queue_draw();
+}
+
+// ── Resource rail (s82) ──────────────────────────────────────────────────────
+
+void TimelineSurface::build_rail(const std::vector<ResourceGroup>& groups) {
+  // Tear down the previous rows (managed children destroyed on remove); the
+  // member m_rail_empty is merely unparented and re-appended below.
+  m_rail_rows.clear();
+  while (Gtk::Widget* c = m_rail_box.get_first_child()) m_rail_box.remove(*c);
+
+  bool any = false;
+  for (const ResourceGroup& g : groups) any = any || !g.items.empty();
+
+  if (!any) {
+    m_rail_empty.set_visible(true);
+    m_rail_box.append(m_rail_empty);
+    return;
+  }
+  m_rail_empty.set_visible(false);
+
+  for (const ResourceGroup& g : groups) {
+    if (g.items.empty()) continue;
+
+    // Category disclosure (binder-style): an Expander titled with the §9.6
+    // heading, its body the subject rows. The author can collapse a category;
+    // the choice persists across rebuilds (view-entry, commit_sweep) via
+    // m_rail_collapsed, keyed by the TrackCategory enum value.
+    const int cat_key = static_cast<int>(g.category);
+    auto* exp = Gtk::make_managed<Gtk::Expander>();
+    exp->set_name("timeline-rail-group");
+    exp->add_css_class("timeline-rail-group");
+
+    auto* hdr = Gtk::make_managed<Gtk::Label>(category_heading(g.category));
+    hdr->set_xalign(0.0f);
+    hdr->add_css_class("timeline-rail-header");
+    hdr->set_name("timeline-rail-header");
+    exp->set_label_widget(*hdr);
+    exp->set_expanded(m_rail_collapsed.find(cat_key) == m_rail_collapsed.end());
+    exp->property_expanded().signal_changed().connect([this, cat_key, exp]() {
+      if (exp->get_expanded()) m_rail_collapsed.erase(cat_key);
+      else                     m_rail_collapsed.insert(cat_key);
+    });
+
+    auto* body = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+    body->add_css_class("timeline-rail-group-body");
+    exp->set_child(*body);
+
+    Gdk::RGBA hue; hue.set(category_hue(g.category));
+    for (const ResourceItem& it : g.items) {
+      auto* btn = Gtk::make_managed<Gtk::Button>();
+      btn->set_has_frame(false);
+      btn->add_css_class("timeline-rail-row");
+      btn->set_name(widget_name("timeline-rail-row", it.iid));
+      if (it.iid == m_armed_iid) btn->add_css_class("armed");
+
+      auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+
+      // category swatch (a small rounded square in the §9.6 hue)
+      auto* sw = Gtk::make_managed<Gtk::DrawingArea>();
+      sw->set_content_width(10);
+      sw->set_content_height(10);
+      sw->set_valign(Gtk::Align::CENTER);
+      sw->set_draw_func([hue](const Cairo::RefPtr<Cairo::Context>& cr, int w, int h) {
+        const double r = 2.0;
+        cr->begin_new_sub_path();
+        cr->arc(w - r, r,     r, -M_PI / 2, 0);
+        cr->arc(w - r, h - r, r, 0, M_PI / 2);
+        cr->arc(r,     h - r, r, M_PI / 2, M_PI);
+        cr->arc(r,     r,     r, M_PI, 3 * M_PI / 2);
+        cr->close_path();
+        cr->set_source_rgb(hue.get_red(), hue.get_green(), hue.get_blue());
+        cr->fill();
+      });
+      row->append(*sw);
+
+      const std::string text = it.label.empty() ? it.iid : it.label;
+      auto* name = Gtk::make_managed<Gtk::Label>(text);
+      name->set_xalign(0.0f);
+      name->set_ellipsize(Pango::EllipsizeMode::END);
+      name->set_hexpand(true);
+      // Cap the natural width so a long caption (e.g. a 3840px image filename)
+      // cannot force the rail wide; it ellipsizes within whatever the divider
+      // gives. The full text stays available as the row tooltip.
+      name->set_max_width_chars(24);
+      name->set_tooltip_text(text);
+      name->add_css_class("timeline-rail-name");
+      row->append(*name);
+
+      if (it.claim_count > 0) {
+        auto* cnt = Gtk::make_managed<Gtk::Label>(std::to_string(it.claim_count));
+        cnt->add_css_class("timeline-rail-count");
+        cnt->set_valign(Gtk::Align::CENTER);
+        row->append(*cnt);
+      }
+
+      btn->set_child(*row);
+      const std::string iid = it.iid, label = text;
+      const TrackCategory cat = g.category;
+      btn->signal_clicked().connect(
+          [this, iid, label, cat]() { arm_subject(iid, label, cat); });
+
+      body->append(*btn);
+      m_rail_rows.emplace_back(it.iid, btn);
+    }
+
+    m_rail_box.append(*exp);
+  }
+}
+
+void TimelineSurface::arm_subject(const std::string& iid, const std::string& label,
+                                  TrackCategory cat) {
+  if (m_armed_iid == iid) { disarm(); return; }   // re-click the armed row → off
+  m_armed_iid = iid;
+  m_armed_label = label;
+  m_armed_cat = cat;
+  for (auto& [riid, w] : m_rail_rows) {
+    if (!w) continue;
+    if (riid == iid) w->add_css_class("armed");
+    else             w->remove_css_class("armed");
+  }
+  m_area.set_content_height(std::max(content_height(), 1));  // staging row reserves space
+  m_area.queue_draw();
+}
+
+void TimelineSurface::disarm() {
+  m_armed_iid.clear();
+  m_armed_label.clear();
+  for (auto& [riid, w] : m_rail_rows) {
+    (void)riid;
+    if (w) w->remove_css_class("armed");
+  }
   m_area.set_content_height(std::max(content_height(), 1));
   m_area.queue_draw();
 }
@@ -586,10 +1062,109 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
     }
   }
 
+  // ── Staging row (s82) ──────────────────────────────────────────────────────
+  // When a rail subject is armed, a single dashed lane in its hue invites a
+  // sweep: drag across the scene columns to assert the subject's presence (§3).
+  // The subject's CURRENT relief draws faintly so a sweep reads as "add to this".
+  if (staging_active()) {
+    const int sy = staging_top();
+    const double scy = sy + STAGE_H / 2.0;
+    Gdk::RGBA hue; hue.set(category_hue(m_armed_cat));
+
+    const double fx = col_left(0);
+    const double fw = static_cast<double>(n) * COL;
+    rounded_rect(cr, fx, sy, fw, STAGE_H, 7);
+    set_src(cr, hue, 0.08);
+    cr->fill_preserve();
+    std::vector<double> sd{5.0, 4.0};
+    cr->set_dash(sd, 0.0);
+    set_src(cr, hue, 0.70);
+    cr->set_line_width(1.5);
+    cr->stroke();
+    cr->unset_dash();
+
+    // gutter: swatch + armed label (mirrors the track-name gutter)
+    rounded_rect(cr, LEFT_PAD, scy - 5, 10, 10, 2);
+    set_src(cr, hue, 1.0);
+    cr->fill();
+    auto gl = m_area.create_pango_layout(
+        m_armed_label.empty() ? "(armed)" : m_armed_label);
+    gl->set_font_description(Pango::FontDescription("sans bold 10"));
+    gl->set_ellipsize(Pango::EllipsizeMode::END);
+    gl->set_width(static_cast<int>((GUTTER - 26) * Pango::SCALE));
+    int glw = 0, glh = 0; gl->get_pixel_size(glw, glh);
+    set_src(cr, themed(m_area, "tx1", "#cdd6f4"), 1.0);
+    cr->move_to(LEFT_PAD + 16, scy - glh / 2.0);
+    gl->show_in_cairo_context(cr);
+
+    // faint existing relief of the armed subject (so the sweep extends it)
+    if (const auto* cl = armed_claimed()) {
+      const Relief rel = compute_relief(m_spine_iids, *cl);
+      for (const auto& seg : rel.segments) {
+        if (seg.kind == ReliefSegment::Kind::Bar) {
+          const double bx = col_cx(seg.start_pos - 1) - DOT_R;
+          const double bw = (col_cx(seg.end_pos - 1) + DOT_R) - bx;
+          rounded_rect(cr, bx, scy - BAR_H / 2.0, bw, BAR_H, BAR_H / 2.0);
+          set_src(cr, hue, 0.45);
+          cr->fill();
+        } else {
+          const double sx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;
+          rounded_rect(cr, sx, scy - BAR_H / 2.0, CARD_W, BAR_H, BAR_H / 2.0);
+          set_src(cr, hue, 0.50);
+          cr->fill();
+        }
+      }
+    } else {
+      // no current presence — a centred hint
+      auto hl = m_area.create_pango_layout("drag across scenes to place");
+      hl->set_font_description(Pango::FontDescription("sans italic 9"));
+      int hlw = 0, hlh = 0; hl->get_pixel_size(hlw, hlh);
+      set_src(cr, hue, 0.55);
+      cr->move_to(fx + (fw - hlw) / 2.0, scy - hlh / 2.0);
+      hl->show_in_cairo_context(cr);
+    }
+  }
+
   // ── Relief tracks (s80 step 3) ─────────────────────────────────────────────
   // One row per subject: its compute_relief drawn as bars (runs), dots
   // (singletons), and faint dashed connectors over interior gaps. Hue = category.
   const int ttop = track_top();
+
+  // s82 (Scott review) — vertical connection drop-lines: a thin, hue-coded dashed
+  // line from each scene card down to the cell of every track that claims it.
+  // Staggered horizontally WITHIN a column so co-claimed scenes don't hide each
+  // other (a lone claimant stays centred on its dot; collisions fan symmetrically).
+  // Kept deliberately thin and faint so it reads as a guide, not chrome.
+  if (!m_tracks.empty() && !m_proj.spine.empty()) {
+    const double y_top = spine_top() + CARD_H;   // bottom edge of the scene cards
+    constexpr double CONN_STEP = 4.0;            // per-claimant x stagger
+    std::vector<double> cdash{2.0, 3.0};
+    cr->set_line_width(1.4);
+    cr->set_dash(cdash, 0.0);
+    for (const auto& s : m_proj.spine) {
+      // claimants of this column, in track order (top → bottom)
+      std::vector<std::size_t> claimers;
+      for (std::size_t t = 0; t < m_tracks.size(); ++t)
+        if (m_tracks[t].claimed.count(s.iid)) claimers.push_back(t);
+      const std::size_t m = claimers.size();
+      for (std::size_t k = 0; k < m; ++k) {
+        const std::size_t t = claimers[k];
+        const bool dimc = (m_hover_track >= 0 && static_cast<int>(t) != m_hover_track);
+        Gdk::RGBA chue; chue.set(category_hue(m_tracks[t].category));
+        const double dx = (static_cast<double>(k) - (static_cast<double>(m) - 1.0) / 2.0)
+                          * CONN_STEP;
+        const double lx = col_cx(s.position - 1) + dx;
+        const double ly = ttop + static_cast<double>(t) * (TRACK_H + TRACK_GAP)
+                          + TRACK_H / 2.0;
+        set_src(cr, chue, dimc ? 0.10 : 0.42);
+        cr->move_to(lx, y_top);
+        cr->line_to(lx, ly);
+        cr->stroke();
+      }
+    }
+    cr->unset_dash();
+  }
+
   for (std::size_t i = 0; i < m_tracks.size(); ++i) {
     const TimelineTrack& tk = m_tracks[i];
     const Relief rel = compute_relief(m_spine_iids, tk.claimed);
@@ -639,8 +1214,11 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
         set_src(cr, hue, a_bar);
         cr->fill();
       } else {
+        // single-scene link: a pill the WIDTH OF THE SCENE (not a dot), so one
+        // link reads as "this whole scene", consistent with a one-cell bar.
+        const double sx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;
+        rounded_rect(cr, sx, cy - BAR_H / 2.0, CARD_W, BAR_H, BAR_H / 2.0);
         set_src(cr, hue, a_dot);
-        cr->arc(col_cx(seg.start_pos - 1), cy, DOT_R, 0, 2 * M_PI);
         cr->fill();
       }
     }
@@ -649,9 +1227,12 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
   // s80 step 5c — live sweep preview: a ghost span on the armed track row across
   // the swept columns, in the subject's hue (drawn on top of the tracks).
   if (m_sweep_track >= 0 && m_sweep_track < static_cast<int>(m_tracks.size())) {
-    const int lo = std::min(m_sweep_from_col, m_sweep_to_col);
-    const int hi = std::max(m_sweep_from_col, m_sweep_to_col);
-    if (lo >= 1 && hi >= lo) {
+    const SweepRange sr =
+        sweep_range(&m_tracks[static_cast<std::size_t>(m_sweep_track)].claimed);
+    const bool unlink = sr.remove;
+    const int lo = sr.lo;
+    const int hi = sr.hi;
+    if (sr.valid) {
       Gdk::RGBA hue; hue.set(category_hue(m_tracks[static_cast<std::size_t>(m_sweep_track)].category));
       const double cy = ttop + static_cast<double>(m_sweep_track) * (TRACK_H + TRACK_GAP)
                         + TRACK_H / 2.0;
@@ -659,14 +1240,63 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
       const double pw = (col_cx(hi - 1) + DOT_R) - px;
       const double ph = BAR_H + 6.0;
       rounded_rect(cr, px, cy - ph / 2.0, pw, ph, ph / 2.0);
-      set_src(cr, hue, 0.28);
-      cr->fill_preserve();
-      std::vector<double> pd{4.0, 3.0};
-      cr->set_dash(pd, 0.0);
-      set_src(cr, hue, 0.9);
-      cr->set_line_width(1.5);
-      cr->stroke();
-      cr->unset_dash();
+      if (unlink) {
+        const Gdk::RGBA del = themed(m_area, "error", "#f38ba8");
+        set_src(cr, del, 0.14);
+        cr->fill_preserve();
+        std::vector<double> pd{4.0, 3.0};
+        cr->set_dash(pd, 0.0);
+        set_src(cr, del, 0.95);
+        cr->set_line_width(1.5);
+        cr->stroke();
+        cr->unset_dash();
+      } else {
+        set_src(cr, hue, 0.28);
+        cr->fill_preserve();
+        std::vector<double> pd{4.0, 3.0};
+        cr->set_dash(pd, 0.0);
+        set_src(cr, hue, 0.9);
+        cr->set_line_width(1.5);
+        cr->stroke();
+        cr->unset_dash();
+      }
+    }
+  }
+
+  // s82 — live sweep preview on the STAGING row (armed rail subject). Same ghost
+  // span, in the armed subject's hue, on the staging lane.
+  if (m_sweep_is_armed && staging_active()) {
+    const SweepRange sr = sweep_range(armed_claimed());
+    const bool unlink = sr.remove;
+    const int lo = sr.lo;
+    const int hi = sr.hi;
+    if (sr.valid) {
+      Gdk::RGBA hue; hue.set(category_hue(m_armed_cat));
+      const double cy = staging_top() + STAGE_H / 2.0;
+      const double px = col_cx(lo - 1) - DOT_R;
+      const double pw = (col_cx(hi - 1) + DOT_R) - px;
+      const double ph = BAR_H + 6.0;
+      rounded_rect(cr, px, cy - ph / 2.0, pw, ph, ph / 2.0);
+      if (unlink) {
+        const Gdk::RGBA del = themed(m_area, "error", "#f38ba8");
+        set_src(cr, del, 0.16);
+        cr->fill_preserve();
+        std::vector<double> pd{4.0, 3.0};
+        cr->set_dash(pd, 0.0);
+        set_src(cr, del, 0.95);
+        cr->set_line_width(1.5);
+        cr->stroke();
+        cr->unset_dash();
+      } else {
+        set_src(cr, hue, 0.32);
+        cr->fill_preserve();
+        std::vector<double> pd{4.0, 3.0};
+        cr->set_dash(pd, 0.0);
+        set_src(cr, hue, 0.95);
+        cr->set_line_width(1.5);
+        cr->stroke();
+        cr->unset_dash();
+      }
     }
   }
 }

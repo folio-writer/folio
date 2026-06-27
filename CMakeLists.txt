@@ -191,6 +191,7 @@ set(SOURCES
     src/TimelineTracks.cpp        # s80 — pure subject-track assembly: edges -> per-subject claimed scene-sets, category-grouped/first-appearance-sorted (GTK-free, tested)
     src/TimelineSweep.cpp         # s80 — pure sweep planner: span + claimed-set -> additive add/already diff the batch-linker commits (GTK-free, tested)
     src/TimelineKp.cpp            # s81 — pure KP-lane assembler: on-spine scenes grouped by kp_id -> arc-ordered lanes (label/color frozen at first appearance, GTK-free, tested)
+    src/TimelineResources.cpp     # s82 — pure resource-rail roster: union of linkable subjects (objects + image pool) + on-spine claim counts, §9.6-grouped/label-sorted, zero-claim included (GTK-free, tested)
     src/KpPalette.cpp             # s81 — pure KP-palette reconcile: scene kp_id -> current ordinal/label/colour by stable swatch id (ordinal = palette position); + pre-s81 id back-fill (GTK-free, tested)
     src/ImageImport.cpp           # s60 — gdk-pixbuf import pipeline: decode→normalize→write assets/+thumbs/→pool.add (GTK seam)
     src/MindMapCanvas.cpp         # s48 — the fourth lens, GTK side: thin painter over the pure layer

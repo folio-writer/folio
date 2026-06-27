@@ -29,6 +29,9 @@
 
 #include <functional>
 #include <string>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include <gtkmm.h>
 
@@ -36,6 +39,7 @@
 #include "TimelineTracks.hpp"   // s80 step 3 — subject tracks (the relief rows)
 #include "TimelineSweep.hpp"    // s80 step 5 — the sweep planner (write-side diff)
 #include "TimelineKp.hpp"       // s81 step 6 — the KP lane (relief of kp_id)
+#include "TimelineResources.hpp"  // s82 — the resource-rail roster (the §3 armer)
 
 namespace Folio {
 
@@ -63,6 +67,21 @@ private:
                            // earlier slices took it for ctor parity without storing.
 
   // ── Widget tree ────────────────────────────────────────────────────────────
+  // The surface is a HORIZONTAL split (s82): the resource RAIL on the left (the
+  // §3 entry point — the roster of linkable subjects you arm), the spine canvas
+  // on the right. The rail makes the lens a BUILDER: arm a subject here (even one
+  // with no track yet), then sweep the staging row to place it on the spine.
+  // s82 — the rail lives in the start pane of a draggable split so the author
+  // can size it (long image captions ellipsize within whatever width is set).
+  Gtk::Paned          m_paned{Gtk::Orientation::HORIZONTAL};
+  Gtk::ScrolledWindow m_rail_scroll;
+  Gtk::Box            m_rail_box{Gtk::Orientation::VERTICAL, 0};
+  Gtk::Label          m_rail_empty;   // shown when the project has no resources
+  // s82 — categories are disclosures (Gtk::Expander) like the binder; remember
+  // which the author collapsed (keyed by TrackCategory enum value) so a rebuild
+  // (view-entry, commit_sweep) does not reset their open/closed state.
+  std::unordered_set<int> m_rail_collapsed;
+
   Gtk::Overlay        m_overlay;
   Gtk::ScrolledWindow m_scroll;
   Gtk::DrawingArea    m_area;
@@ -95,6 +114,26 @@ private:
   int    m_sweep_from_col = 0;     // 1-based start column
   int    m_sweep_to_col   = 0;     // 1-based current column
   bool   m_sweep_moved    = false; // a real drag occurred (vs a bare press)
+  // s82 (Scott review) — the sweep is DIRECTIONAL: drag RIGHT of the press column
+  // links the run [press..cursor]; drag LEFT unlinks the run [cursor..press].
+  // Crossing back over the press column flips the operation live. Derived from
+  // m_sweep_from_col vs m_sweep_to_col — no stored mode.
+  // s82 — when true, the in-progress sweep targets the ARMED rail subject on the
+  // staging row (vs. an existing track row). Set at drag-begin over the staging
+  // row; routes commit_sweep to m_armed_iid instead of a m_tracks[] subject.
+  bool   m_sweep_is_armed = false;
+
+  // s82 — the armed rail subject (the §3 "pick Place A" half of the gesture).
+  // Empty = nothing armed (no staging row). Armed from a rail row click; the
+  // staging row then accepts a sweep that writes this subject across the span.
+  // Cleared after a commit, on disarm (re-click), or when the subject vanishes.
+  std::string   m_armed_iid;
+  std::string   m_armed_label;
+  TrackCategory m_armed_cat = TrackCategory::Character;
+
+  // s82 — rail rows by subject iid, so a click can re-mark the armed row's CSS
+  // without a full rail rebuild. Repopulated every rebuild() from the roster.
+  std::vector<std::pair<std::string, Gtk::Widget*>> m_rail_rows;
 
   OpenCallback m_on_open;
 
@@ -106,11 +145,47 @@ private:
   int track_row_at(double y) const;     // m_tracks index under y, or -1
   void commit_sweep();                  // write plan_sweep's adds into subject_links
 
+  // s82 — removing a placed subject (the inverse of the sweep). A secondary
+  // (right) click on a relief track row opens a context menu: remove the whole
+  // subject from the timeline, or unlink it from just the scene under the cursor.
+  void show_track_menu(int track_idx, double x, double y);
+  void remove_subject(const std::string& subject);  // erase ALL its subject_links edges
+  void unlink_subject_scene(const std::string& subject,
+                            const std::string& scene_iid);  // erase one edge
+  // s82 (Scott review) — modifier+click toggles ONE scene's association on the
+  // row under the cursor (a track row, or the armed staging row). A claim is a
+  // SET, so this is how non-contiguous membership is added/removed a cell at a
+  // time; the sweep stays the span gesture.
+  void toggle_cell(double x, double y);
+  std::string scene_iid_at_col(int col) const;  // told-order scene iid at 1-based col ("" none)
+
+  // s82 (Scott review) — the sweep's verb comes from the cell you drag ONTO, not
+  // the direction: first-entered cell empty → ADD the span (anchor included);
+  // first-entered cell already linked → REMOVE the cells you drag over (anchor
+  // is the handle, left intact). One function feeds both commit and preview so
+  // they never disagree. Computed from m_sweep_from_col / m_sweep_to_col.
+  struct SweepRange { bool remove = false; int lo = 0; int hi = 0; bool valid = false; };
+  SweepRange sweep_range(const std::unordered_set<std::string>* claimed) const;
+  Gtk::PopoverMenu* m_ctx_popover = nullptr;  // managed; unparented on close
+
+  // s82 — the resource rail. build_rail repopulates the left panel from the
+  // roster (assemble_resources); arm_subject toggles which subject is armed (and
+  // re-marks the rows' CSS); the armed subject's CURRENT claimed set feeds
+  // plan_sweep when the staging row is swept.
+  void build_rail(const std::vector<ResourceGroup>& groups);
+  void arm_subject(const std::string& iid, const std::string& label,
+                   TrackCategory cat);
+  void disarm();
+  const std::unordered_set<std::string>* armed_claimed() const;  // its track set, or nullptr
+
   int content_width() const;   // X0 + n*COL + pad
-  int content_height() const;  // bands + spine + KP strip + relief tracks
+  int content_height() const;  // bands + spine + KP strip + staging + relief tracks
   int spine_top() const;       // y of the card row's top, given band_rows
   int kp_top() const;          // y of the KP strip's top (0 height when no KPs)
-  int track_top() const;       // y of the first relief track row, below the KP strip
+  bool staging_active() const { return !m_armed_iid.empty(); }
+  int staging_top() const;     // y of the staging row top (valid when armed)
+  bool over_staging(double y) const;  // is y within the staging row band
+  int track_top() const;       // y of the first relief track row (below staging/KP)
   // s81 — a KP's colour: its color_idx → the project spectrum hex (the palette
   // the materializer stamped), falling back to orange for an unstamped KP (§9.6).
   std::string kp_hex(int color_idx) const;
