@@ -16,6 +16,7 @@
     <file preprocess="xml-stripblanks" alias="folio-hamburger-symbolic.svg">icons/folio-hamburger-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-inspector-symbolic.svg">icons/folio-inspector-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-invisibles-symbolic.svg">icons/folio-invisibles-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="folio-key-symbolic.svg">icons/folio-key-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-line-numbers-symbolic.svg">icons/folio-line-numbers-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-link-symbolic.svg">icons/folio-link-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-manuscript-symbolic.svg">icons/folio-manuscript-symbolic.svg</file>

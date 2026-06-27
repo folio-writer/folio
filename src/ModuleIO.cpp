@@ -151,15 +151,15 @@ std::string spectrum_hex(double t) {
     return std::string(buf);
 }
 
-std::vector<std::pair<std::string,std::string>> keypoint_palette(const Module& m) {
+std::vector<KpSwatch> keypoint_palette(const Module& m) {
     std::vector<const KeyPoint*> kps;
     for (const auto& act : m.craft.acts)
         for (const auto& k : act.kps) kps.push_back(&k);
-    std::vector<std::pair<std::string,std::string>> pal;
+    std::vector<KpSwatch> pal;
     const int n = (int)kps.size();
     for (int i = 0; i < n; ++i) {
         double t = (n <= 1) ? 0.0 : (double)i / (double)(n - 1);
-        pal.emplace_back(kps[i]->label, spectrum_hex(t));
+        pal.push_back({kps[i]->id, kps[i]->label, spectrum_hex(t)});
     }
     return pal;
 }

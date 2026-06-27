@@ -11,6 +11,7 @@
 
 #include "DocumentModel.hpp"
 #include "MindMapCanvas.hpp"   // s48 — the fourth lens, hosted in the view-stack as "map"
+#include "TimelineSurface.hpp" // s80 — the Relationship Timeline lens, hosted as "timeline-lens"
 #include "CustomMindMapCanvas.hpp" // s51 — the OWNED mind-map document surface (a Reference form)
 #include "JournalSurface.hpp"      // s54 — the journal's owned writing surface (its own buffer + serializer)
 #include "GallerySurface.hpp"      // s61 — the gallery's owned surface (lens over the image pool)
@@ -132,7 +133,7 @@ public:
   int  joined_segment_count() const { return (int)m_joined_segments.size(); }
 
   // ── View / content modes ──────────────────────────────────────────────────
-  enum class ViewMode    { Write, Outline, Board, Joined, Map };
+  enum class ViewMode    { Write, Outline, Board, Joined, Map, Timeline };
   enum class EditorMode  { Node, Character, Place, Reference, Empty };
   enum class WritingMode { Novel, Outline, Screenplay };
 
@@ -140,6 +141,9 @@ public:
 
   void set_view_mode(ViewMode mode);
   ViewMode view_mode() const { return m_view_mode; }
+  // s81 — re-project the active whole-graph lens (Map/Timeline) after a model
+  // mutation that happened while it was already showing (e.g. pattern apply).
+  void refresh_active_lens();
 
   void set_writing_mode(WritingMode mode);
   WritingMode writing_mode() const { return m_writing_mode; }
@@ -184,6 +188,12 @@ public:
   // canvas then pins it at the drop point). Returns "" on failure.
   using MapCreateCallback = std::function<std::string(double world_x, double world_y)>;
   void set_map_create_callback(MapCreateCallback cb) { m_on_map_create = std::move(cb); }
+
+  // ── s80 — timeline lens open hook ─────────────────────────────────────────
+  // Mirrors the map open hook: clicking a scene card on the timeline leaves the
+  // lens and selects that scene, exactly as the sidebar would.
+  using TimelineOpenCallback = std::function<void(const std::string& iid)>;
+  void set_timeline_open_callback(TimelineOpenCallback cb) { m_on_timeline_open = std::move(cb); }
 
   // ── Font / geometry prefs ─────────────────────────────────────────────────
   void apply_font_prefs(const FolioPrefs &prefs);
@@ -622,6 +632,11 @@ private:
   // mode (like Board), routed in set_view_mode, rebuilt on entry from the model.
   Folio::MindMapCanvas m_map_canvas;
 
+  // s80 — the Relationship Timeline lens (added to m_view_stack as "timeline-lens").
+  // A whole-manuscript projection like Map: structure bands above the told-order
+  // spine, rebuilt on entry. A thin painter over the pure TimelineSpine layer.
+  Folio::TimelineSurface m_relationship_timeline;
+
   // s51 — the OWNED mind-map document surface (added to m_view_stack as "cmm").
   // Shown in Write/Joined when the current node is a Mind Map Reference form,
   // in place of the ObjectForm. Reads/writes a CMMDoc serialised in the node's
@@ -644,6 +659,7 @@ private:
   // (MapOpenCallback alias is declared in the public section, above its setter.)
   MapOpenCallback m_on_map_open;
   MapCreateCallback m_on_map_create;   // s48 slice 2 — double-click → new Reference
+  TimelineOpenCallback m_on_timeline_open;  // s80 — card click → navigate to scene
 
   // ── Font / CSS state ──────────────────────────────────────────────────────
   std::string m_current_font = "JansonText";

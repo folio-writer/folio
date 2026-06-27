@@ -87,6 +87,17 @@ StoryGraph::edges_from_backlinks(const DocumentModel& model) {
             add(n->iid, target, edge_kind_for_target(target), "");
     }
 
+    // (5) timeline-authored scene→subject links: explicit per-scene subject edges
+    //     written by the Relationship Timeline's sweep (s80, option 2 — the prose
+    //     is never touched; the node owns its links, mirroring image fragments).
+    //     from = the scene, to = the subject; read here so the timeline re-reads
+    //     its own writes through the one projection ("edges are read, never owned").
+    for (const BinderNode* n : model.all_node_ptrs()) {
+        if (!n || n->subject_links.empty()) continue;
+        for (const std::string& target : n->subject_links)
+            add(n->iid, target, edge_kind_for_target(target), "");
+    }
+
     return out;
 }
 

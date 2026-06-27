@@ -171,6 +171,27 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
         background-color: @accent_color; filter: brightness(1.10);
     }
 
+    /* s81: the three-way Key-Point cycle (Inspector Tag row). Same flat round
+       shape as the pin toggle; three lit states driven by code-set classes.
+       The child symbolic <image> takes `color` (it's a mask). */
+    .kp-cycle {
+        min-width: 30px; min-height: 30px; padding: 4px;
+        border-radius: 9999px; border: none; box-shadow: none;
+        background: transparent;
+    }
+    .kp-cycle:hover { background-color: alpha(@tx1, 0.10); }
+    .kp-cycle.kp-off image { color: alpha(@tx1, 0.32); }   /* off — ghosted key */
+    .kp-cycle.kp-off:hover image { color: alpha(@tx1, 0.65); }
+    .kp-cycle.kp-beat image { color: @tx1; }               /* beat — bright key */
+    .kp-cycle.kp-target {                                   /* target — pin on accent */
+        background-color: @accent_color;
+        box-shadow: 0 1px 4px alpha(black, 0.30);
+    }
+    .kp-cycle.kp-target image { color: white; }
+    .kp-cycle.kp-target:hover {
+        background-color: @accent_color; filter: brightness(1.10);
+    }
+
     /* ── View toggle group (segmented control) ───────────────────────────────── */
     .view-toggle-group {
         background-color: @adw_surface_2; border-radius: 6px;

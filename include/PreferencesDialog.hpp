@@ -125,6 +125,7 @@ private:
     // Tags — working vector, flushed to prefs.tag_colors on apply
     std::vector<TagColor>    m_working_tags;
     Gtk::Box*                m_tags_list_box   = nullptr;
+    int                      m_tag_drag_src    = -1;   // s81: DnD reorder source row
 
     // Node creation defaults — working copies flushed on apply
     NodeDefaults m_wd_scene;

@@ -338,6 +338,22 @@ struct BinderNode {
     // reaches for and writes first; the rest of the arc is connective fill. Sticky
     // through reshaping like kp_id; surfaced as a milestone marker.
     bool         pin                = false;
+    // s81: this scene is a Key Point — a story beat that draws on the timeline's
+    // KP lane. Set beside the colour/tag in the Inspector (the apparent surface)
+    // and by the pattern materializer for every KP scene it stamps. The colour
+    // swatch supplies the beat's identity (kp_id / kp_label / colour); this bool
+    // says "that tagged scene IS a beat" — an unflagged colour-tag is a plain
+    // colour, not a beat. Sticky through reshaping like kp_id; serialised omit-
+    // when-false so untouched nodes stay byte-clean.
+    bool         is_key_point       = false;
+    // s80: timeline-authored subject links — explicit scene→subject iids written
+    // by the Relationship Timeline's sweep (DESIGN_timeline.md §9.9 step 5,
+    // option 2). The MIRROR of ImageFragment.links: the node owns its outgoing
+    // links, StoryGraph::edges_from_backlinks reads them (source 5), and the
+    // PROSE is never touched. Empty on every untouched node; serialised omit-
+    // when-empty so the tree stays byte-clean. Edges are read, never owned — the
+    // timeline writes here and re-reads through the one projection.
+    std::vector<std::string> subject_links;
     std::vector<Snapshot> snapshots;
 
     // Character / Place fields

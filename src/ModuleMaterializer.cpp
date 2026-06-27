@@ -19,6 +19,10 @@ void stamp(DocumentModel& model, const std::vector<int>& path, const PlanScene& 
         n->frenetic    = s.frenetic;
         n->arc         = s.arc;
         n->pin         = s.pin;
+        // s81: a materialized scene that serves a KP IS a beat — flag it so it
+        // draws on the timeline KP lane (which now gates on is_key_point, not on
+        // kp_id alone). A scene with no KP stays unflagged.
+        n->is_key_point = !s.kp_id.empty();
     }
 }
 } // namespace

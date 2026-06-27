@@ -1,5 +1,6 @@
 #include "PreferencesDialog.hpp"
 #include "color_utils.hpp"
+#include "Iid.hpp"               // s81 — make_iid(IidKind::KeyPoint) for new swatches
 #include "BackupManager.hpp"
 #include "SpellChecker.hpp"
 #include "UnicodePickerPopover.hpp"
@@ -48,6 +49,13 @@ static const char* PREFS_CSS = R"CSS(
     padding: 6px 10px;
     margin-bottom: 4px;
 }
+.dyn-row-dragging { opacity: 0.45; }
+.dnd-grip {
+    color: alpha(@tx1, 0.35);
+    padding: 0 4px;
+    font-size: 13px;
+}
+.dnd-grip:hover { color: alpha(@tx1, 0.75); }
 .dyn-add-btn {
     background-color: transparent;
     border: 1px dashed @border_subtle;
@@ -689,11 +697,63 @@ void PreferencesDialog::rebuild_tags_list() {
         auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
         row->add_css_class("dyn-row");
 
+        // s81: drag handle — grab to reorder. Palette order IS the KP arc order,
+        // so reordering re-ordinals every beat (committed → MainWindow remaps the
+        // scenes). DnD per the house standard (Gtk::DragSource/DropTarget), no
+        // up/down arrows.
+        auto* grip = Gtk::make_managed<Gtk::Label>("\u2630");   // ☰ grip
+        grip->add_css_class("dnd-grip");
+        grip->set_tooltip_text("Drag to reorder — order sets the Key Point arc.");
+        row->append(*grip);
+
+        int idx = i;
+        auto src = Gtk::DragSource::create();
+        src->set_actions(Gdk::DragAction::MOVE);
+        src->signal_prepare().connect(
+            [this, idx](double, double) -> Glib::RefPtr<Gdk::ContentProvider> {
+              m_tag_drag_src = idx;
+              Glib::Value<int> v; v.init(G_TYPE_INT); v.set(idx);
+              return Gdk::ContentProvider::create(v);
+            }, false);
+        src->signal_drag_begin().connect(
+            [row](const Glib::RefPtr<Gdk::Drag>&) {
+              row->add_css_class("dyn-row-dragging");
+            }, false);
+        src->signal_drag_end().connect(
+            [this, row](const Glib::RefPtr<Gdk::Drag>&, bool) {
+              m_tag_drag_src = -1;
+              row->remove_css_class("dyn-row-dragging");
+            }, false);
+        grip->add_controller(src);
+
+        auto dst = Gtk::DropTarget::create(G_TYPE_INT, Gdk::DragAction::MOVE);
+        dst->signal_drop().connect(
+            [this, idx](const Glib::ValueBase&, double, double) -> bool {
+              const int from = m_tag_drag_src;
+              if (from < 0 || from == idx ||
+                  from >= (int)m_working_tags.size() ||
+                  idx  >  (int)m_working_tags.size()) return false;
+              TagColor moved = m_working_tags[from];
+              m_working_tags.erase(m_working_tags.begin() + from);
+              int to = (from < idx) ? idx - 1 : idx;   // adjust after erase
+              m_working_tags.insert(m_working_tags.begin() + to, moved);
+              m_changed = true;
+              // Defer the rebuild: doing it here would destroy this row (and its
+              // drag controllers) while the drop — and the source's pending
+              // drag_end — are still unwinding → use-after-free. Idle runs once
+              // the DnD sequence has fully completed.
+              Glib::signal_idle().connect([this]() {
+                rebuild_tags_list();
+                return false;   // one-shot
+              });
+              return true;
+            }, false);
+        row->add_controller(dst);
+
         auto* color_btn = Gtk::make_managed<Gtk::ColorButton>();
         color_btn->set_rgba(hex_to_rgba(m_working_tags[i].hex));
         color_btn->set_use_alpha(false);
         color_btn->set_size_request(32, 32);
-        int idx = i;
         color_btn->signal_color_set().connect([this, idx, color_btn] {
             if (idx < (int)m_working_tags.size())
                 m_working_tags[idx].hex = rgba_to_hex(color_btn->get_rgba());
@@ -716,6 +776,7 @@ void PreferencesDialog::rebuild_tags_list() {
         del_btn->signal_clicked().connect([this, idx] {
             if (idx < (int)m_working_tags.size()) {
                 m_working_tags.erase(m_working_tags.begin() + idx);
+                m_changed = true;
                 rebuild_tags_list();
             }
         });
@@ -883,7 +944,12 @@ Gtk::Widget* PreferencesDialog::build_page_tags() {
         auto* add_btn = Gtk::make_managed<Gtk::Button>("+ Add Colour");
         add_btn->add_css_class("dyn-add-btn"); add_btn->set_halign(Gtk::Align::START);
         add_btn->signal_clicked().connect([this] {
-            m_working_tags.push_back({"new", "#888888"});
+            // s81: mint a stable id at creation so a scene tagged with this new
+            // colour resolves on the KP lane immediately (not only after a reload
+            // back-fill). name/hex first, id last (matches the TagColor layout).
+            TagColor tc; tc.name = "new"; tc.hex = "#888888";
+            tc.id = make_iid(IidKind::KeyPoint);
+            m_working_tags.push_back(tc);
             rebuild_tags_list();
         });
         page->append(*add_btn);

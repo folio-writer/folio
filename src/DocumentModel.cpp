@@ -128,6 +128,10 @@ json BinderNode::to_json() const {
     j["frenetic"]           = frenetic;         // s24: per-scene pacing energy
     j["arc"]                = arc;              // s24: per-scene story-arc/tension
     j["pin"]                = pin;              // s29: pinned-hinge milestone
+    if (is_key_point)
+        j["is_key_point"]   = is_key_point;     // s81: this scene is a KP beat (omit when false)
+    if (!subject_links.empty())
+        j["subject_links"]  = subject_links;    // s80: timeline-authored scene→subject edges (omit when empty)
     j["role"]               = role;
     j["description"]        = description;
     j["image_path"]         = image_path;
@@ -200,6 +204,11 @@ void BinderNode::from_json(const json& j) {
     frenetic           = j.value("frenetic", 0.0); // s24: per-scene pacing energy
     arc                = j.value("arc", 0.0);      // s24: per-scene story-arc/tension
     pin                = j.value("pin", false);    // s29: pinned-hinge milestone
+    is_key_point       = j.value("is_key_point", false);  // s81: KP beat flag
+    subject_links.clear();                          // s80: timeline-authored scene→subject edges
+    if (j.contains("subject_links") && j["subject_links"].is_array())
+        for (const auto& l : j["subject_links"])
+            if (l.is_string()) subject_links.push_back(l.get<std::string>());
     {   // Migrate legacy enum role strings to display names
         std::string r = j.value("role", "");
         if      (r == "protagonist") role = "Protagonist";

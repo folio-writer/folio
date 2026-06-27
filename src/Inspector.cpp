@@ -508,6 +508,42 @@ void Inspector::sync_color_dropdown(Gtk::DropDown *dd, int color_idx) {
   dd->set_selected(sel);
 }
 
+// s81 — drive the Key-Point cycle button (off → key → pin) from a node. The icon
+// swaps (key for off/beat, pin for the promoted target) and the lit state rides
+// on CSS classes (kp-off ghosted / kp-beat lit key / kp-target pin-on-accent),
+// mirroring the old pin toggle's class-driven look. Gated on the scene having a
+// colour: a beat needs an identity (its swatch), so the cycle is disabled until
+// a colour is set — the tooltip says so.
+void Inspector::sync_kp_cycle(const BinderNode* node) {
+  const bool is_scene  = node && node->kind == BinderKind::Scene;
+  const bool has_colour = node && node->color_idx > 0;
+  const bool beat = node && node->is_key_point;
+  const bool kp   = node && node->pin;   // pin implies a Key Point target
+
+  m_kp_cycle.set_sensitive(is_scene && has_colour);
+  m_kp_cycle.remove_css_class("kp-off");
+  m_kp_cycle.remove_css_class("kp-beat");
+  m_kp_cycle.remove_css_class("kp-target");
+
+  if (kp) {
+    m_kp_cycle.set_icon_name("folio-pin-symbolic");
+    m_kp_cycle.add_css_class("kp-target");
+    m_kp_cycle.set_tooltip_text(
+        "Key Point — a target you write toward. Click to clear.");
+  } else if (beat) {
+    m_kp_cycle.set_icon_name("folio-key-symbolic");
+    m_kp_cycle.add_css_class("kp-beat");
+    m_kp_cycle.set_tooltip_text(
+        "Pattern beat. Click to promote to a Key Point target.");
+  } else {
+    m_kp_cycle.set_icon_name("folio-key-symbolic");
+    m_kp_cycle.add_css_class("kp-off");
+    m_kp_cycle.set_tooltip_text(
+        has_colour ? "Click to mark this scene a pattern beat."
+                   : "Give the scene a colour first, then mark it a beat.");
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Metadata tab
 // ─────────────────────────────────────────────────────────────────────────────
@@ -712,10 +748,20 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
       m_current_node->color_idx = idx;
       // The palette IS the arc: a swatch is a named Key Point, so re-colouring a
       // scene re-tags it. Sync the tag label off the swatch name (idx 0 = None →
-      // untagged) so tag and colour can't drift.
+      // untagged) so tag and colour can't drift; anchor the beat's identity to
+      // the swatch's STABLE id (s81) so it survives a palette rename / reorder.
       m_current_node->kp_label = m_prefs.color_name_for_idx(idx);
+      m_current_node->kp_id =
+          (idx >= 1 && idx <= (int)m_prefs.tag_colors.size())
+              ? m_prefs.tag_colors[idx - 1].id
+              : std::string();
+      if (idx == 0) {   // colour removed → no identity → cannot be a beat
+        m_current_node->is_key_point = false;
+        m_current_node->pin = false;
+      }
       m_tag_value.set_text(m_current_node->kp_label.empty()
                                ? "\u2014" : m_current_node->kp_label);
+      sync_kp_cycle(m_current_node);   // colour gained/cleared → cycle enables/disables
       m_model.mark_modified();
       notify_meta_changed();   // rebuild the binder so the swatch updates
     });
@@ -724,8 +770,10 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
     row->set_child(*rb);
     lb->append(*row);
     // s23: Tag row — the scene's Key Point (set via the colour swatch above; the
-    // palette IS the arc). s30: a pin toggle sits inline — mark this scene a hinge
-    // (a write-first milestone) right where you set its metadata.
+    // palette IS the arc). s81: the three-way key cycle sits inline — one click
+    // makes the tagged scene a pattern beat, a second promotes it to a Key Point
+    // target, a third clears it (off → key → pin → off), right where you set its
+    // metadata. Disabled until the scene has a colour (a beat needs an identity).
     {
       auto *trow = Gtk::make_managed<Gtk::ListBoxRow>();
       auto *tb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
@@ -739,26 +787,29 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
       tl->set_halign(Gtk::Align::START);
       m_tag_value.set_halign(Gtk::Align::END);
       m_tag_value.add_css_class("dim-label");
-      m_pin_toggle.set_icon_name("folio-pin-symbolic");
-      m_pin_toggle.add_css_class("pin-toggle");   // own class — bold on/off state
-      m_pin_toggle.set_valign(Gtk::Align::CENTER);
-      m_pin_toggle.set_tooltip_text(
-          "Pin this scene as a hinge — a turn the story rests on, and a "
-          "write-first milestone. Pinned scenes are the story's skeleton.");
-      m_pin_toggle.property_active().signal_changed().connect([this]() {
-        // Drive the visual from a class we control (not :checked — unreliable
-        // here). This runs on programmatic priming too, so the look always
-        // tracks state; the data write below is gated to real user toggles.
-        if (m_pin_toggle.get_active()) m_pin_toggle.add_css_class("pinned");
-        else                           m_pin_toggle.remove_css_class("pinned");
+      m_kp_cycle.add_css_class("kp-cycle");     // own class — three lit states via CSS
+      m_kp_cycle.set_valign(Gtk::Align::CENTER);
+      m_kp_cycle.signal_clicked().connect([this]() {
         if (m_loading || !m_current_node) return;
-        m_current_node->pin = m_pin_toggle.get_active();
+        BinderNode* n = m_current_node;
+        // Cycle off → key → pin → off. pin always implies is_key_point.
+        if (!n->is_key_point)      { n->is_key_point = true;  n->pin = false; }
+        else if (!n->pin)          { n->pin = true; }
+        else                       { n->is_key_point = false; n->pin = false; }
+        // Lighting a beat anchors its identity to its swatch (kp_id = swatch id),
+        // so the lane can group it; the colour was required to enable the cycle.
+        if (n->is_key_point && n->color_idx >= 1 &&
+            n->color_idx <= (int)m_prefs.tag_colors.size()) {
+          n->kp_id = m_prefs.tag_colors[n->color_idx - 1].id;
+          n->kp_label = m_prefs.color_name_for_idx(n->color_idx);
+        }
+        sync_kp_cycle(n);
         m_model.mark_modified();
-        notify_meta_changed();   // rebuild the binder so the pin marker updates
+        notify_meta_changed();   // rebuild the binder + lens so the marker updates
       });
       tb->append(*tl);
       tb->append(m_tag_value);
-      tb->append(m_pin_toggle);
+      tb->append(m_kp_cycle);
       trow->set_child(*tb);
       lb->append(*trow);
     }
@@ -1463,10 +1514,10 @@ void Inspector::load_node(BinderNode *node) {
   }
   sync_color_dropdown(m_color_dropdown, node->color_idx);
   m_tag_value.set_text(node->kp_label.empty() ? "\u2014" : node->kp_label);
-  // s30 — pin toggle + editable energy sliders, primed from the node. m_loading
-  // is already true here, so these programmatic sets don't echo back as edits.
-  m_pin_toggle.set_active(node->pin);
-  m_pin_toggle.set_sensitive(node->kind == BinderKind::Scene);
+  // s81 — prime the three-way Key-Point cycle from the node (off / key / pin),
+  // gated on the scene having a colour. m_loading is true here, so this is a
+  // pure visual sync with no data write.
+  sync_kp_cycle(node);
   if (m_pacing_adj)  m_pacing_adj->set_value(std::lround(node->frenetic * 100.0));
   if (m_tension_adj) m_tension_adj->set_value(std::lround(node->arc * 100.0));
   m_word_target_spin.set_value(node->word_target);

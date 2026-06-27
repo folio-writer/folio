@@ -187,8 +187,14 @@ set(SOURCES
     src/Gallery.cpp               # s57 — pure Gallery LENS reads: image↔object link directions + lightbox prev/next (GTK-free, tested)
     src/ObjectImage.cpp           # s72 — pure object PORTRAIT helpers: dual-read iid/path resolver + long-edge display math (GTK-free, tested)
     src/TimelineRelief.cpp        # s79 — pure Relationship Timeline relief fn: told-order spine + claimed set -> bars/dots/gaps (iid-keyed, GTK-free, tested)
+    src/TimelineSpine.cpp         # s80 — pure spine + structure-band projection: depth-first told-order walk + group spans by depth (iid-keyed, GTK-free, tested)
+    src/TimelineTracks.cpp        # s80 — pure subject-track assembly: edges -> per-subject claimed scene-sets, category-grouped/first-appearance-sorted (GTK-free, tested)
+    src/TimelineSweep.cpp         # s80 — pure sweep planner: span + claimed-set -> additive add/already diff the batch-linker commits (GTK-free, tested)
+    src/TimelineKp.cpp            # s81 — pure KP-lane assembler: on-spine scenes grouped by kp_id -> arc-ordered lanes (label/color frozen at first appearance, GTK-free, tested)
+    src/KpPalette.cpp             # s81 — pure KP-palette reconcile: scene kp_id -> current ordinal/label/colour by stable swatch id (ordinal = palette position); + pre-s81 id back-fill (GTK-free, tested)
     src/ImageImport.cpp           # s60 — gdk-pixbuf import pipeline: decode→normalize→write assets/+thumbs/→pool.add (GTK seam)
     src/MindMapCanvas.cpp         # s48 — the fourth lens, GTK side: thin painter over the pure layer
+    src/TimelineSurface.cpp       # s80 — the Relationship Timeline lens, GTK side: thin painter over the pure spine+bands projection
     src/CustomMindMapCanvas.cpp   # s51 — the OWNED mind-map document surface (a Reference form): canvas + toolbar + subjects
     src/JournalSurface.cpp        # s53 — journal card/calendar lens: cairo painter over the pure layer (calendar + cards)
     src/GallerySurface.cpp        # s61 — owned Gallery surface: wall/lightbox shell + file-picker import door (GTK)

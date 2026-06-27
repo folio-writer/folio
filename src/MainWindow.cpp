@@ -4,6 +4,7 @@
 #include "MainWindow.hpp"
 #include "color_utils.hpp"
 #include "Editor.hpp"
+#include "KpPalette.hpp"   // s81 — palette_remap / apply_palette_remap (reconcile)
 #include "EditorTabBar.hpp"
 #include "ExportDialog.hpp"
 #include "ImportDialog.hpp"
@@ -359,16 +360,17 @@ void MainWindow::setup_headerbar() {
   m_view_toggle_box.set_orientation(Gtk::Orientation::HORIZONTAL);
   m_view_toggle_box.set_valign(Gtk::Align::CENTER);
 
-  // List indices: 0=Write 1=Board 2=Grid 3=Map
-  // Logical mode indices passed to switch_view_mode: 0 1 2 3
-  const std::array<guint, 4> LOGICAL_TO_LIST = {0, 1, 2, 3};
-  const std::array<int, 4> LIST_TO_LOGICAL = {0, 1, 2, 3};
+  // List indices: 0=Write 1=Board 2=Grid 3=Map 4=Timeline
+  // Logical mode indices passed to switch_view_mode: 0 1 2 3 4
+  const std::array<guint, 5> LOGICAL_TO_LIST = {0, 1, 2, 3, 4};
+  const std::array<int, 5> LIST_TO_LOGICAL = {0, 1, 2, 3, 4};
 
   auto view_items = Gtk::StringList::create({
       "\u270E  Write        Ctrl+Alt+W",  // 0
       "\u229E  Board        Ctrl+Alt+B",  // 1
       "\u2261  Grid          Ctrl+Alt+G", // 2
       "\u25C9  Map          Ctrl+Alt+M",  // 3
+      "\u25C8  Timeline    Ctrl+Alt+L",   // 4
   });
   m_view_mode_dd.set_model(view_items);
   m_view_mode_dd.set_selected(0);
@@ -403,7 +405,7 @@ void MainWindow::setup_headerbar() {
 
   // Button face factory — shows icon + name only (no hotkey)
   static const char *const FACE_LABELS[] = {
-      "\u270E  Write", "\u229E  Board", "\u2261  Grid", "\u25C9  Map",
+      "\u270E  Write", "\u229E  Board", "\u2261  Grid", "\u25C9  Map", "\u25C8  Timeline",
   };
   auto btn_factory = Gtk::SignalListItemFactory::create();
   btn_factory->signal_setup().connect(
@@ -417,7 +419,7 @@ void MainWindow::setup_headerbar() {
     if (!lbl)
       return;
     guint pos = li->get_position();
-    if (pos < 4)
+    if (pos < 5)
       lbl->set_text(FACE_LABELS[pos]);
   });
 
@@ -461,6 +463,11 @@ void MainWindow::setup_headerbar() {
       if (m_sidebar)
         m_sidebar->set_allow_cross_category(true);
       break;
+    case 4: // Timeline (s80 — whole-manuscript spine + structure bands)
+      m_editor->set_view_mode(Editor::ViewMode::Timeline);
+      if (m_sidebar)
+        m_sidebar->set_allow_cross_category(true);
+      break;
     }
   };
 
@@ -498,6 +505,7 @@ void MainWindow::setup_headerbar() {
   add_view_accel(GDK_KEY_b, 1);
   add_view_accel(GDK_KEY_g, 2);
   add_view_accel(GDK_KEY_m, 3);
+  add_view_accel(GDK_KEY_l, 4);
 
   // ── Expand/collapse all groups hotkeys ────────────────────────────────────
   auto add_expand_accel = [this](guint keyval, bool expand) {
@@ -1203,6 +1211,13 @@ void MainWindow::wire_callbacks() {
     navigate_to_link(iid, "");
   });
 
+  // s80 — clicking a scene card on the timeline leaves the lens and selects that
+  // scene, exactly as the map open hook does.
+  m_editor->set_timeline_open_callback([this](const std::string &iid) {
+    m_view_mode_dd.set_selected(0);   // back to Write
+    navigate_to_link(iid, "");
+  });
+
   // s48 slice 2 — double-click empty map → author a Reference fragment there.
   // Creates a real leaf in the References section (honouring the user's reference
   // defaults), refreshes the binder, and returns its iid; the canvas pins it at
@@ -1568,6 +1583,11 @@ void MainWindow::on_meta_changed(BinderNode *node) {
     m_editor->refresh_chapter_tag();
   if (node && m_timeline)
     m_timeline->refresh_tab_title(m_model.active_section, m_model.active_path);
+  // s81: a metadata change (colour, the KP cycle) can alter the KP lane / relief,
+  // so re-project the active whole-graph lens if one is showing (same hook the
+  // pattern-apply path uses). No-op in Write/Outline/Board.
+  if (m_editor)
+    m_editor->refresh_active_lens();
   update_title_bar();
 }
 
@@ -1714,7 +1734,13 @@ void MainWindow::action_new_from_pattern() {
       {
         auto pal = ModuleIO::keypoint_palette(mod);
         m_prefs.tag_colors.clear();
-        for (auto& e : pal) m_prefs.tag_colors.push_back({e.first, e.second});
+        for (auto& sw : pal) {
+          TagColor tc;
+          tc.name = sw.name;
+          tc.hex  = sw.hex;
+          tc.id   = sw.id;   // s81: swatch id = KeyPoint id → scene.kp_id resolves here
+          m_prefs.tag_colors.push_back(tc);
+        }
         m_prefs.save();   // persist so the KP swatches join the app colour list
       }
       ScaffoldPlan plan = ModulePlanner::plan(mod, in);
@@ -1728,6 +1754,11 @@ void MainWindow::action_new_from_pattern() {
         m_inspector->refresh_prefs_dropdowns(); // s23: pick up the new KP palette
         m_inspector->load_project();
       }
+      // s81 — if a whole-graph lens (Map/Timeline) is the live view, re-project
+      // it now: materialize stamped kp_id across the new scenes, and that lens
+      // caches its projection (rebuilt only on entry). Without this the timeline
+      // shows nothing until you switch away and back.
+      if (m_editor) m_editor->refresh_active_lens();
       apply_selection({});
       update_title_bar();
     });
@@ -2532,6 +2563,13 @@ void MainWindow::action_combine_nodes(Section section,
 // ─────────────────────────────────────────────────────────────────────────────
 void MainWindow::action_preferences() {
   if (!m_prefs_dialog) {
+    // s81: snapshot the KP palette's swatch-id ORDER before any edit, so on close
+    // we can remap every scene's color_idx if the palette was reordered/deleted
+    // (palette_remap). color_idx is positional, so an edit shifts colours unless
+    // we reconcile.
+    m_tag_ids_before_prefs.clear();
+    for (const auto& tc : m_prefs.tag_colors)
+      m_tag_ids_before_prefs.push_back(tc.id);
     m_prefs_dialog = std::make_unique<PreferencesDialog>(*this, m_prefs);
     // Provide document + global template names for the default-template picker
     {
@@ -2558,8 +2596,38 @@ void MainWindow::action_preferences() {
                               // reflect latest prefs
       if (!changed)
         return;
+      // s81: reconcile the model to any KP-palette reorder/delete. Build the new
+      // swatch-id order, diff against the pre-open snapshot, and remap every
+      // coloured node's color_idx (survivors follow their swatch; a deleted
+      // swatch's scenes go to None and their beat state clears — option b).
+      {
+        std::vector<std::string> new_ids;
+        for (const auto& tc : m_prefs.tag_colors) new_ids.push_back(tc.id);
+        const auto remap = palette_remap(m_tag_ids_before_prefs, new_ids);
+        std::vector<std::string> iids;
+        std::vector<SceneKpRef> refs;
+        for (const BinderNode* n : m_model.all_node_ptrs()) {
+          if (!n || n->color_idx <= 0 || n->iid.empty()) continue;  // coloured only
+          iids.push_back(n->iid);
+          refs.push_back({n->kp_id, n->color_idx, n->kp_label,
+                          n->is_key_point, n->pin});
+        }
+        if (apply_palette_remap(remap, refs) > 0) {
+          for (std::size_t i = 0; i < iids.size(); ++i) {
+            BinderNode* n = m_model.find_node_by_iid(iids[i]);  // mutable handle
+            if (!n) continue;
+            n->kp_id        = refs[i].kp_id;
+            n->color_idx    = refs[i].color_idx;
+            n->kp_label     = refs[i].kp_label;
+            n->is_key_point = refs[i].is_key_point;
+            n->pin          = refs[i].pin;
+          }
+        }
+      }
       m_model.daily_target = m_prefs.daily_word_goal;
       m_model.mark_modified();
+      if (m_editor)
+        m_editor->refresh_active_lens();   // s81: strip re-colours after palette edit
       if (m_inspector)
         m_inspector->refresh_prefs_dropdowns();
       if (m_inspector)

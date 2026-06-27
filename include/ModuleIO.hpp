@@ -14,6 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "Module.hpp"
+#include "KpPalette.hpp"   // s81 — KpSwatch {id, name, hex} (the install record)
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -44,11 +45,12 @@ Module      from_string(const std::string& text);
 //
 // spectrum_hex(t): sample the ramp at t∈[0,1] → "#rrggbb".
 std::string spectrum_hex(double t);
-// keypoint_palette: one {name=kp_label, hex} per KP in arc order, sampled
-// evenly across the spectrum. Pure — returns plain pairs (no FolioPrefs dep);
-// the app copies these into its tag-colour palette so color_idx (= KP order)
-// lands on the matching swatch.
-std::vector<std::pair<std::string,std::string>> keypoint_palette(const Module& m);
+// keypoint_palette: one swatch {id, name, hex} per KP in arc order, sampled
+// evenly across the spectrum. Pure. The id is the KeyPoint's id, so installing
+// these into the project palette gives each swatch a stable identity that a
+// scene's kp_id resolves against (s81); color_idx (= KP order) lands on the
+// matching swatch. Returns KpSwatch (KpPalette.hpp) so the install is a copy.
+std::vector<KpSwatch> keypoint_palette(const Module& m);
 
 } // namespace ModuleIO
 } // namespace Folio

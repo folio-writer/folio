@@ -20,6 +20,14 @@ struct StatusDef {
 struct TagColor {
     std::string name;   // e.g. "teal"
     std::string hex;    // e.g. "#5bc8af"
+    // s81: stable swatch id (kp_…). The Key-Point a scene serves is named by this
+    // id (BinderNode.kp_id), so a scene's beat identity survives a palette rename
+    // or REORDER — the ordinal (color_idx) is the swatch's position, resolved from
+    // the id at read time (KpPalette::resolve_kp), never stored on the scene. Set
+    // = the KeyPoint.id at pattern install; minted (make_iid KeyPoint) for swatches
+    // added by hand; back-filled on load for pre-s81 palettes. Last field so the
+    // existing {name, hex} aggregate initialisers stay valid (id defaults empty).
+    std::string id = {};
 };
 
 // ─── TabStop ──────────────────────────────────────────────────────────────────

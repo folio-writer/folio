@@ -135,7 +135,14 @@ private:
     Gtk::DropDown*    m_pov_dropdown    = nullptr;
     Gtk::DropDown*    m_color_dropdown  = nullptr;
     Gtk::Label        m_tag_value;        // s23: scene's KP tag, shown under Label
-    Gtk::ToggleButton m_pin_toggle;       // s30: per-scene pin (hinge), beside Tag
+    // s81: the three-way Key-Point cycle, beside the Tag row (replaces the s30
+    // binary pin toggle). One control, cycling off → key → pin → off:
+    //   off  = is_key_point false, pin false  (a plain colour tag, not a beat)
+    //   key  = is_key_point true,  pin false  (a pattern beat — on the KP lane)
+    //   pin  = is_key_point true,  pin true   (a Key Point target — promoted)
+    // A regular Button (not a toggle — three states, not two); the visual is
+    // driven from CSS classes (kp-off / kp-beat / kp-target) set in sync_kp_cycle.
+    Gtk::Button       m_kp_cycle;
     // s30 — per-scene energies are now editable sliders (Pacing=frenetic,
     // Tension=arc). The adjustments are held so node-selection can prime them.
     Glib::RefPtr<Gtk::Adjustment> m_pacing_adj;
@@ -214,6 +221,11 @@ private:
     Gtk::Label     m_meta_ref_notes_arrow;
 
     void build_meta_tab();
+    // s81: drive the Key-Point cycle button's icon / CSS state / sensitivity from
+    // a node (off → key → pin), and gate it on the scene having a colour (a beat
+    // needs an identity — the swatch — so the cycle is disabled until a colour is
+    // set). Called on load, after a colour change, and after each cycle click.
+    void sync_kp_cycle(const BinderNode* node);
     void build_node_meta_section(Gtk::Box& parent);
     void build_character_meta_section(Gtk::Box& parent);
     void build_place_meta_section(Gtk::Box& parent);

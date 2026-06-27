@@ -40,6 +40,7 @@ Editor::Editor(DocumentModel &model, FolioPrefs &prefs)
       m_avatar_strip(Gtk::Orientation::HORIZONTAL, 12),
       m_multi_placeholder_box(Gtk::Orientation::VERTICAL, 16),
       m_footer(Gtk::Orientation::HORIZONTAL, 12), m_map_canvas(model, prefs),
+      m_relationship_timeline(model, prefs),
       m_cmm_canvas(prefs), m_ruler(prefs) {
   set_vexpand(true);
   set_hexpand(true);
@@ -999,6 +1000,27 @@ void Editor::set_view_mode(ViewMode mode) {
     m_map_canvas.rebuild();
     m_view_stack.set_visible_child(m_map_canvas);
     break;
+  case ViewMode::Timeline:
+    // s80 — the Relationship Timeline. Whole-manuscript projection; rebuild the
+    // spine + bands from the tree on entry, then show it.
+    m_relationship_timeline.rebuild();
+    m_view_stack.set_visible_child(m_relationship_timeline);
+    break;
+  }
+}
+
+// s81 — re-project the whole-graph lenses when the model changed UNDERNEATH a
+// live view. Map and Timeline cache a projection that is only rebuilt on entry
+// (truth → projection, never cached across a mutation); a bulk mutation while one
+// is showing — e.g. a pattern materialize stamping kp_id — therefore leaves it
+// stale until you leave and re-enter. The per-node Write/Outline/Board paths
+// refresh through selection already, so only these two need the nudge. Callers
+// invoke this after a model-mutating op (MainWindow after ModuleMaterializer).
+void Editor::refresh_active_lens() {
+  switch (m_view_mode) {
+    case ViewMode::Map:      m_map_canvas.rebuild();            break;
+    case ViewMode::Timeline: m_relationship_timeline.rebuild(); break;
+    default: break;
   }
 }
 

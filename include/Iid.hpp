@@ -59,6 +59,7 @@ enum class IidKind {
     Template,     // tpl
     Asset,        // ast — image / cover / research binary
     Snapshot,     // snp — a node's version-history entry
+    KeyPoint,     // kp  — a Key-Point palette swatch (a named/coloured beat id)
     Unknown,      // unk — fallback / migration placeholder
 };
 

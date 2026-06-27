@@ -138,6 +138,7 @@ private:
   void action_split_node(Section section, const std::vector<int>& path);
   void action_combine_nodes(Section section, std::vector<std::vector<int>> paths);
   std::unique_ptr<PreferencesDialog> m_prefs_dialog;
+  std::vector<std::string> m_tag_ids_before_prefs;  // s81: KP swatch-id order snapshot for remap
   std::unique_ptr<SnapshotDialog>    m_snapshot_dialog;
   std::unique_ptr<ExportDialog>      m_export_dialog;
   std::unique_ptr<ImportDialog>      m_import_dialog;

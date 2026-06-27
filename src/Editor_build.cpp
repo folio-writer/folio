@@ -2769,6 +2769,15 @@ void Editor::build_editor_area() {
   });
   m_view_stack.add(m_map_canvas, "map");
 
+  // ── s80 — Relationship Timeline lens ───────────────────────────────────────
+  // A whole-manuscript projection, hosted like Map. Rebuilt on each entry
+  // (set_view_mode(Timeline) → rebuild). A card click forwards through the
+  // Editor's timeline-open hook so MainWindow can switch to Write + select it.
+  m_relationship_timeline.set_open_callback([this](const std::string& iid) {
+    if (m_on_timeline_open) m_on_timeline_open(iid);
+  });
+  m_view_stack.add(m_relationship_timeline, "timeline-lens");
+
   // ── s51 — the owned Mind Map document surface ───────────────────────────────
   // A Reference whose form is "Mind Map" shows THIS in place of the ObjectForm
   // (routed in set_editor_mode / set_view_mode). The canvas reads/writes a CMMDoc;

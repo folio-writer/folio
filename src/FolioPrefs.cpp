@@ -1,6 +1,8 @@
 #include "FolioPrefs.hpp"
 #include "DocumentModel.hpp"
 #include "CompileFormatIO.hpp"   // custom compile-format (de)serialization (s18)
+#include "KpPalette.hpp"         // s81 — backfill_swatch_ids (stable swatch ids)
+#include "Iid.hpp"               // s81 — make_iid(IidKind::KeyPoint) generator
 #include <glibmm/fileutils.h>
 #include <glibmm/miscutils.h>
 #include <glib.h>
@@ -249,12 +251,15 @@ void FolioPrefs::load() {
     for (int i = 0; ; ++i) {
         std::string nk = "tag-" + std::to_string(i) + "-name";
         std::string ck = "tag-" + std::to_string(i) + "-color";
+        std::string ik = "tag-" + std::to_string(i) + "-id";   // s81: stable swatch id
         char* nv = g_key_file_get_string(kf, GROUP_TAGS, nk.c_str(), nullptr);
         if (!nv) break;
         char* cv = g_key_file_get_string(kf, GROUP_TAGS, ck.c_str(), nullptr);
+        char* iv = g_key_file_get_string(kf, GROUP_TAGS, ik.c_str(), nullptr);
         TagColor tc;
         tc.name = nv; g_free(nv);
         tc.hex  = cv ? std::string(cv) : "#888888"; if (cv) g_free(cv);
+        tc.id   = iv ? std::string(iv) : std::string(); if (iv) g_free(iv);  // "" pre-s81
         tag_colors.push_back(tc);
     }
     if (tag_colors.empty())
@@ -262,6 +267,18 @@ void FolioPrefs::load() {
             {"teal","#5bc8af"},{"yellow","#f9e2af"},{"red","#f38ba8"},
             {"green","#a6e3a1"},{"mauve","#cba6f7"},{"peach","#fab387"},{"sky","#89dceb"}
         };
+
+    // s81: back-fill stable ids for any pre-s81 swatch that lacks one (the field
+    // was added this session). Resolving a scene's KP by id (KpPalette) needs
+    // every swatch to carry one; idempotent, so a re-save makes it permanent.
+    {
+        std::vector<KpSwatch> sw;
+        sw.reserve(tag_colors.size());
+        for (const auto& tc : tag_colors) sw.push_back({tc.id, tc.name, tc.hex});
+        if (backfill_swatch_ids(sw, [] { return make_iid(IidKind::KeyPoint); }) > 0)
+            for (std::size_t i = 0; i < tag_colors.size(); ++i)
+                tag_colors[i].id = sw[i].id;
+    }
 
     daily_word_goal  = intv(GROUP_SESSION, "daily-word-goal", daily_word_goal);
 
@@ -621,8 +638,10 @@ void FolioPrefs::save() const {
     for (int i = 0; i < (int)tag_colors.size(); ++i) {
         std::string nk = "tag-" + std::to_string(i) + "-name";
         std::string ck = "tag-" + std::to_string(i) + "-color";
+        std::string ik = "tag-" + std::to_string(i) + "-id";   // s81: stable swatch id
         g_key_file_set_string(kf, GROUP_TAGS, nk.c_str(), tag_colors[i].name.c_str());
         g_key_file_set_string(kf, GROUP_TAGS, ck.c_str(), tag_colors[i].hex.c_str());
+        g_key_file_set_string(kf, GROUP_TAGS, ik.c_str(), tag_colors[i].id.c_str());
     }
 
     g_key_file_set_integer(kf, GROUP_SESSION, "daily-word-goal", daily_word_goal);
