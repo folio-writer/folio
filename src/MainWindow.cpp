@@ -2903,12 +2903,21 @@ void MainWindow::show_about_dialog() {
   dlg->set_website("https://github.com/folio-writer/folio");
   dlg->set_website_label("View on GitHub");
 
-  dlg->set_authors(
-      {"Scott Combs",
-       "Portion of the code in this project is adapted from or used "
-       "by the following:\n"
-       "Copyright © 2013-2026 Niels Lohmann"
-       "https://github.com/nlohmann/json?tab=readme-ov-file#license"});
+  dlg->set_authors({"Scott Combs"});
+
+  // Third-party software credits. FreeType (used by BarcodeGenerator to load the
+  // embedded barcode glyph outlines) is taken under the FreeType License, whose
+  // attribution clause REQUIRES this acknowledgement in the product's
+  // documentation — the About dialog satisfies that. The FreeType team's
+  // preferred wording is used verbatim; set the year to match the linked
+  // FreeType version's copyright (check: pkg-config --modversion freetype2).
+  dlg->add_credit_section(
+      "Third-party software",
+      {"Portions of this software are copyright \u00a9 2025 The FreeType "
+       "Project (www.freetype.org). All rights reserved.",
+       "GTK and gtkmm \u2014 the GNOME Project (LGPL)",
+       "Pango, Cairo and GLib \u2014 the GNOME Project (LGPL / MPL)",
+       "JSON for Modern C++ \u2014 \u00a9 2013\u20132026 Niels Lohmann (MIT)"});
 
   // Logo — resolved from the compiled-in gresource icon theme (no disk access).
   // folio-brand-symbolic themes light/dark via currentColor; the AboutDialog

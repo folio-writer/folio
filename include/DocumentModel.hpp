@@ -290,6 +290,21 @@ struct BoardItem {
 // RULE: Never cache a BinderNode* across any mutation of the tree.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── ThreadDef — one entry in the project THREAD registry (s83 §9.12.2) ────────
+// A story thread is the §9.1 universal — "a named, colour-coded, ordered
+// scene-set" — that the author ASSIGNS scenes into (LOTR's Frodo ∥ Aragorn
+// lines; Tapper's braided timeframes). The registry is the rename-safe home for
+// a thread's display label and colour; a scene references its thread by the
+// stable `iid` (BinderNode.thread), so a rename/recolour here never has to walk
+// the manuscript. Mirrors TagColor (the KP-swatch registry): id + label + a
+// 1-based color_idx into FolioPrefs::tag_colors. Travels in the bundle as a
+// top-level "threads" array (authorial structure, like the object store/images).
+struct ThreadDef {
+    std::string iid;          // stable thr_ iid (the key BinderNode.thread holds)
+    std::string label;        // display name ("Frodo's line")
+    int         color_idx = 0;  // 0 = unset; 1-based into FolioPrefs::tag_colors
+};
+
 struct BinderNode {
     BinderKind  kind = BinderKind::Scene;
     int         id   = -1;
@@ -354,6 +369,17 @@ struct BinderNode {
     // when-empty so the tree stays byte-clean. Edges are read, never owned — the
     // timeline writes here and re-reads through the one projection.
     std::vector<std::string> subject_links;
+    // s83: the story THREAD this scene is ASSIGNED to (the "assigned arc",
+    // DESIGN_timeline.md §9.12). The exact analog of kp_id: a stable thr_ iid into
+    // the project thread registry (DocumentModel::threads), resolved to label +
+    // colour at read time so a thread rename/recolour never has to touch scenes.
+    // "" = the sole/default thread (single-thread books leave this untouched and
+    // nothing changes). Unlike a subject link (an edge, revealed), a thread is an
+    // authorial PLACEMENT that cannot be derived from links, so it is carried by
+    // the scene itself. The timeline's thread lane is the relief of this field
+    // (assemble_thread_lanes). Sticky through reshaping like kp_id; serialised
+    // omit-when-empty so untouched nodes stay byte-clean.
+    std::string thread;
     std::vector<Snapshot> snapshots;
 
     // Character / Place fields
@@ -664,6 +690,23 @@ public:
     const ImagePool& image_pool() const { return m_image_pool; }
     ImagePool&       image_pool()       { return m_image_pool; }
 
+    // ── Story threads (s83 §9.12) — the project THREAD registry ────────────────
+    // The rename-safe home for each authored thread's label + colour. A scene is
+    // ASSIGNED to a thread by storing the thread's stable iid in BinderNode.thread;
+    // this registry resolves that iid → {label, color_idx}. Owned data (NOT a
+    // projection of leaves, like the image pool), carried at the PROJECT level as
+    // the manifest's "threads" array so it travels in the bundle. The timeline's
+    // thread lane is the relief of the thread field; the registry feeds it the
+    // lane's display label and hue. Empty in single-thread books.
+    const std::vector<ThreadDef>& threads() const { return m_threads; }
+    std::vector<ThreadDef>&       threads()       { return m_threads; }
+    // Resolve a thread iid → its registry entry (nullptr if absent / empty iid).
+    const ThreadDef* find_thread(const std::string& iid) const;
+    // Mint a new thread (a fresh thr_ iid), append it to the registry, and return
+    // a reference to it. The Inspector/timeline assign paths call this when the
+    // author creates a thread; the iid is what they then stamp onto scenes.
+    ThreadDef& add_thread(const std::string& label, int color_idx);
+
     // Backlink index — maps target node IID → list of incoming link locations.
     // s20: keyed by the stable iid (was the int id), so it survives reorder/move
     // and joins the cross-layer iid thread. Rebuilt on project load; updated
@@ -707,6 +750,10 @@ private:
     // s58: the shared image pool — owned image-fragments (assets/<iid>.<ext>),
     // serialised as the manifest's "images" array. The Gallery reads it as a lens.
     ImagePool m_image_pool;
+
+    // s83: the project thread registry (the "assigned arc" home). Owned data,
+    // serialised as the manifest's "threads" array; see threads()/§9.12.
+    std::vector<ThreadDef> m_threads;
 
     // s19: parse a full in-memory project blob (the shape save_to builds and
     // load paths reassemble) into the model. load_from obtains the blob (from a

@@ -492,6 +492,7 @@ void Inspector::refresh_prefs_dropdowns() {
           if (std::string(sl->get_string(i)) == m_current_node->role) { ridx = i; break; }
       m_char_role_dropdown->set_selected(ridx);
     }
+    sync_thread_dropdown(m_current_node);   // s84 — assigned thread (None + registry)
   }
 
   m_loading = false;
@@ -506,6 +507,27 @@ void Inspector::sync_color_dropdown(Gtk::DropDown *dd, int color_idx) {
   guint n = model->get_n_items();
   guint sel = (color_idx >= 0 && (guint)color_idx < n) ? (guint)color_idx : 0;
   dd->set_selected(sel);
+}
+
+// s84 — rebuild the Thread dropdown from the project thread registry (None + one
+// row per thread, by label) and select the node's assigned thread. Called from
+// the node-load sync path (m_loading is true there, so set_model/set_selected do
+// not re-fire the assignment handler) and from the add-thread flow (self-guarded).
+void Inspector::sync_thread_dropdown(const BinderNode* node) {
+  if (!m_thread_dropdown)
+    return;
+  auto sl = Gtk::StringList::create({});
+  sl->append("None");
+  const auto& th = m_model.threads();
+  for (const auto& t : th)
+    sl->append(t.label.empty() ? t.iid : t.label);
+  m_thread_dropdown->set_model(sl);
+
+  guint sel = 0;
+  if (node && !node->thread.empty())
+    for (guint i = 0; i < th.size(); ++i)
+      if (th[i].iid == node->thread) { sel = i + 1; break; }
+  m_thread_dropdown->set_selected(sel);
 }
 
 // s81 — drive the Key-Point cycle button (off → key → pin) from a node. The icon
@@ -810,6 +832,82 @@ void Inspector::build_node_meta_section(Gtk::Box &s) {
       tb->append(*tl);
       tb->append(m_tag_value);
       tb->append(m_kp_cycle);
+      trow->set_child(*tb);
+      lb->append(*trow);
+    }
+    // s84 — Thread row: the scene's assigned story THREAD (the "assigned arc",
+    // §9.12). A dropdown (None + each registered thread) assigns BinderNode.thread;
+    // an inline entry + "+" mints a new thread (auto-coloured from the palette so
+    // threads read distinctly) and assigns it. Inspector-first assign path; the
+    // rail-arm/sweep batch path follows. The timeline thread band is the relief.
+    {
+      auto *trow = Gtk::make_managed<Gtk::ListBoxRow>();
+      auto *tb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+      tb->set_margin_start(8);
+      tb->set_margin_end(8);
+      tb->set_margin_top(3);
+      tb->set_margin_bottom(3);
+      auto *tl = Gtk::make_managed<Gtk::Label>("Thread");
+      tl->add_css_class("pref-row-label");
+      tl->set_halign(Gtk::Align::START);
+
+      m_thread_dropdown =
+          Gtk::make_managed<Gtk::DropDown>(Gtk::StringList::create({"None"}));
+      m_thread_dropdown->set_hexpand(true);
+      m_thread_dropdown->property_selected().signal_changed().connect([this]() {
+        if (m_loading || !m_current_node) return;
+        guint idx = m_thread_dropdown->get_selected();
+        if (idx == 0) {
+          m_current_node->thread.clear();
+        } else {
+          const auto& th = m_model.threads();
+          if (idx - 1 < th.size()) m_current_node->thread = th[idx - 1].iid;
+        }
+        m_model.mark_modified();
+        notify_meta_changed();   // refresh the binder + the timeline thread band
+      });
+
+      m_thread_new_entry = Gtk::make_managed<Gtk::Entry>();
+      m_thread_new_entry->set_placeholder_text("New thread…");
+      m_thread_new_entry->set_max_width_chars(12);
+      auto *add_btn = Gtk::make_managed<Gtk::Button>();
+      add_btn->set_icon_name("list-add-symbolic");
+      add_btn->set_tooltip_text("Create a thread and assign this scene to it");
+      add_btn->add_css_class("flat");
+
+      auto add_thread = [this]() {
+        if (m_loading || !m_current_node) return;
+        std::string name = m_thread_new_entry->get_text().raw();
+        // trim surrounding whitespace
+        const auto b = name.find_first_not_of(" \t\n\r");
+        const auto e = name.find_last_not_of(" \t\n\r");
+        name = (b == std::string::npos) ? std::string()
+                                        : name.substr(b, e - b + 1);
+        if (name.empty()) return;
+        // auto-colour: cycle the palette so each new thread reads distinctly.
+        int cidx = 0;
+        if (!m_prefs.tag_colors.empty())
+          cidx = static_cast<int>(m_model.threads().size()
+                                  % m_prefs.tag_colors.size()) + 1;
+        ThreadDef& td = m_model.add_thread(name, cidx);
+        m_current_node->thread = td.iid;
+        m_thread_new_entry->set_text("");
+        m_model.mark_modified();
+        // resync to include + select the new thread (guarded so the dropdown's
+        // own signal does not re-fire during the rebuild).
+        const bool was = m_loading;
+        m_loading = true;
+        sync_thread_dropdown(m_current_node);
+        m_loading = was;
+        notify_meta_changed();
+      };
+      add_btn->signal_clicked().connect(add_thread);
+      m_thread_new_entry->signal_activate().connect(add_thread);
+
+      tb->append(*tl);
+      tb->append(*m_thread_dropdown);
+      tb->append(*m_thread_new_entry);
+      tb->append(*add_btn);
       trow->set_child(*tb);
       lb->append(*trow);
     }

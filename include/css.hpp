@@ -395,6 +395,47 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
     .timeline-rail-group > title:hover { background-color: @adw_overlay; border-radius: 5px; }
     .timeline-rail-group .timeline-rail-header { padding: 6px 4px 4px 2px; }
     .timeline-rail-group-body { margin: 0 0 2px 2px; }
+    /* s85 — the inline "new thread" mint row in the Story Threads section. */
+    .timeline-rail-mint { padding: 2px 4px 2px 6px; }
+    .timeline-rail-mint entry { min-height: 0; font-size: 11px; }
+    .timeline-rail-mint button { min-height: 0; min-width: 24px; padding: 0 6px; }
+
+    /* s86 — the per-thread "manage" popover (right-click a Story Threads row):
+       rename entry + recolour swatch grid + delete-unused. */
+    .timeline-thread-mgr > contents { min-width: 200px; }
+    .timeline-thread-mgr .timeline-thread-swatch {
+        padding: 0; min-width: 0; min-height: 0; border-radius: 6px;
+    }
+    .timeline-thread-mgr .timeline-thread-swatch:hover { background-color: @adw_overlay; }
+    .timeline-thread-hint { font-size: 10px; }
+    /* s86 — the "what's a story thread?" teaching link + popover + empty nudge. */
+    .timeline-thread-help-link {
+        font-size: 10px; color: @tx3; padding: 4px 6px; min-height: 0;
+    }
+    .timeline-thread-help-link:hover { color: @tx2; background-color: @adw_overlay; }
+    .timeline-thread-help > contents { min-width: 280px; }
+    .timeline-thread-help-title {
+        font-size: 13px; font-weight: 700; color: @tx1;
+    }
+    .timeline-thread-help label { font-size: 12px; color: @tx2; }
+    .timeline-thread-empty { font-size: 10px; padding: 2px 6px 4px 6px; }
+
+    /* s84 — the scene PEEK panel at the bottom of the timeline lens. A
+       single-click on a scene card reveals this (synopsis + metadata + the
+       links-at-a-glance readout) instead of jumping into the editor. */
+    .timeline-peek {
+        background-color: @adw_surface;
+        border-top: 1px solid @border_strong;
+        padding: 10px 14px;
+    }
+    .timeline-peek-scene  { font-size: 11px; font-weight: 700; color: @accent; }
+    .timeline-peek-title  { font-size: 14px; font-weight: 700; color: @tx1; }
+    .timeline-peek-cap    { font-size: 9px; font-weight: 700; color: @tx3;
+                            letter-spacing: 0.04em; }
+    .timeline-peek-synopsis text { background-color: @adw_bg; color: @tx1; }
+    .timeline-peek-synopsis { border: 1px solid @border_subtle; border-radius: 6px; }
+    .timeline-peek-meta   { font-size: 10px; color: @tx2; }
+    .timeline-peek-links  { font-size: 10px; color: @tx2; }
     
     /* ── Editor viewbar ─────────────────────────────────────────────────────── */
     .folio-viewbar {

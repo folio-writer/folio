@@ -60,6 +60,9 @@ enum class IidKind {
     Asset,        // ast — image / cover / research binary
     Snapshot,     // snp — a node's version-history entry
     KeyPoint,     // kp  — a Key-Point palette swatch (a named/coloured beat id)
+    Thread,       // thr — a story THREAD (an authored storyline; the assigned arc,
+                  //        s83 §9.12). A scene is placed in one via BinderNode.thread;
+                  //        the project thread registry resolves the iid → label/colour.
     Unknown,      // unk — fallback / migration placeholder
 };
 

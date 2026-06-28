@@ -25,6 +25,7 @@
 #include "FolioLog.hpp"
 #include <cairo/cairo.h>
 #include <glibmm.h>
+#include <giomm/resource.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_OUTLINE_H
@@ -140,10 +141,25 @@ struct FTFont {
     FT_Face    face = nullptr;
     double     upm  = 1000.0;
     bool       ok   = false;
+    Glib::RefPtr<const Glib::Bytes> data;  // backs `face`: FT_New_Memory_Face does
+                                           // NOT copy, so the buffer must outlive
+                                           // the face. GResource data is read-only
+                                           // in the binary (zero-copy, like icons).
 
-    explicit FTFont(const std::string& path) {
+    // Load a face from a GResource path — the TTF is embedded in the executable
+    // exactly like the symbolic icons, so there is no install / config-dir step.
+    explicit FTFont(const std::string& resource_path) {
         if (FT_Init_FreeType(&lib)) return;
-        if (FT_New_Face(lib, path.c_str(), 0, &face)) return;
+        try {
+            data = Gio::Resource::lookup_data_global(resource_path);
+        } catch (const Glib::Error&) {
+            return;                                  // not bundled
+        }
+        if (!data) return;
+        gsize n = 0;
+        const auto* base = static_cast<const FT_Byte*>(data->get_data(n));
+        if (!base || n == 0) return;
+        if (FT_New_Memory_Face(lib, base, static_cast<FT_Long>(n), 0, &face)) return;
         upm = face->units_per_EM;
         ok = true;
     }
@@ -477,20 +493,20 @@ std::string BarcodeGenerator::generate_svg(const std::string& ean13_digits,
         return "";
     }
 
-    // ── Font paths ────────────────────────────────────────────────────────────
-    std::string font_dir = Glib::get_user_config_dir() + "/folio/fonts/";
-    std::string bar_path = font_dir + (opts.full_height ? "UpcEan72.ttf" : "UpcEan36.ttf");
-    std::string ocr_path = font_dir + "OcrBUpcEan.ttf";
+    // ── Fonts (embedded in the binary as GResource, like the icons) ─────────────
+    const std::string bar_res = std::string("/com/folio/app/fonts/")
+                              + (opts.full_height ? "UpcEan72.ttf" : "UpcEan36.ttf");
+    const std::string ocr_res = "/com/folio/app/fonts/OcrBUpcEan.ttf";
 
-    FTFont bar_font(bar_path);
-    FTFont ocr_font(ocr_path);
+    FTFont bar_font(bar_res);
+    FTFont ocr_font(ocr_res);
 
     if (!bar_font.ok) {
-        LOG_DEBUG("BarcodeGenerator: cannot load '{}'", bar_path);
+        LOG_DEBUG("BarcodeGenerator: cannot load resource '{}'", bar_res);
         return "";
     }
     if (!ocr_font.ok) {
-        LOG_DEBUG("BarcodeGenerator: cannot load '{}'", ocr_path);
+        LOG_DEBUG("BarcodeGenerator: cannot load resource '{}'", ocr_res);
         return "";
     }
 

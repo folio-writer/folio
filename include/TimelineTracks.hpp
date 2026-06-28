@@ -47,6 +47,11 @@ struct TimelineTrack {
   TrackCategory category = TrackCategory::Character;
   std::unordered_set<std::string> claimed;  // claimed scene iids, all ON the spine
   int first_pos = 0;      // earliest claimed told-order position (sort key)
+  // s86 — the subject's own assigned colour (1-based into the project palette),
+  // 0 = none. The pure layer leaves this 0; the GTK layer fills it from the
+  // model so the timeline can honour a per-object colour, falling back to the
+  // §9.6 category hue when unset.
+  int color_idx = 0;
 };
 
 // Assemble subject tracks from the edge list (§9.3 source 1). `spine` is the

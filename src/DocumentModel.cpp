@@ -132,6 +132,8 @@ json BinderNode::to_json() const {
         j["is_key_point"]   = is_key_point;     // s81: this scene is a KP beat (omit when false)
     if (!subject_links.empty())
         j["subject_links"]  = subject_links;    // s80: timeline-authored scene→subject edges (omit when empty)
+    if (!thread.empty())
+        j["thread"]         = thread;           // s83: assigned story thread (thr_ iid; omit when empty)
     j["role"]               = role;
     j["description"]        = description;
     j["image_path"]         = image_path;
@@ -209,6 +211,7 @@ void BinderNode::from_json(const json& j) {
     if (j.contains("subject_links") && j["subject_links"].is_array())
         for (const auto& l : j["subject_links"])
             if (l.is_string()) subject_links.push_back(l.get<std::string>());
+    thread             = j.value("thread", "");  // s83: assigned story thread ("" = default)
     {   // Migrate legacy enum role strings to display names
         std::string r = j.value("role", "");
         if      (r == "protagonist") role = "Protagonist";
@@ -650,6 +653,26 @@ int DocumentModel::next_id() const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DocumentModel — story threads (s83 §9.12, the assigned-arc registry)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ThreadDef* DocumentModel::find_thread(const std::string& iid) const {
+    if (iid.empty()) return nullptr;
+    for (const auto& t : m_threads)
+        if (t.iid == iid) return &t;
+    return nullptr;
+}
+
+ThreadDef& DocumentModel::add_thread(const std::string& label, int color_idx) {
+    ThreadDef t;
+    t.iid       = make_iid(IidKind::Thread);
+    t.label     = label;
+    t.color_idx = color_idx;
+    m_threads.push_back(std::move(t));
+    return m_threads.back();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // DocumentModel — compile
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -889,6 +912,21 @@ void DocumentModel::save_to(const std::string& path) {
     // fragment's asset file (missing/drift/orphan) on load.
     j["images"] = m_image_pool.to_json();
 
+    // s83: the project thread registry rides as a top-level "threads" array (the
+    // "assigned arc" home). Like "images"/"object_store" it is a non-tree key, so
+    // explode() copies it through the bundle round-trip untouched.
+    {
+        json tarr = json::array();
+        for (const auto& t : m_threads) {
+            json e;
+            e["iid"]       = t.iid;
+            e["label"]     = t.label;
+            e["color_idx"] = t.color_idx;
+            tarr.push_back(std::move(e));
+        }
+        j["threads"] = std::move(tarr);
+    }
+
     // s19: write the v5 bundle. The blob `j` carries an iid on every node
     // (minted at creation / on migrate); ProjectBundle::explode strips each
     // node's content to content/<iid>.md and snapshots to snapshots/<iid>.json,
@@ -1046,6 +1084,19 @@ void DocumentModel::parse_blob(const json& j) {
     // last_load_report.
     m_image_pool = ImagePool::from_json(
         j.contains("images") ? j["images"] : json(nullptr));
+
+    // s83: load the project thread registry (absent on pre-s83 projects → empty).
+    m_threads.clear();
+    if (j.contains("threads") && j["threads"].is_array()) {
+        for (const auto& e : j["threads"]) {
+            if (!e.is_object()) continue;
+            ThreadDef t;
+            t.iid       = e.value("iid", "");
+            t.label     = e.value("label", "");
+            t.color_idx = e.value("color_idx", 0);
+            if (!t.iid.empty()) m_threads.push_back(std::move(t));
+        }
+    }
 
     active_section = Section::Manuscript;
     active_path.clear();

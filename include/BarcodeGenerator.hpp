@@ -3,10 +3,11 @@
 // Folio — BarcodeGenerator.hpp
 //
 // Generates EAN-13 barcodes as SVG strings using the UpcEan72/UpcEan36
-// and OcrBUpcEan fonts (installed system-wide as part of the Folio package).
+// and OcrBUpcEan fonts, embedded in the binary as GResource (like the icons).
 //
-// Glyph outlines are converted to SVG <path> elements via Pango/Cairo so
-// the SVG contains no font dependency — pure vector geometry.
+// Glyph outlines are read directly via FreeType (FT_New_Memory_Face on the
+// embedded TTF bytes) and converted to SVG <path> elements, so the SVG itself
+// carries no font dependency — pure vector geometry.
 //
 // Encoding ported from original Qt EAN13 implementation by Scott Combs (2008).
 //

@@ -40,6 +40,7 @@ const char* iid_prefix(IidKind k) {
         case IidKind::Asset:     return "ast";
         case IidKind::Snapshot:  return "snp";
         case IidKind::KeyPoint:  return "kp";
+        case IidKind::Thread:    return "thr";
         case IidKind::Unknown:   return "unk";
     }
     return "unk";
@@ -57,6 +58,7 @@ IidKind iid_kind_of(const std::string& iid) {
     if (p == "ast") return IidKind::Asset;
     if (p == "snp") return IidKind::Snapshot;
     if (p == "kp")  return IidKind::KeyPoint;
+    if (p == "thr") return IidKind::Thread;
     return IidKind::Unknown;
 }
 

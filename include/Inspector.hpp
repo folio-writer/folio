@@ -143,6 +143,12 @@ private:
     // A regular Button (not a toggle — three states, not two); the visual is
     // driven from CSS classes (kp-off / kp-beat / kp-target) set in sync_kp_cycle.
     Gtk::Button       m_kp_cycle;
+    // s84 — the scene's assigned story THREAD (the "assigned arc", §9.12). The
+    // dropdown lists None + each registered thread (DocumentModel::threads); the
+    // entry + add button mint a new thread and assign it. Selecting writes
+    // BinderNode.thread (a thr_ iid). Synced per node via sync_thread_dropdown.
+    Gtk::DropDown*    m_thread_dropdown  = nullptr;
+    Gtk::Entry*       m_thread_new_entry = nullptr;
     // s30 — per-scene energies are now editable sliders (Pacing=frenetic,
     // Tension=arc). The adjustments are held so node-selection can prime them.
     Glib::RefPtr<Gtk::Adjustment> m_pacing_adj;
@@ -226,6 +232,9 @@ private:
     // needs an identity — the swatch — so the cycle is disabled until a colour is
     // set). Called on load, after a colour change, and after each cycle click.
     void sync_kp_cycle(const BinderNode* node);
+    // s84 — rebuild the Thread dropdown from the registry and select the node's
+    // assigned thread (or None). Called in the node-load sync path (m_loading on).
+    void sync_thread_dropdown(const BinderNode* node);
     void build_node_meta_section(Gtk::Box& parent);
     void build_character_meta_section(Gtk::Box& parent);
     void build_place_meta_section(Gtk::Box& parent);

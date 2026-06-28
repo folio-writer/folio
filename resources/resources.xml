@@ -40,4 +40,9 @@
     <file preprocess="xml-stripblanks" alias="folio-trash-symbolic.svg">icons/folio-trash-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="folio-typewriter-symbolic.svg">icons/folio-typewriter-symbolic.svg</file>
   </gresource>
+  <gresource prefix="/com/folio/app/fonts">
+    <file alias="UpcEan72.ttf">fonts/UpcEan72.ttf</file>
+    <file alias="UpcEan36.ttf">fonts/UpcEan36.ttf</file>
+    <file alias="OcrBUpcEan.ttf">fonts/OcrBUpcEan.ttf</file>
+  </gresource>
 </gresources>
