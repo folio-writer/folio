@@ -33,8 +33,12 @@ namespace {
 // ── Locked geometry (s80 mocks) ──────────────────────────────────────────────
 constexpr int LEFT_PAD      = 16;   // breathing room before the gutter
 constexpr int GUTTER        = 132;  // row-label column (band labels + track names)
-constexpr int COL           = 72;   // COL_W — px per scene column (zoom unit)
-constexpr int CARD_W        = 56;
+constexpr int COL           = 72;   // px per scene column at base size (zoom 1.0).
+                                    // s91 — zoom is a UNIFORM cr->scale(z) over the
+                                    // whole surface, NOT a change to COL, so this is
+                                    // a fixed base constant again; col_left/col_cx
+                                    // compute base coords and the transform scales.
+constexpr int kCardWBase    = 56;   // scene-card width at base size (card_w()).
 constexpr int CARD_H        = 44;
 constexpr int BAND_H        = 24;
 constexpr int BAND_GAP      = 5;
@@ -89,8 +93,9 @@ const char* category_heading(TrackCategory c) {
 }
 
 inline int x0() { return LEFT_PAD + GUTTER; }            // left edge of column 0
-inline int col_left(int k) { return x0() + k * COL; }    // 0-based column k
-inline int col_cx(int k)   { return col_left(k) + COL / 2; }
+// s91 — col_left / col_cx are TimelineSurface members; x0() stays a free helper
+// (LEFT_PAD + GUTTER). All are BASE coords — the uniform cr->scale(m_zoom) in
+// draw() does the zooming, so these don't depend on the zoom.
 
 // Pull a palette colour with a sensible literal fallback (mirrors MindMapCanvas).
 Gdk::RGBA themed(Gtk::Widget& w, const char* name, const char* fallback) {
@@ -196,6 +201,7 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
   m_rail_scroll.set_vexpand(true);
 
   m_area.set_name("timeline-area");
+  m_area.set_focusable(true);   // s91 — so the bare +/- zoom keys land on the canvas
   m_area.set_draw_func(sigc::mem_fun(*this, &TimelineSurface::draw));
 
   m_scroll.set_policy(Gtk::PolicyType::AUTOMATIC, Gtk::PolicyType::AUTOMATIC);
@@ -242,19 +248,35 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
   // Click a scene card. s84 — single click SELECTS the scene and reveals the
   // peek panel (synopsis + metadata + links) at the bottom; a DOUBLE click (or
   // the panel's Open button) navigates into the editor, the way a single click
-  // used to. s82 — with Alt or Ctrl held, a click instead TOGGLES one scene's
-  // association on the row under the cursor (precise non-contiguous edit; the
-  // sweep remains the span gesture). Either modifier works so a WM that grabs
-  // Alt+click (some GNOME setups) still leaves Ctrl+click free.
+  // used to. s91 — modifier routing: CTRL+click zooms IN, CTRL+SHIFT+click zooms
+  // OUT (about the click point — the Map's spatial-zoom muscle memory); ALT+click
+  // TOGGLES one scene's association on the row under the cursor (the precise
+  // non-contiguous edit; the sweep remains the span gesture). s82 had Ctrl as a
+  // second toggle binding for WMs that grab Alt+click; s91 reassigns Ctrl to zoom,
+  // so the toggle is Alt-only (keyboard +/- and Ctrl+scroll also zoom).
   auto click = Gtk::GestureClick::create();
   click->set_button(GDK_BUTTON_PRIMARY);
   Gtk::GestureClick* clickp = click.get();   // raw: m_area owns the controller
   click->signal_released().connect([this, clickp](int n_press, double x, double y) {
     const Gdk::ModifierType st = clickp->get_current_event_state();
-    const bool mod = (st & Gdk::ModifierType::ALT_MASK)     != Gdk::ModifierType{} ||
-                     (st & Gdk::ModifierType::CONTROL_MASK) != Gdk::ModifierType{};
-    if (mod) { toggle_cell(x, y); return; }
-    const std::string iid = scene_at(x, y);
+    const bool ctrl  = (st & Gdk::ModifierType::CONTROL_MASK) != Gdk::ModifierType{};
+    const bool shift = (st & Gdk::ModifierType::SHIFT_MASK)   != Gdk::ModifierType{};
+    const bool alt   = (st & Gdk::ModifierType::ALT_MASK)     != Gdk::ModifierType{};
+    // s91 — Ctrl+click zooms IN, Ctrl+Shift+click zooms OUT, about the click
+    // point — the Map's spatial-zoom muscle memory (a trackpad-friendly path,
+    // since the Ctrl+scroll gesture isn't reliable on every device). This takes
+    // Ctrl+click away from the cell-toggle, which is now ALT+click only.
+    if (ctrl) {
+      auto hadj = m_scroll.get_hadjustment();
+      const double vx = x - (hadj ? hadj->get_value() : 0.0);   // click → viewport pixel
+      zoom_at_viewport(vx, shift ? (1.0 / 1.5) : 1.5);
+      return;
+    }
+    // s91 — event coords are in SCALED content space; divide by m_zoom back into
+    // the base geometry the hit-tests use.
+    const double bx = x / m_zoom, by = y / m_zoom;
+    if (alt) { toggle_cell(bx, by); return; }   // precise non-contiguous link edit
+    const std::string iid = scene_at(bx, by);
     if (iid.empty()) return;
     if (n_press >= 2) {                 // double-click → edit
       if (m_on_open) m_on_open(iid);
@@ -273,7 +295,10 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
     // s86 — right-click a thread band row or a KP strip beat to manage it (the
     // same popovers as the rail rows). show_thread_menu/show_kp_menu parent to
     // *this, so translate the m_area coords into *this's space.
-    const int tlane = thread_lane_at(y);
+    // s91 — hit-test in BASE space (event coords are scaled by the zoom); the
+    // popover anchor uses the RAW coords (it positions in widget space).
+    const double bx = x / m_zoom, by = y / m_zoom;
+    const int tlane = thread_lane_at(by);
     if (tlane >= 0 && tlane < static_cast<int>(m_thread_lanes.size())) {
       secp->set_state(Gtk::EventSequenceState::CLAIMED);
       double rx = 0.0, ry = 0.0;
@@ -281,8 +306,8 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
       show_thread_menu(m_thread_lanes[static_cast<std::size_t>(tlane)].thread_key, rx, ry);
       return;
     }
-    if (over_kp_strip(y)) {
-      const int klane = kp_lane_at_col(column_at(x));
+    if (over_kp_strip(by)) {
+      const int klane = kp_lane_at_col(column_at(bx));
       if (klane >= 0 && klane < static_cast<int>(m_kp_lanes.size())) {
         secp->set_state(Gtk::EventSequenceState::CLAIMED);
         double rx = 0.0, ry = 0.0;
@@ -291,23 +316,40 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
         return;
       }
     }
-    const int trk = track_row_at(y);
+    const int trk = track_row_at(by);
     if (trk < 0) return;
     secp->set_state(Gtk::EventSequenceState::CLAIMED);
-    show_track_menu(trk, x, y);
+    show_track_menu(trk, x, y);   // RAW coords: positions a popover in widget space
   });
   m_area.add_controller(sec);
 
   // s80 step 4 — hover focus. Motion sets the isolated track / lit column;
   // leaving clears both. Presentation only; a redraw reflects the new focus.
   auto motion = Gtk::EventControllerMotion::create();
+  motion->signal_enter().connect([this](double, double) {
+    // s91 — focus the canvas when the pointer enters, so the bare +/-/0 zoom
+    // keys land here rather than on whatever the view-open focused first (the
+    // Map uses the same trick). Guarded so it never steals focus mid-typing.
+    if (auto* win = dynamic_cast<Gtk::Window*>(get_root())) {
+      Gtk::Widget* foc = win->get_focus();
+      if (foc && (dynamic_cast<Gtk::Editable*>(foc) || dynamic_cast<Gtk::TextView*>(foc)))
+        return;
+    }
+    if (!m_area.has_focus()) m_area.grab_focus();
+  });
   motion->signal_motion().connect([this](double x, double y) {
+    // s91 — m_ptr_vx is the pointer's VIEWPORT pixel (raw event x minus scroll),
+    // the Ctrl+scroll zoom anchor. Hover hit-tests need BASE coords, so divide
+    // the event coords by m_zoom (events are in scaled content space).
+    auto hadj = m_scroll.get_hadjustment();
+    m_ptr_vx = x - (hadj ? hadj->get_value() : 0.0);
+    const double bx = x / m_zoom, by = y / m_zoom;
     int trk = -1, col = -1;
     const int st = spine_top();
-    if (y >= st && y <= st + CARD_H && !scene_at(x, y).empty()) {
-      col = column_at(x);            // over a scene card → light its column
+    if (by >= st && by <= st + CARD_H && !scene_at(bx, by).empty()) {
+      col = column_at(bx);           // over a scene card → light its column
     } else {
-      trk = track_row_at(y);         // over a track row → isolate it
+      trk = track_row_at(by);        // over a track row → isolate it
     }
     if (trk != m_hover_track || col != m_hover_col) {
       m_hover_track = trk;
@@ -324,6 +366,56 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
   });
   m_area.add_controller(motion);
 
+  // s91 — Ctrl+scroll zoom (the COL knob). Matches the Map's spatial-zoom gesture
+  // (CustomMindMapCanvas: Ctrl+scroll, factor 1.10/step) so the zoom muscle memory
+  // is uniform across the spatial surfaces — the same uniformity principle that
+  // drove the s90 collapse grammar. Ctrl gates it; a plain (un-Ctrl) scroll is
+  // NOT handled here (return false) so it falls through to the ScrolledWindow as
+  // ordinary pan. Zoom scales m_zoom (the uniform cr->scale factor) and resizes
+  // the canvas; the geometry is drawn at base size under the transform, so a
+  // relayout + redraw is "free" — no rebuild(), no model read.
+  auto scroll = Gtk::EventControllerScroll::create();
+  scroll->set_flags(Gtk::EventControllerScroll::Flags::BOTH_AXES);
+  Gtk::EventControllerScroll* scrollp = scroll.get();   // raw: m_area owns it
+  scroll->signal_scroll().connect(
+      [this, scrollp](double /*dx*/, double dy) {
+        const bool ctrl =
+            (scrollp->get_current_event_state() & Gdk::ModifierType::CONTROL_MASK)
+            != Gdk::ModifierType{};
+        if (!ctrl) return false;                 // plain scroll → ScrolledWindow pans
+        const double factor = (dy < 0.0) ? 1.10 : (dy > 0.0 ? 1.0 / 1.10 : 1.0);
+        if (factor != 1.0) zoom_at_viewport(m_ptr_vx, factor);
+        return true;                             // claimed: no pan while zooming
+      }, false);
+  m_area.add_controller(scroll);
+
+  // s91 — keyboard zoom (the Map's bare +/-/0 idiom; trackpad-friendly, no wheel
+  // needed). Attached to the surface BOX so it fires when focus is anywhere in
+  // the timeline, but skips while the user is typing in a field (the peek
+  // synopsis, a rail mint entry) so '+'/'-'/'0' type normally there. Bare keys
+  // (no modifier) match the Map; main-row AND keypad variants are bound so a
+  // laptop without a numpad still has them.
+  auto key = Gtk::EventControllerKey::create();
+  key->signal_key_pressed().connect(
+      [this](guint kv, guint, Gdk::ModifierType) {
+        if (auto* win = dynamic_cast<Gtk::Window*>(get_root())) {
+          Gtk::Widget* foc = win->get_focus();
+          if (foc && (dynamic_cast<Gtk::Editable*>(foc) ||
+                      dynamic_cast<Gtk::TextView*>(foc)))
+            return false;                       // typing — let the field have it
+        }
+        switch (kv) {
+          case GDK_KEY_plus: case GDK_KEY_equal:
+          case GDK_KEY_KP_Add:        zoom_in();    return true;
+          case GDK_KEY_minus: case GDK_KEY_underscore:
+          case GDK_KEY_KP_Subtract:   zoom_out();   return true;
+          case GDK_KEY_0: case GDK_KEY_KP_0:
+                                      reset_zoom(); return true;
+          default: return false;
+        }
+      }, false);
+  add_controller(key);
+
   // s80 step 5c / s82 — the subject-first sweep. A primary drag that BEGINS on a
   // track row (or the armed staging row) sweeps a span of scene columns; on
   // release the verb is resolved by sweep_range (drag onto empty → add the span;
@@ -332,16 +424,19 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
   auto drag = Gtk::GestureDrag::create();
   drag->set_button(GDK_BUTTON_PRIMARY);
   drag->signal_drag_begin().connect([this](double x, double y) {
+    // s91 — events are in scaled content space; work in BASE coords. m_sweep_start_x
+    // is stored in base so the base drag offset (ox/m_zoom) in drag_update lines up.
+    const double bx = x / m_zoom, by = y / m_zoom;
     // s82 — a sweep that begins on the STAGING row arms the rail subject across
     // the swept span (the §3 build gesture); otherwise a sweep on an existing
     // track row edits that subject (s80). Staging takes priority when armed.
-    if (staging_active() && over_staging(y)) {
+    if (staging_active() && over_staging(by)) {
       m_sweep_is_armed = true;
       m_sweep_track = -1;
       m_sweep_band_thread = -1;
       m_sweep_band_kp = -1;
-      m_sweep_start_x = x;
-      m_sweep_from_col = clamped_col(x);
+      m_sweep_start_x = bx;
+      m_sweep_from_col = clamped_col(bx);
       m_sweep_to_col = m_sweep_from_col;
       m_sweep_moved = false;
       m_area.queue_draw();
@@ -351,26 +446,26 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
     // s86 — direct sweep on the thread band (row-keyed) or the KP strip
     // (column-keyed), parity with sweeping a subject track row. Checked before
     // the subject-track check; they live in disjoint y-bands so there is no clash.
-    const int tlane = thread_lane_at(y);
+    const int tlane = thread_lane_at(by);
     if (tlane >= 0) {
       m_sweep_band_thread = tlane;
       m_sweep_band_kp = -1;
       m_sweep_track = -1;
-      m_sweep_start_x = x;
-      m_sweep_from_col = clamped_col(x);
+      m_sweep_start_x = bx;
+      m_sweep_from_col = clamped_col(bx);
       m_sweep_to_col = m_sweep_from_col;
       m_sweep_moved = false;
       m_area.queue_draw();
       return;
     }
-    if (over_kp_strip(y)) {
-      const int klane = kp_lane_at_col(clamped_col(x));
+    if (over_kp_strip(by)) {
+      const int klane = kp_lane_at_col(clamped_col(bx));
       if (klane >= 0) {   // press must land on an existing beat (no KP identity on an empty cell)
         m_sweep_band_kp = klane;
         m_sweep_band_thread = -1;
         m_sweep_track = -1;
-        m_sweep_start_x = x;
-        m_sweep_from_col = clamped_col(x);
+        m_sweep_start_x = bx;
+        m_sweep_from_col = clamped_col(bx);
         m_sweep_to_col = m_sweep_from_col;
         m_sweep_moved = false;
         m_area.queue_draw();
@@ -379,11 +474,11 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
     }
     m_sweep_band_thread = -1;
     m_sweep_band_kp = -1;
-    const int trk = track_row_at(y);
+    const int trk = track_row_at(by);
     if (trk < 0) { m_sweep_track = -1; return; }   // only sweeps from a track row
     m_sweep_track = trk;
-    m_sweep_start_x = x;
-    m_sweep_from_col = clamped_col(x);
+    m_sweep_start_x = bx;
+    m_sweep_from_col = clamped_col(bx);
     m_sweep_to_col = m_sweep_from_col;
     m_sweep_moved = false;
     m_area.queue_draw();
@@ -391,8 +486,10 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
   drag->signal_drag_update().connect([this](double ox, double oy) {
     if (m_sweep_track < 0 && !m_sweep_is_armed
         && m_sweep_band_thread < 0 && m_sweep_band_kp < 0) return;
-    if (std::abs(ox) > 2.0 || std::abs(oy) > 2.0) m_sweep_moved = true;
-    m_sweep_to_col = clamped_col(m_sweep_start_x + ox);
+    if (std::abs(ox) > 2.0 || std::abs(oy) > 2.0) m_sweep_moved = true;  // raw px threshold
+    // s91 — the drag offset is in scaled space; m_sweep_start_x is base, so use
+    // the base offset (ox / m_zoom) for the base-space column hit-test.
+    m_sweep_to_col = clamped_col(m_sweep_start_x + ox / m_zoom);
     m_area.queue_draw();
   });
   drag->signal_drag_end().connect([this](double /*ox*/, double /*oy*/) {
@@ -407,6 +504,17 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
   });
   m_area.add_controller(drag);
 }
+
+// s91 — base column geometry. col_left/col_cx compute BASE coords off the fixed
+// COL; the uniform cr->scale(m_zoom) in draw() turns these into on-screen pixels.
+// x0() is the free helper (LEFT_PAD + GUTTER).
+int TimelineSurface::col_left(int k) const { return x0() + k * COL; }
+int TimelineSurface::col_cx(int k)   const { return col_left(k) + COL / 2; }
+
+// s91 — base geometry: card width is fixed at the mock size; the uniform
+// cr->scale(m_zoom) in draw() does ALL the resizing, so cards/lanes/gaps/labels
+// scale together and stay proportional (an "actual zoom", not a per-element tweak).
+int TimelineSurface::card_w() const { return kCardWBase; }
 
 int TimelineSurface::column_at(double x) const {
   const int n = static_cast<int>(m_proj.spine.size());
@@ -730,8 +838,9 @@ void TimelineSurface::show_track_menu(int track_idx, double x, double y) {
   const std::string label   = tk.label.empty() ? tk.iid : tk.label;
 
   // The scene under the cursor (if any) — offered as a per-scene unlink when the
-  // subject is actually claimed there.
-  const int col = column_at(x);     // 1-based told-order column, or 0
+  // subject is actually claimed there. s91 — x,y arrive RAW (scaled content
+  // space) so set_pointing_to lands correctly; divide by m_zoom for the hit-test.
+  const int col = column_at(x / m_zoom);   // 1-based told-order column, or 0
   const std::string scene_iid = scene_iid_at_col(col);
   const int scene_pos = scene_iid.empty() ? 0 : col;
   const bool over_claim = !scene_iid.empty() && tk.claimed.count(scene_iid) > 0;
@@ -1631,6 +1740,76 @@ int TimelineSurface::content_width() const {
   return x0() + n * COL + LEFT_PAD;
 }
 
+// s91 — the scrollable content size is the BASE geometry scaled by the zoom.
+// content_width/height stay BASE (draw() works in base coords under the scale);
+// only the DrawingArea's reported size — which lives in widget/event space — is
+// the scaled size. Called wherever the zoom or the layout changes.
+void TimelineSurface::sync_content_size() {
+  m_area.set_content_width(
+      std::max(static_cast<int>(std::lround(content_width()  * m_zoom)), 1));
+  m_area.set_content_height(
+      std::max(static_cast<int>(std::lround(content_height() * m_zoom)), 1));
+}
+
+// s91 — zoom is a UNIFORM scale of the whole surface: draw() applies one
+// cr->scale(m_zoom), so every card / lane / gap / label scales together and
+// stays proportional (an "actual zoom", not the per-element resize of earlier
+// cuts). zoom_at_viewport multiplies m_zoom by `factor` (clamped by next_timeline_zoom)
+// and keeps the content under viewport pixel `vx` fixed. Callers: Ctrl+scroll and
+// Ctrl+click pass the pointer / click position; the keyboard passes the centre.
+//
+// The anchor does NOT accumulate: `vx` is a viewport pixel; the BASE content
+// point under it is recomputed from the LIVE scroll each call
+// (base = (vx + scroll) / old_zoom), so a burst can't drift the scroll to a rail.
+// The new scroll lands that base point's new on-screen position (base * new_zoom)
+// back under `vx`. Applied now (best effort) AND once more on the adjustment's
+// `changed` (after the relayout grows the upper) — the canonical fix for set_value
+// clamping against a not-yet-grown upper on zoom-in. One pending anchor connection
+// at a time (m_zoom_anchor_conn), replaced each zoom.
+void TimelineSurface::zoom_at_viewport(double vx, double factor) {
+  const double old_zoom = m_zoom;
+  const double new_zoom = next_timeline_zoom(old_zoom, factor);
+  if (new_zoom == old_zoom) return;
+
+  auto hadj = m_scroll.get_hadjustment();
+  const double scroll0 = hadj ? hadj->get_value() : 0.0;
+  const double base_x  = (vx + scroll0) / old_zoom;   // BASE point under the anchor (live)
+
+  m_zoom = new_zoom;
+  m_model.timeline_zoom = new_zoom;   // s91 — write through; the model persists it
+  m_model.mark_modified();            // per-project state (mirrors rail-collapse toggle)
+  sync_content_size();
+
+  if (hadj) {
+    const double target = base_x * new_zoom - vx;
+    hadj->set_value(target);                       // best effort before relayout
+    m_zoom_anchor_conn.disconnect();               // drop any prior pending anchor
+    // Capture *this* (not the RefPtr) — the slot is owned by hadj, itself owned
+    // by m_scroll (a member), so it dies with the surface and never fires stale;
+    // capturing a RefPtr here would form a slot↔adjustment cycle and leak it.
+    m_zoom_anchor_conn = hadj->signal_changed().connect([this, target]() {
+      if (auto h = m_scroll.get_hadjustment()) h->set_value(target);
+      m_zoom_anchor_conn.disconnect();
+    });
+  }
+  m_area.queue_draw();
+}
+
+// s91 — keyboard zoom helpers (the Map's bare +/-/0 idiom). They anchor about the
+// viewport centre (no pointer needed) and reuse zoom_at_viewport. reset_zoom uses
+// the factor that returns to kTimelineZoomDefault exactly: next_timeline_zoom(z, def/z) == def.
+double TimelineSurface::viewport_center_vx() const {
+  auto hadj = m_scroll.get_hadjustment();
+  const double page = hadj ? hadj->get_page_size() : static_cast<double>(m_area.get_width());
+  return page / 2.0;
+}
+void TimelineSurface::zoom_in()  { zoom_at_viewport(viewport_center_vx(), 1.15); }
+void TimelineSurface::zoom_out() { zoom_at_viewport(viewport_center_vx(), 1.0 / 1.15); }
+void TimelineSurface::reset_zoom() {
+  if (m_zoom == kTimelineZoomDefault) return;
+  zoom_at_viewport(viewport_center_vx(), kTimelineZoomDefault / m_zoom);
+}
+
 // s84 — the bottom of the spine/KP/staging/subject-track region, before the
 // thread band and the bottom pad. The old content_height inlined this; factored
 // so the thread band and content_height share one floor.
@@ -1657,6 +1836,15 @@ int TimelineSurface::content_height() const {
 }
 
 void TimelineSurface::rebuild() {
+  // s91 — the persisted zoom is the model's (per-project, written through by
+  // zoom_at_viewport). Read it back on every rebuild so a project load / view re-entry
+  // restores the saved zoom; clamped via next_timeline_zoom(.,1.0) so a stale
+  // value can't paint a broken spine. The set_content_* below picks it up.
+  // s91 — the persisted zoom is the model's (per-project, written through by
+  // zoom_at_viewport). Read it back on every rebuild so a project load / view
+  // re-entry restores the saved zoom; next_timeline_zoom(.,1.0) clamps a stale value.
+  m_zoom = next_timeline_zoom(m_model.timeline_zoom, 1.0);
+
   m_proj = project_spine(spine_input_from_manuscript(m_model));
   m_spine_iids = m_proj.spine_iids();
 
@@ -1767,8 +1955,7 @@ void TimelineSurface::rebuild() {
   }
 
   m_empty_hint.set_visible(m_proj.spine.empty());
-  m_area.set_content_width(std::max(content_width(), 1));
-  m_area.set_content_height(std::max(content_height(), 1));
+  sync_content_size();
   m_area.queue_draw();
 }
 
@@ -2460,7 +2647,7 @@ void TimelineSurface::arm_subject(const std::string& iid, const std::string& lab
     if (riid == iid) w->add_css_class("armed");
     else             w->remove_css_class("armed");
   }
-  m_area.set_content_height(std::max(content_height(), 1));  // staging row reserves space
+  sync_content_size();  // staging row reserves space
   m_area.queue_draw();
 }
 
@@ -2480,7 +2667,7 @@ void TimelineSurface::arm_thread(const std::string& iid, const std::string& labe
     if (riid == iid) w->add_css_class("armed");
     else             w->remove_css_class("armed");
   }
-  m_area.set_content_height(std::max(content_height(), 1));
+  sync_content_size();
   m_area.queue_draw();
 }
 
@@ -2500,7 +2687,7 @@ void TimelineSurface::arm_keypoint(const std::string& kp_id,
     if (riid == kp_id) w->add_css_class("armed");
     else               w->remove_css_class("armed");
   }
-  m_area.set_content_height(std::max(content_height(), 1));
+  sync_content_size();
   m_area.queue_draw();
 }
 
@@ -2513,7 +2700,7 @@ void TimelineSurface::disarm() {
     (void)riid;
     if (w) w->remove_css_class("armed");
   }
-  m_area.set_content_height(std::max(content_height(), 1));
+  sync_content_size();
   m_area.queue_draw();
 }
 
@@ -2522,13 +2709,19 @@ std::string TimelineSurface::scene_at(double x, double y) const {
   if (y < top || y > top + CARD_H) return {};
   for (const auto& s : m_proj.spine) {
     const int cx = col_cx(s.position - 1);
-    if (x >= cx - CARD_W / 2.0 && x <= cx + CARD_W / 2.0) return s.iid;
+    if (x >= cx - card_w() / 2.0 && x <= cx + card_w() / 2.0) return s.iid;
   }
   return {};
 }
 
 void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, int /*h*/) {
   if (m_proj.spine.empty()) return;
+
+  // s91 — the ACTUAL zoom: one uniform scale over the whole surface. Everything
+  // below draws in BASE coordinates (COL, CARD_*, lane heights, paddings, fonts);
+  // this single transform scales it all together, proportionally. Event coords
+  // are divided by m_zoom back into base space for hit-testing (the controllers).
+  cr->scale(m_zoom, m_zoom);
 
   // s80 step 4 — scene-column light (§9.6): a faint full-height highlight under
   // the hovered card's column, so the subjects present in that scene read down
@@ -2608,14 +2801,14 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
   for (const auto& s : m_proj.spine) {
     const int k = s.position - 1;
     const double cx = col_cx(k);
-    const double cardx = cx - CARD_W / 2.0;
+    const double cardx = cx - card_w() / 2.0;
 
     // axis dot under the card
     set_src(cr, c_axis);
     cr->arc(cx, axis_y, 2.5, 0, 2 * M_PI);
     cr->fill();
 
-    rounded_rect(cr, cardx, top, CARD_W, CARD_H, 7);
+    rounded_rect(cr, cardx, top, card_w(), CARD_H, 7);
     set_src(cr, c_card, 0.98);
     cr->fill_preserve();
     set_src(cr, c_border);
@@ -2625,7 +2818,7 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
     // s84 — the peeked scene reads as selected: an accent ring around the card.
     if (!m_selected_iid.empty() && s.iid == m_selected_iid) {
       Gdk::RGBA sel = themed(m_area, "accent", "#89b4fa");
-      rounded_rect(cr, cardx - 2.5, top - 2.5, CARD_W + 5, CARD_H + 5, 9);
+      rounded_rect(cr, cardx - 2.5, top - 2.5, card_w() + 5, CARD_H + 5, 9);
       set_src(cr, sel, 0.95);
       cr->set_line_width(2.0);
       cr->stroke();
@@ -2648,7 +2841,7 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
     auto tl = m_area.create_pango_layout(s.title.empty() ? "(untitled)" : s.title);
     tl->set_font_description(Pango::FontDescription("sans 8"));
     tl->set_ellipsize(Pango::EllipsizeMode::END);
-    tl->set_width(static_cast<int>((CARD_W - 8) * Pango::SCALE));
+    tl->set_width(static_cast<int>((card_w() - 8) * Pango::SCALE));
     tl->set_alignment(Pango::Alignment::CENTER);
     int tw = 0, th = 0; tl->get_pixel_size(tw, th);
     set_src(cr, c_card_tx);
@@ -2709,8 +2902,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
       for (const auto& seg : rel.segments) {
         const bool target = seg_is_target(seg);
         if (seg.kind == ReliefSegment::Kind::Bar) {
-          const double bx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;            // s87 edge-to-edge
-          const double bw = (col_cx(seg.end_pos - 1) + CARD_W / 2.0) - bx;
+          const double bx = col_cx(seg.start_pos - 1) - card_w() / 2.0;            // s87 edge-to-edge
+          const double bw = (col_cx(seg.end_pos - 1) + card_w() / 2.0) - bx;
           rounded_rect(cr, bx, kcy - KP_BAR_H / 2.0, bw, KP_BAR_H, KP_BAR_H / 2.0);
           set_src(cr, hue, 0.95);
           cr->fill_preserve();
@@ -2802,14 +2995,14 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
       const Relief rel = compute_relief(m_spine_iids, *cl);
       for (const auto& seg : rel.segments) {
         if (seg.kind == ReliefSegment::Kind::Bar) {
-          const double bx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;           // s87 edge-to-edge
-          const double bw = (col_cx(seg.end_pos - 1) + CARD_W / 2.0) - bx;
+          const double bx = col_cx(seg.start_pos - 1) - card_w() / 2.0;           // s87 edge-to-edge
+          const double bw = (col_cx(seg.end_pos - 1) + card_w() / 2.0) - bx;
           rounded_rect(cr, bx, scy - BAR_H / 2.0, bw, BAR_H, BAR_H / 2.0);
           set_src(cr, hue, 0.45);
           cr->fill();
         } else {
-          const double sx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;
-          rounded_rect(cr, sx, scy - BAR_H / 2.0, CARD_W, BAR_H, BAR_H / 2.0);
+          const double sx = col_cx(seg.start_pos - 1) - card_w() / 2.0;
+          rounded_rect(cr, sx, scy - BAR_H / 2.0, card_w(), BAR_H, BAR_H / 2.0);
           set_src(cr, hue, 0.50);
           cr->fill();
         }
@@ -2908,16 +3101,16 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
     // bars (contiguous runs) and dots (singletons)
     for (const auto& seg : rel.segments) {
       if (seg.kind == ReliefSegment::Kind::Bar) {
-        const double bx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;             // s87 edge-to-edge
-        const double bw = (col_cx(seg.end_pos - 1) + CARD_W / 2.0) - bx;
+        const double bx = col_cx(seg.start_pos - 1) - card_w() / 2.0;             // s87 edge-to-edge
+        const double bw = (col_cx(seg.end_pos - 1) + card_w() / 2.0) - bx;
         rounded_rect(cr, bx, cy - BAR_H / 2.0, bw, BAR_H, BAR_H / 2.0);
         set_src(cr, hue, a_bar);
         cr->fill();
       } else {
         // single-scene link: a pill the WIDTH OF THE SCENE (not a dot), so one
         // link reads as "this whole scene", consistent with a one-cell bar.
-        const double sx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;
-        rounded_rect(cr, sx, cy - BAR_H / 2.0, CARD_W, BAR_H, BAR_H / 2.0);
+        const double sx = col_cx(seg.start_pos - 1) - card_w() / 2.0;
+        rounded_rect(cr, sx, cy - BAR_H / 2.0, card_w(), BAR_H, BAR_H / 2.0);
         set_src(cr, hue, a_dot);
         cr->fill();
       }
@@ -2976,14 +3169,14 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
       // bars (contiguous blocks) and single-scene pills (a lone beat of a thread)
       for (const auto& seg : rel.segments) {
         if (seg.kind == ReliefSegment::Kind::Bar) {
-          const double bx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;           // s87 edge-to-edge
-          const double bw = (col_cx(seg.end_pos - 1) + CARD_W / 2.0) - bx;
+          const double bx = col_cx(seg.start_pos - 1) - card_w() / 2.0;           // s87 edge-to-edge
+          const double bw = (col_cx(seg.end_pos - 1) + card_w() / 2.0) - bx;
           rounded_rect(cr, bx, cy - BAR_H / 2.0, bw, BAR_H, BAR_H / 2.0);
           set_src(cr, hue, 0.90);
           cr->fill();
         } else {
-          const double sx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;
-          rounded_rect(cr, sx, cy - BAR_H / 2.0, CARD_W, BAR_H, BAR_H / 2.0);
+          const double sx = col_cx(seg.start_pos - 1) - card_w() / 2.0;
+          rounded_rect(cr, sx, cy - BAR_H / 2.0, card_w(), BAR_H, BAR_H / 2.0);
           set_src(cr, hue, 0.95);
           cr->fill();
         }
@@ -3003,8 +3196,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
       Gdk::RGBA hue; hue.set(subject_hex(m_tracks[static_cast<std::size_t>(m_sweep_track)].color_idx, m_tracks[static_cast<std::size_t>(m_sweep_track)].category));
       const double cy = ttop + static_cast<double>(m_sweep_track) * (TRACK_H + TRACK_GAP)
                         + TRACK_H / 2.0;
-      const double px = col_cx(lo - 1) - CARD_W / 2.0;            // s87 edge-to-edge
-      const double pw = (col_cx(hi - 1) + CARD_W / 2.0) - px;
+      const double px = col_cx(lo - 1) - card_w() / 2.0;            // s87 edge-to-edge
+      const double pw = (col_cx(hi - 1) + card_w() / 2.0) - px;
       const double ph = BAR_H + 6.0;
       rounded_rect(cr, px, cy - ph / 2.0, pw, ph, ph / 2.0);
       if (unlink) {
@@ -3040,8 +3233,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
     if (sr.valid) {
       Gdk::RGBA hue; hue.set(armed_hue());
       const double cy = staging_top() + STAGE_H / 2.0;
-      const double px = col_cx(lo - 1) - CARD_W / 2.0;            // s87 edge-to-edge
-      const double pw = (col_cx(hi - 1) + CARD_W / 2.0) - px;
+      const double px = col_cx(lo - 1) - card_w() / 2.0;            // s87 edge-to-edge
+      const double pw = (col_cx(hi - 1) + card_w() / 2.0) - px;
       const double ph = BAR_H + 6.0;
       rounded_rect(cr, px, cy - ph / 2.0, pw, ph, ph / 2.0);
       if (unlink) {
@@ -3078,8 +3271,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
       const double cy = thread_rows_top()
                       + static_cast<double>(m_sweep_band_thread) * (TRACK_H + TRACK_GAP)
                       + TRACK_H / 2.0;
-      const double px = col_cx(sr.lo - 1) - CARD_W / 2.0;         // s87 edge-to-edge
-      const double pw = (col_cx(sr.hi - 1) + CARD_W / 2.0) - px;
+      const double px = col_cx(sr.lo - 1) - card_w() / 2.0;         // s87 edge-to-edge
+      const double pw = (col_cx(sr.hi - 1) + card_w() / 2.0) - px;
       const double ph = BAR_H + 6.0;
       rounded_rect(cr, px, cy - ph / 2.0, pw, ph, ph / 2.0);
       if (sr.remove) {
@@ -3104,8 +3297,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
     if (sr.valid) {
       Gdk::RGBA hue; hue.set(kp_hex(ln.color_idx));
       const double cy = kp_top() + KP_H / 2.0;
-      const double px = col_cx(sr.lo - 1) - CARD_W / 2.0;         // s87 edge-to-edge
-      const double pw = (col_cx(sr.hi - 1) + CARD_W / 2.0) - px;
+      const double px = col_cx(sr.lo - 1) - card_w() / 2.0;         // s87 edge-to-edge
+      const double pw = (col_cx(sr.hi - 1) + card_w() / 2.0) - px;
       const double ph = BAR_H + 6.0;
       rounded_rect(cr, px, cy - ph / 2.0, pw, ph, ph / 2.0);
       if (sr.remove) {

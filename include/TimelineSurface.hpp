@@ -123,6 +123,23 @@ private:
 
   // ── Lens state (presentation only; the model stays the truth) ──────────────
   SpineProjection m_proj;   // last projection (drives both draw and hit-test)
+
+  // s91 — the ZOOM. An "actual zoom": draw() applies one uniform cr->scale(m_zoom)
+  // over the whole surface, so cards / lanes / gaps / labels scale together and
+  // stay proportional. All geometry is computed at BASE size (COL, CARD_*, lane
+  // heights); only this factor changes. Clamped [kTimelineZoomMin,kTimelineZoomMax] by next_timeline_zoom.
+  // PERSISTED per-project: zoom_at_viewport writes through to
+  // DocumentModel::timeline_zoom (+ mark_modified) and rebuild() reads it back,
+  // so the model is the single source of truth — the rail-collapse shape.
+  double m_zoom = kTimelineZoomDefault;
+  double m_ptr_vx = 0.0;          // s91 — pointer x RELATIVE TO THE VIEWPORT, kept
+                                  // current on motion; the Ctrl+scroll zoom anchor.
+                                  // (Ctrl+click passes the click's viewport x and
+                                  // the keyboard the viewport centre.) Viewport-
+                                  // relative so it stays valid across a wheel burst
+                                  // that scrolls content under a still pointer.
+  sigc::connection m_zoom_anchor_conn;  // one pending zoom-anchor scroll fix
+
   std::vector<std::string> m_spine_iids;   // cached told-order iids (relief input)
   std::vector<TimelineTrack> m_tracks;     // s80 step 3 — subject relief rows
   // s81 step 6 — the KP lane: on-spine scenes grouped by kp_id (relief of kp_id,
@@ -338,8 +355,23 @@ private:
   // kp_id), read from m_kp_lanes. Gates the delete control + its "in use" hint.
   int kp_usage_count(const std::string& kp_id) const;
 
-  int content_width() const;   // X0 + n*COL + pad
-  int content_height() const;  // bands + spine + KP strip + staging + relief tracks
+  int content_width() const;   // BASE width  (X0 + n*COL + pad) — scaled at use
+  int content_height() const;  // BASE height (bands+spine+strip+staging+tracks)
+  // s91 — base column geometry (fixed COL / card width); the uniform cr->scale in
+  // draw() does the zooming. col_left(k)=x0+k*COL; col_cx=its centre; card_w is
+  // the fixed base card width. The zoom helpers: zoom_at_viewport scales m_zoom
+  // (clamped by next_timeline_zoom) keeping viewport pixel `vx` fixed; zoom_in/out/reset
+  // are the bare +/-/0 keyboard idiom (Map parity); sync_content_size pushes the
+  // BASE size × m_zoom to the DrawingArea (which lives in widget/event space).
+  int  col_left(int k) const;
+  int  col_cx(int k) const;
+  int  card_w() const;
+  void   zoom_at_viewport(double vx, double factor);
+  double viewport_center_vx() const;
+  void   zoom_in();
+  void   zoom_out();
+  void   reset_zoom();
+  void   sync_content_size();
   int spine_top() const;       // y of the card row's top, given band_rows
   int kp_top() const;          // y of the KP strip's top (0 height when no KPs)
   bool staging_active() const { return !m_armed_iid.empty(); }

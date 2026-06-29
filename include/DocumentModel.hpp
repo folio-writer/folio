@@ -18,6 +18,7 @@
 #include "Iid.hpp"          // IidKind + iid_kind_for (BinderKind → IidKind)
 #include "ObjectStore.hpp"   // s31 — objects & templates registry + instances
 #include "ImagePool.hpp"     // s58 — the shared image pool (gallery data layer)
+#include "TimelineSpine.hpp" // s91 — kZoom* + next_timeline_zoom (timeline zoom unit; pure)
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -600,6 +601,12 @@ public:
     // Stored as a sparse list (only collapsed keys present), mirroring how the
     // binder fold state persists on the node. Saved per-project.
     std::vector<int>      timeline_rail_collapsed;
+    // s91 — Relationship Timeline zoom: a UNIFORM scale factor (see
+    // TimelineSpine.hpp; the painter applies one cr->scale). Per-project, like
+    // timeline_active_idx / timeline_rail_collapsed — the surface writes through
+    // on zoom and reads it back on rebuild, so the model is the single source of
+    // truth. Loaded clamped into [kTimelineZoomMin,kTimelineZoomMax]; serialised always.
+    double                timeline_zoom = kTimelineZoomDefault;
 
     // ── Sidebar selection state (saved per-project) ───────────────────────────
     Section     sidebar_selected_section = Section::Manuscript;

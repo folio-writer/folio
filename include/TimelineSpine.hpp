@@ -100,6 +100,26 @@ struct SpineProjection {
 // `roots` is the Manuscript section's top-level node list (model.root(...)).
 SpineProjection project_spine(const std::vector<SpineInputNode>& roots);
 
+// ── The zoom unit (s91) ──────────────────────────────────────────────────────
+// Timeline zoom is a UNIFORM scale of the whole surface (an "actual zoom", like
+// the Map): the painter draws everything at its base size and applies one
+// cr->scale(z, z), so cards, lanes, gaps and labels all scale together and stay
+// proportional. z is a pure factor; these are its bounds + the step. (Earlier
+// cuts scaled only the column width, which distorted the layout — that is gone.)
+//
+// Range is generous both ways — 0.25 (a wide overview) to 5.0 (a single scene
+// filling the view). 1.0 is the s80 mock size.
+inline constexpr double kTimelineZoomDefault = 1.0;
+inline constexpr double kTimelineZoomMin     = 0.25;
+inline constexpr double kTimelineZoomMax     = 5.0;
+
+// Apply a zoom factor to the current zoom: multiply and clamp into
+// [kTimelineZoomMin, kTimelineZoomMax]. Returns the NEW zoom — which equals `current` when a
+// factor would push past a rail it already sits on (clamp returns the exact
+// bound) or when factor == 1.0, so the surface can compare == to skip the
+// relayout/redraw. Pure: no GTK, no model — sandbox-tested (TEST_timeline_zoom.cpp).
+double next_timeline_zoom(double current, double factor);
+
 // ── Model → DTO adapter (DECLARED here, DEFINED in the model TU) ──────────────
 // Mirrors StoryGraph::edges_from_backlinks: this signature documents how the
 // painter feeds the projection from the live model, but the definition lives in

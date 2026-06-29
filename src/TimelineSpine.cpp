@@ -67,4 +67,14 @@ SpineProjection project_spine(const std::vector<SpineInputNode>& roots) {
   return proj;
 }
 
+// s91 — the zoom step (declared in TimelineSpine.hpp). Multiply and clamp into
+// the rails. Equality with `current` is the surface's no-op signal: already at a
+// rail and pushed further (clamp returns the exact bound), or factor == 1.0.
+double next_timeline_zoom(double current, double factor) {
+  double z = current * factor;
+  if (z < kTimelineZoomMin) z = kTimelineZoomMin;
+  if (z > kTimelineZoomMax) z = kTimelineZoomMax;
+  return z;
+}
+
 }  // namespace Folio

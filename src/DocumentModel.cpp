@@ -774,6 +774,7 @@ void DocumentModel::reset() {
     open_tabs.clear();
     timeline_active_idx = -1;
     timeline_rail_collapsed.clear();
+    timeline_zoom = kTimelineZoomDefault;   // s91 — zoom resets to 1.0
     pomodoro_log.clear();
     is_modified  = false;
     current_path = "";
@@ -908,6 +909,7 @@ void DocumentModel::save_to(const std::string& path) {
         j["timeline_active_idx"] = timeline_active_idx;
         j["timeline_rail_collapsed"] = timeline_rail_collapsed;
     }
+    j["timeline_zoom"] = timeline_zoom;   // s91 — zoom (top-level: independent of whether tabs exist)
 
     // Sidebar selection state
     {
@@ -1065,6 +1067,10 @@ void DocumentModel::parse_blob(const json& j) {
         timeline_active_idx = j.value("timeline_active_idx", -1);
         timeline_rail_collapsed = j.value("timeline_rail_collapsed", std::vector<int>{});
     }
+    // s91 — zoom: loaded at top level (not gated on timeline_tabs) and clamped
+    // into the rails. next_timeline_zoom(v, 1.0) clamps with no scaling, so a hand-edited
+    // or stale out-of-range value can never paint a broken spine.
+    timeline_zoom = next_timeline_zoom(j.value("timeline_zoom", kTimelineZoomDefault), 1.0);
 
     // Sidebar selection state
     sidebar_selected_iid.clear();
