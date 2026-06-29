@@ -1137,6 +1137,16 @@ void MainWindow::wire_callbacks() {
       m_editor->update_open_title();
   });
 
+  // s88 — while an inline rename is open, stop the editor's load_node (fired by
+  // the same click that started the rename) from grabbing focus and snapping
+  // the rename entry shut.
+  m_sidebar->set_rename_begin_callback([this]() {
+    if (m_editor) m_editor->set_suppress_load_focus(true);
+  });
+  m_sidebar->set_rename_end_callback([this]() {
+    if (m_editor) m_editor->set_suppress_load_focus(false);
+  });
+
   m_sidebar->set_split_node_callback(
       [this](Section section, std::vector<int> path) {
         action_split_node(section, path);
@@ -1144,6 +1154,10 @@ void MainWindow::wire_callbacks() {
   m_sidebar->set_combine_nodes_callback(
       [this](Section section, std::vector<std::vector<int>> paths) {
         action_combine_nodes(section, std::move(paths));
+      });
+  m_sidebar->set_convert_node_callback(
+      [this](Section section, std::vector<int> path) {
+        action_convert_node_kind(section, path);
       });
   m_sidebar->set_global_search_callback([this](const std::string &query) {
     action_search();
@@ -2555,6 +2569,42 @@ void MainWindow::action_combine_nodes(Section section,
   m_model.mark_modified();
   if (m_sidebar)
     m_sidebar->rebuild();
+  update_title_bar();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Binder Scene ↔ Group conversion — called (deferred) from sidebar context menu
+//
+// convert_node_kind flips the kind in place and preserves the iid, so there is
+// nothing to migrate: links/backlinks keyed by iid keep resolving and
+// content/<iid>.md is untouched. The host's job is purely to refresh the views
+// the kind drives — the sidebar row (group expander vs scene leaf), the open
+// editor/inspector surface (a group renders its preface + children), and the
+// active whole-graph lens (Map glyph + Timeline leaf-vs-band now read the kind).
+// ─────────────────────────────────────────────────────────────────────────────
+void MainWindow::action_convert_node_kind(Section section,
+                                          const std::vector<int> &path) {
+  if (!m_model.convert_node_kind(section, path))
+    return; // not offered (rule-gated) or node missing — nothing changed
+
+  if (m_sidebar)
+    m_sidebar->rebuild();
+
+  // Reload the open surfaces if this node is the active one — kind changes how
+  // it renders (prose vs preface+children).
+  BinderNode *n = m_model.node_at(section, path);
+  if (n && m_model.active_section == section && m_model.active_path == path) {
+    if (m_editor)
+      m_editor->load_node(n);
+    if (m_inspector)
+      m_inspector->load_node(n);
+  }
+
+  // Re-project the active Map/Timeline lens: the converted node's glyph /
+  // spine role is derived from the kind, so a live whole-graph view must rebuild
+  // (no-op in Write/Outline/Board).
+  if (m_editor)
+    m_editor->refresh_active_lens();
   update_title_bar();
 }
 

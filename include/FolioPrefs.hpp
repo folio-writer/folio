@@ -54,6 +54,13 @@ struct TextStyle {
     std::string fg_color;                    // "" | "#rrggbb"
     std::string bg_color;                    // "" | "#rrggbb"
     double      line_height   = 0.0;         // 0  = inherit
+    // ── s88: paragraph-only spacing + per-style first-line indent ──────────────
+    // NOTE: appended at the end so the positional aggregate initialisers in
+    // FolioPrefs::default_styles() keep working unchanged.
+    int         space_above_px        = 0;   // extra px above the paragraph
+    int         space_below_px        = 0;   // extra px below the paragraph
+    int         first_line_indent_px  = -1;  // -1 = inherit global indent pref;
+                                             //  0 = explicitly none; >0 = that indent
 };
 
 // ─── NodeDefaults ─────────────────────────────────────────────────────────────

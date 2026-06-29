@@ -94,6 +94,19 @@ private:
     Gtk::SpinButton    *m_lh_spin = nullptr;
     Gtk::Box           *m_lh_row  = nullptr;
 
+    // Paragraph spacing (paragraph only) — s88
+    Gtk::SpinButton    *m_space_above_spin = nullptr;
+    Gtk::Box           *m_space_above_row  = nullptr;
+    Gtk::SpinButton    *m_space_below_spin = nullptr;
+    Gtk::Box           *m_space_below_row  = nullptr;
+
+    // First-line indent (paragraph only, tri-state) — s88.
+    // m_indent_inherit checked → store -1 (inherit global); otherwise the spin
+    // value (0 = explicitly none, >0 = explicit indent).
+    Gtk::CheckButton    m_indent_inherit;
+    Gtk::SpinButton    *m_indent_spin = nullptr;
+    Gtk::Box           *m_indent_row  = nullptr;
+
     // Preview label
     Gtk::Label          m_preview;
     Glib::RefPtr<Gtk::CssProvider> m_preview_css;
@@ -104,6 +117,13 @@ private:
     // ── State ─────────────────────────────────────────────────────────────
     int                 m_selected_idx = -1;   // index into m_prefs.text_styles
     bool                m_inhibit = false;     // block change signals during load
+    int                 m_drag_src_idx = -1;   // row being dragged (DnD reorder)
+    // True when the style order changed (e.g. open-time regroup) but the editor
+    // dropdown has not yet been rebuilt to match. Flushed on close.
+    bool                m_styles_dirty = false;
+
+    // CSS for section headers + drag/drop feedback (added once, for the display)
+    Glib::RefPtr<Gtk::CssProvider> m_dnd_css;
 
     // ── Helpers ───────────────────────────────────────────────────────────
     void build_ui();
@@ -113,7 +133,17 @@ private:
     void update_preview();
     void select_row(int idx);
 
-    Gtk::ListBoxRow *make_style_row(const TextStyle &s);
+    // Group the style vector paragraph-first, character-second (stable). The
+    // two sections in the list map onto these two contiguous ranges. Returns
+    // true if the order actually changed.
+    bool regroup_styles();
+    // Move a style to a new position within its own section (DnD reorder).
+    void reorder_style(int src, int dst, bool after);
+    // Fire on_styles_changed (rebuild the editor dropdown) and clear the dirty
+    // flag — the editor maps dropdown index → style, so its order must match.
+    void notify_styles_changed();
+
+    Gtk::ListBoxRow *make_style_row(const TextStyle &s, int idx);
 };
 
 } // namespace Folio

@@ -129,6 +129,15 @@ std::string EditorHtmlSerializer::to_html() const {
             } else if (tn.size() > 3 && tn.substr(0, 3) == "ri:") {
                 oh = "<span style=\"margin-right:" + tn.substr(3) + "px\">";
                 open_stack.push_back({"span", t});
+            } else if (tn.size() > 3 && tn.substr(0, 3) == "pa:") {
+                oh = "<span style=\"margin-top:" + tn.substr(3) + "px\">";
+                open_stack.push_back({"span", t});
+            } else if (tn.size() > 3 && tn.substr(0, 3) == "pb:") {
+                oh = "<span style=\"margin-bottom:" + tn.substr(3) + "px\">";
+                open_stack.push_back({"span", t});
+            } else if (tn.size() > 3 && tn.substr(0, 3) == "fi:") {
+                oh = "<span style=\"text-indent:" + tn.substr(3) + "px\">";
+                open_stack.push_back({"span", t});
             } else if (tn.size() > 12 && tn.substr(0, 12) == "folio-style:") {
                 std::string sname = tn.substr(12);
                 oh = "<span data-folio-style=\"" + sname + "\">";
@@ -346,6 +355,50 @@ void EditorHtmlSerializer::from_html(const std::string& html) {
     if (!plain.empty() && plain.back() == '\n') plain.pop_back();
     m_buffer->set_text(decode(plain));
 
+    // s88 — convert range offsets from BYTE positions in `plain` to CHARACTER
+    // positions in the decoded buffer. Offsets were recorded as plain.size()
+    // (raw bytes, HTML entities still encoded), but get_iter_at_offset() expects
+    // character offsets. Any non-ASCII (curly quotes, em-dashes) or entity before
+    // a styled run otherwise shifts that run's tags onto the wrong text, so
+    // styling appears to vanish/scramble on reload. Build a byte→char map that
+    // mirrors decode()'s entity handling and UTF-8 code-point lengths.
+    {
+        std::vector<int> b2c(plain.size() + 1, 0);
+        int cc = 0;
+        size_t bi = 0;
+        while (bi < plain.size()) {
+            int blen = 1;
+            if (plain[bi] == '&') {
+                if      (plain.compare(bi, 5, "&amp;")  == 0) blen = 5;
+                else if (plain.compare(bi, 4, "&lt;")   == 0) blen = 4;
+                else if (plain.compare(bi, 4, "&gt;")   == 0) blen = 4;
+                else if (plain.compare(bi, 6, "&quot;") == 0) blen = 6;
+                else blen = 1;
+            } else {
+                unsigned char uc = (unsigned char)plain[bi];
+                if      ((uc & 0x80) == 0x00) blen = 1;
+                else if ((uc & 0xE0) == 0xC0) blen = 2;
+                else if ((uc & 0xF0) == 0xE0) blen = 3;
+                else if ((uc & 0xF8) == 0xF0) blen = 4;
+                else                          blen = 1;
+            }
+            for (int k = 0; k < blen && bi + (size_t)k < plain.size(); ++k)
+                b2c[bi + (size_t)k] = cc;
+            bi += (size_t)blen;
+            ++cc;
+        }
+        b2c[plain.size()] = cc;
+        auto to_char = [&](int byte_off) -> int {
+            if (byte_off < 0) return 0;
+            if ((size_t)byte_off >= b2c.size()) return cc;
+            return b2c[(size_t)byte_off];
+        };
+        for (auto& r : ranges) {
+            r.start = to_char(r.start);
+            r.end   = to_char(r.end);
+        }
+    }
+
     auto pv = [](const std::string& css, const std::string& prop) {
         size_t pos = css.find(prop);
         if (pos == std::string::npos) return std::string();
@@ -495,6 +548,54 @@ void EditorHtmlSerializer::from_html(const std::string& html) {
                 continue;
             }
 
+            std::string mt = pv(r.style, "margin-top:");
+            if (!mt.empty()) {
+                while (!mt.empty() && (mt.back() == 'x' || mt.back() == 'p')) mt.pop_back();
+                try {
+                    int px = std::stoi(mt);
+                    std::string tn = "pa:" + std::to_string(px);
+                    auto tt = m_buffer->get_tag_table()->lookup(tn);
+                    if (!tt) {
+                        tt = m_buffer->create_tag(tn);
+                        tt->property_pixels_above_lines() = px;
+                    }
+                    m_buffer->apply_tag(tt, s, e);
+                } catch (...) {}
+                continue;
+            }
+
+            std::string mb = pv(r.style, "margin-bottom:");
+            if (!mb.empty()) {
+                while (!mb.empty() && (mb.back() == 'x' || mb.back() == 'p')) mb.pop_back();
+                try {
+                    int px = std::stoi(mb);
+                    std::string tn = "pb:" + std::to_string(px);
+                    auto tt = m_buffer->get_tag_table()->lookup(tn);
+                    if (!tt) {
+                        tt = m_buffer->create_tag(tn);
+                        tt->property_pixels_below_lines() = px;
+                    }
+                    m_buffer->apply_tag(tt, s, e);
+                } catch (...) {}
+                continue;
+            }
+
+            std::string ti = pv(r.style, "text-indent:");
+            if (!ti.empty()) {
+                while (!ti.empty() && (ti.back() == 'x' || ti.back() == 'p')) ti.pop_back();
+                try {
+                    int px = std::stoi(ti);
+                    std::string tn = "fi:" + std::to_string(px);
+                    auto tt = m_buffer->get_tag_table()->lookup(tn);
+                    if (!tt) {
+                        tt = m_buffer->create_tag(tn);
+                        tt->property_indent() = px;
+                    }
+                    m_buffer->apply_tag(tt, s, e);
+                } catch (...) {}
+                continue;
+            }
+
             std::string fam = pv(r.style, "font-family:");
             std::string sz  = pv(r.style, "font-size:");
             while (!sz.empty() && (sz.back() == 't' || sz.back() == 'p')) sz.pop_back();
@@ -515,12 +616,32 @@ void EditorHtmlSerializer::from_html(const std::string& html) {
     }
 
     // ── Paragraph-tag repair pass ─────────────────────────────────────────────
-    // li: and ri: tags are paragraph-level — they must cover the entire
-    // paragraph.  Text substitution (smart quotes, em-dash) can leave the
-    // first character of a paragraph uncovered if the substitution happened
-    // at paragraph start.  Walk each paragraph: if any character in it has a
-    // li:/ri: tag, extend that tag to cover the whole paragraph.
+    // Paragraph-level tags (left/right indent, space above/below, first-line
+    // indent, line-height, justification) must cover the *entire* paragraph or
+    // they silently drop on round-trip.  Text substitution (smart quotes,
+    // em-dash) can leave the first character of a paragraph uncovered when the
+    // substitution shifts offsets at paragraph start.  Walk each paragraph: if
+    // any character in it carries a paragraph-level tag, extend that tag across
+    // the whole paragraph.  Because every property here is paragraph-level in
+    // GTK (it already renders per-paragraph regardless of tag coverage),
+    // widening the tag can't change appearance — it only makes serialization
+    // round-trip-stable.
+    //   s88 added the margin/spacing/first-line family (li:/ri:/pa:/pb:/fi:);
+    //   s89 generalized to lh: and justify_* too, since they share the identical
+    //   partial-coverage root cause.
     {
+        // Paragraph-level tag-name test: the margin/spacing/indent/line-height
+        // family share a 3-char "xx:" prefix; justification tags have fixed names.
+        auto is_para_tag = [](const std::string& n) {
+            if (n.size() > 3) {
+                const std::string p = n.substr(0, 3);
+                if (p == "li:" || p == "ri:" || p == "pa:" ||
+                    p == "pb:" || p == "fi:" || p == "lh:")
+                    return true;
+            }
+            return n == "justify_center" || n == "justify_right" ||
+                   n == "justify_full";
+        };
         auto line_start = m_buffer->begin();
         while (!line_start.is_end()) {
             auto line_end = line_start;
@@ -528,13 +649,13 @@ void EditorHtmlSerializer::from_html(const std::string& html) {
             if (!line_end.forward_to_line_end())
                 line_end = m_buffer->end();
 
-            // Collect li:/ri: tags active anywhere in this line
+            // Collect paragraph-level tags active anywhere in this line
             std::vector<Glib::RefPtr<Gtk::TextTag>> para_tags;
             auto it = line_start;
             while (it != line_end && !it.is_end()) {
                 for (auto& tag : it.get_tags()) {
                     const std::string& n = tag->property_name().get_value();
-                    if (n.size() > 3 && (n.substr(0,3) == "li:" || n.substr(0,3) == "ri:")) {
+                    if (is_para_tag(n)) {
                         bool found = false;
                         for (auto& t : para_tags) if (t == tag) { found = true; break; }
                         if (!found) para_tags.push_back(tag);

@@ -2,6 +2,7 @@
 // Folio — ImportDialog.cpp
 // ─────────────────────────────────────────────────────────────────────────────
 #include "ImportDialog.hpp"
+#include <gio/gio.h>        // s87 — g_list_model_get_object / g_file_get_path (wrap bypass)
 #include <filesystem>
 #include <sstream>
 
@@ -328,7 +329,7 @@ void ImportDialog::remove_entry(size_t idx) {
 void ImportDialog::add_file_row(const std::string& path, bool is_folder) {
     // Deduplicate
     for (auto& e : m_entries)
-        if (e.path == path) return;
+        if (e.path == path) {  return; }
     m_entries.push_back({ path, is_folder, nullptr });
     refresh_file_list();
     update_preview();
@@ -349,6 +350,24 @@ void ImportDialog::pick_files() {
     filter_all->add_pattern("*.rtf");
     filter_all->add_pattern("*.docx");
     filter_all->add_pattern("*.odt");
+    // s87 — GTK4 FileChooserNative routes through xdg-desktop-portal, where glob
+    // patterns are case-sensitive and frequently leave files greyed out / not
+    // selectable. add_suffix (GTK 4.4+) is the portal-reliable, case-insensitive
+    // path, so we add suffixes alongside the patterns to keep every supported
+    // type pickable (the .odt failure that prompted this).
+    filter_all->add_suffix("txt");
+    filter_all->add_suffix("md");
+    filter_all->add_suffix("markdown");
+    filter_all->add_suffix("rtf");
+    filter_all->add_suffix("docx");
+    filter_all->add_suffix("odt");
+    // MIME types as a further fallback for portals that match on content-type.
+    filter_all->add_mime_type("application/vnd.oasis.opendocument.text");          // .odt
+    filter_all->add_mime_type(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"); // .docx
+    filter_all->add_mime_type("text/plain");                                        // .txt
+    filter_all->add_mime_type("text/markdown");                                     // .md
+    filter_all->add_mime_type("application/rtf");                                   // .rtf
     dlg->add_filter(filter_all);
 
     auto filter_any = Gtk::FileFilter::create();
@@ -359,9 +378,22 @@ void ImportDialog::pick_files() {
     dlg->signal_response().connect([this, dlg](int response) {
         if (response != Gtk::ResponseType::ACCEPT) return;
         auto files = dlg->get_files();
-        for (size_t i = 0; i < files->get_n_items(); ++i) {
-            auto f = std::dynamic_pointer_cast<Gio::File>(files->get_object(i));
-            if (f) add_file_row(f->get_path(), false);
+        const guint nfiles = files ? files->get_n_items() : 0u;
+        // glibmm fails to wrap GLocalFile (the "Failed to wrap object of type
+        // 'GLocalFile'" warning), so std::dynamic_pointer_cast<Gio::File> on the
+        // list-model object returns null and the file is silently dropped. Pull
+        // the path straight from the C GIO API instead — g_list_model_get_object
+        // returns a transfer-full GObject* that IS a GFile.
+        for (guint i = 0; i < nfiles; ++i) {
+            GObject* obj = G_OBJECT(g_list_model_get_object(files->gobj(), i));
+            if (!obj) {  continue; }
+            std::string path;
+            if (G_IS_FILE(obj)) {
+                char* p = g_file_get_path(G_FILE(obj));
+                if (p) { path = p; g_free(p); }
+            }
+            if (!path.empty()) add_file_row(path, false);
+            g_object_unref(obj);
         }
     });
     dlg->show();
@@ -374,8 +406,14 @@ void ImportDialog::pick_folder() {
 
     dlg->signal_response().connect([this, dlg](int response) {
         if (response != Gtk::ResponseType::ACCEPT) return;
+        // gtkmm's get_file() is fine to call (no -Wdeprecated), but read the path
+        // off the underlying GFile* via the C API to dodge the same GLocalFile
+        // wrap issue that bit pick_files.
         auto f = dlg->get_file();
-        if (f) add_file_row(f->get_path(), true);
+        if (f) {
+            char* p = g_file_get_path(f->gobj());
+            if (p) { if (*p) add_file_row(p, true); g_free(p); }
+        }
     });
     dlg->show();
 }
@@ -397,10 +435,16 @@ void ImportDialog::update_preview() {
 
     for (auto& e : m_entries) {
         ImportResult r;
-        if (e.is_folder)
-            r = Importer::import_folder(e.path, opts);
-        else
-            r = Importer::import_file(e.path, opts);
+        try {
+            if (e.is_folder)
+                r = Importer::import_folder(e.path, opts);
+            else
+                r = Importer::import_file(e.path, opts);
+        } catch (const std::exception&) {
+            ++errors; continue;
+        } catch (...) {
+            ++errors; continue;
+        }
 
         if (!r.ok()) { ++errors; continue; }
         for (auto& nd : r.nodes)
@@ -462,10 +506,20 @@ void ImportDialog::on_import() {
 
     for (auto& e : m_entries) {
         ImportResult r;
-        if (e.is_folder)
-            r = Importer::import_folder(e.path, opts);
-        else
-            r = Importer::import_file(e.path, opts);
+        try {
+            if (e.is_folder)
+                r = Importer::import_folder(e.path, opts);
+            else
+                r = Importer::import_file(e.path, opts);
+        } catch (const std::exception& ex) {
+            // An exception must never unwind through GTK's C signal dispatch
+            // (undefined behaviour). Convert it to a normal import error.
+            r = ImportResult{};
+            r.error = std::string("internal error: ") + ex.what();
+        } catch (...) {
+            r = ImportResult{};
+            r.error = "internal error (unknown)";
+        }
 
         if (!r.ok()) {
             errors.push_back(e.path + ": " + r.error);

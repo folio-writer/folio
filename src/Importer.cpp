@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <dirent.h>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <zlib.h>
 
@@ -110,53 +112,94 @@ static uint32_t read_u32(const uint8_t* p) {
            (static_cast<uint32_t>(p[3]) << 24);
 }
 
+// s87 — Read entries via the ZIP CENTRAL DIRECTORY instead of walking local
+// file headers. LibreOffice ODT writes some entries (e.g. styles.xml) with a
+// DATA DESCRIPTOR: the local header's comp/uncomp sizes are 0 and the real
+// sizes live AFTER the compressed data. Walking local headers then can't tell
+// where an entry ends, so the scan derails (it would read mid-stream bytes as
+// the next header) and content.xml — which sits after styles.xml — is never
+// found. The central directory, at the end of the archive, always carries
+// accurate sizes plus each entry's local-header offset, so it is the correct
+// place to read from.
 std::vector<uint8_t> Importer::zip_extract_entry(const std::vector<uint8_t>& zip,
                                                   const std::string& entry_name) {
-    size_t pos = 0;
     const size_t sz = zip.size();
+    if (sz < 22) return {};  // smaller than an EOCD record
 
-    while (pos + 30 <= sz) {
-        // Local file header signature
-        if (read_u32(zip.data() + pos) != 0x04034b50) break;
+    // 1. Locate the End Of Central Directory record (sig 0x06054b50). A trailing
+    //    comment of up to 65535 bytes may follow it, so scan backward.
+    const size_t scan_floor = (sz > (22u + 65535u)) ? (sz - (22u + 65535u)) : 0u;
+    size_t eocd = sz;  // sentinel = not found
+    for (size_t i = sz - 22;; --i) {
+        if (read_u32(zip.data() + i) == 0x06054b50) { eocd = i; break; }
+        if (i == scan_floor) break;
+    }
+    if (eocd == sz) {  return {}; }
 
-        uint16_t method     = read_u16(zip.data() + pos + 8);
-        uint32_t comp_size  = read_u32(zip.data() + pos + 18);
-        uint32_t uncomp_sz  = read_u32(zip.data() + pos + 22);
-        uint16_t name_len   = read_u16(zip.data() + pos + 26);
-        uint16_t extra_len  = read_u16(zip.data() + pos + 28);
+    const uint16_t total_entries = read_u16(zip.data() + eocd + 10);
+    const uint32_t cd_offset     = read_u32(zip.data() + eocd + 16);
 
-        size_t data_off = pos + 30 + name_len + extra_len;
-        if (data_off > sz) break;
+    // 2. Walk the central directory (each header sig 0x02014b50).
+    size_t pos = cd_offset;
+    for (unsigned n = 0; n < total_entries; ++n) {
+        if (pos + 46 > sz) break;
+        if (read_u32(zip.data() + pos) != 0x02014b50) break;
 
-        std::string name(reinterpret_cast<const char*>(zip.data() + pos + 30), name_len);
+        const uint16_t method    = read_u16(zip.data() + pos + 10);
+        const uint32_t comp_size = read_u32(zip.data() + pos + 20);
+        const uint32_t uncomp_sz = read_u32(zip.data() + pos + 24);
+        const uint16_t name_len  = read_u16(zip.data() + pos + 28);
+        const uint16_t extra_len = read_u16(zip.data() + pos + 30);
+        const uint16_t cmt_len   = read_u16(zip.data() + pos + 32);
+        const uint32_t lho       = read_u32(zip.data() + pos + 42);  // local hdr offset
+
+        if (pos + 46 + name_len > sz) break;
+        std::string name(reinterpret_cast<const char*>(zip.data() + pos + 46), name_len);
 
         if (name == entry_name) {
-            if (method == 0) {
-                // Stored
-                if (data_off + comp_size > sz) return {};
-                return { zip.begin() + data_off,
-                         zip.begin() + data_off + comp_size };
-            } else if (method == 8) {
-                // Deflate
-                if (data_off + comp_size > sz) return {};
-                std::vector<uint8_t> out(uncomp_sz);
+            // The local header at lho carries its own name/extra lengths (which
+            // can differ from the central dir), so recompute the data offset.
+            if (static_cast<size_t>(lho) + 30 > sz) return {};
+            if (read_u32(zip.data() + lho) != 0x04034b50) return {};
+            const uint16_t l_name_len  = read_u16(zip.data() + lho + 26);
+            const uint16_t l_extra_len = read_u16(zip.data() + lho + 28);
+            const size_t data_off =
+                static_cast<size_t>(lho) + 30 + l_name_len + l_extra_len;
+            if (data_off + comp_size > sz) return {};
+
+            if (method == 0) {  // Stored
+                return { zip.begin() + static_cast<std::ptrdiff_t>(data_off),
+                         zip.begin() + static_cast<std::ptrdiff_t>(data_off + comp_size) };
+            }
+            if (method == 8) {  // Deflate — comp_size from the central dir is accurate
                 z_stream zs{};
-                zs.next_in   = const_cast<uint8_t*>(zip.data() + data_off);
-                zs.avail_in  = comp_size;
-                zs.next_out  = out.data();
-                zs.avail_out = uncomp_sz;
-                // -15 → raw deflate (no zlib wrapper)
+                zs.next_in  = const_cast<uint8_t*>(zip.data() + data_off);
+                zs.avail_in = static_cast<uInt>(comp_size);
                 if (inflateInit2(&zs, -15) != Z_OK) return {};
-                int r = inflate(&zs, Z_FINISH);
+                size_t cap = (uncomp_sz > 0 && uncomp_sz < (256u << 20))
+                                 ? static_cast<size_t>(uncomp_sz)
+                                 : (static_cast<size_t>(1) << 16);
+                std::vector<uint8_t> out(cap);
+                int r = Z_OK;
+                for (;;) {
+                    if (zs.total_out >= out.size()) out.resize(out.size() * 2);
+                    zs.next_out  = out.data() + zs.total_out;
+                    zs.avail_out = static_cast<uInt>(out.size() - zs.total_out);
+                    r = inflate(&zs, Z_NO_FLUSH);
+                    if (r == Z_STREAM_END) break;
+                    if (r != Z_OK) break;
+                    if (zs.avail_in == 0 && zs.avail_out > 0) break;
+                }
+                const uLong produced = zs.total_out;
                 inflateEnd(&zs);
                 if (r != Z_STREAM_END) return {};
-                out.resize(zs.total_out);
+                out.resize(produced);
                 return out;
             }
-            return {}; // unsupported method
+            return {};  // unsupported method
         }
 
-        pos = data_off + comp_size;
+        pos += static_cast<size_t>(46) + name_len + extra_len + cmt_len;
     }
     return {};
 }
@@ -514,8 +557,19 @@ std::string Importer::rtf_to_plain(const std::string& rtf) {
             // Optional trailing space (consumed but not emitted)
             if (i < n && rtf[i] == ' ') ++i;
 
-            int param = numstr.empty() ? 0 : std::stoi(numstr);
-            if (neg) param = -param;
+            // s87 — parse the numeric parameter WITHOUT std::stoi. Real RTF
+            // routinely carries values beyond INT_MAX (\rsidN are random 32-bit,
+            // plus large \fsN / colour values), and stoi throws std::out_of_range
+            // on those. That exception unwinds through GTK's C signal dispatch
+            // (undefined behaviour — observed as a "free(): invalid pointer"
+            // abort), so parse with saturation instead. param is only consumed
+            // for \uN, which never approaches the cap.
+            long long val = 0;
+            for (char d : numstr) {
+                val = val * 10 + (d - '0');
+                if (val > 1000000000LL) val = 1000000000LL;  // saturate
+            }
+            int param = neg ? -static_cast<int>(val) : static_cast<int>(val);
 
             if (word == "par" || word == "pard" || word == "line") {
                 out += '\n';
@@ -736,6 +790,219 @@ ImportResult Importer::parse_docx(const std::vector<uint8_t>& zip_bytes,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ODT structured import (s88)
+//
+// Map the ODT outline to Folio's binder, preserving inline emphasis:
+//   <text:h outline-level="1">  → Group  (chapter)        depth 0
+//   <text:h outline-level="2+"> → Scene  (child)          depth 1
+//   <text:p>                    → a <p> paragraph in the current scene
+//   <text:span style=italic>    → <i>…</i>   (style flagged italic)
+//   <text:span style=bold>      → <b>…</b>   (style flagged bold)
+// Outline level is keyed off `text:outline-level` (robust, style-independent —
+// what LibreOffice always sets); style names are only a fallback. A document
+// with no headings returns found_heading=false so parse_odt can fall back to the
+// flat separator-split path. Pure; sandbox-tested against a real content.xml.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Collect automatic/text style names that carry italic or bold, by scanning the
+// <style:style> blocks' <style:text-properties> for fo:font-style / fo:font-weight.
+static void odt_collect_emphasis_styles(const std::string& xml,
+                                        std::set<std::string>& italic,
+                                        std::set<std::string>& bold) {
+    size_t pos = 0;
+    while (true) {
+        size_t s = xml.find("<style:style", pos);
+        if (s == std::string::npos) break;
+        size_t hdr_end = xml.find('>', s);
+        if (hdr_end == std::string::npos) break;
+        size_t e = xml.find("</style:style>", s);
+
+        std::string open = xml.substr(s, hdr_end - s);
+        std::string name;
+        size_t np = open.find("style:name=\"");
+        if (np != std::string::npos) {
+            np += 12;
+            size_t nq = open.find('"', np);
+            if (nq != std::string::npos) name = open.substr(np, nq - np);
+        }
+        std::string block = (e == std::string::npos) ? open : xml.substr(s, e - s);
+        if (!name.empty()) {
+            if (block.find("fo:font-style=\"italic\"")  != std::string::npos)
+                italic.insert(name);
+            if (block.find("fo:font-weight=\"bold\"")   != std::string::npos)
+                bold.insert(name);
+        }
+        pos = (e == std::string::npos) ? hdr_end + 1 : e + 14;
+    }
+}
+
+static std::string odt_decode_entity(const std::string& e) {
+    if (e == "&amp;")  return "&";
+    if (e == "&lt;")   return "<";
+    if (e == "&gt;")   return ">";
+    if (e == "&quot;") return "\"";
+    if (e == "&apos;") return "'";
+    if (e == "&#160;") return "\xc2\xa0";
+    return e;
+}
+
+static std::vector<ImportNode> odt_to_nodes(const std::string& xml,
+                                            bool& found_heading) {
+    found_heading = false;
+    std::set<std::string> italic_styles, bold_styles;
+    odt_collect_emphasis_styles(xml, italic_styles, bold_styles);
+
+    std::vector<ImportNode> nodes;
+    int  cur_scene  = -1;     // index into nodes of the scene we're filling
+    bool have_group = false;
+
+    bool in_body = false, in_para = false, in_head = false;
+    int  head_level = 1;
+    std::string head_text;    // plain (decoded) heading text → node title
+    std::string para_html;    // inner HTML of the current paragraph
+    bool para_italic = false, para_bold = false;
+    std::vector<std::string> span_close;  // per-open-span closing tags
+
+    auto append_char_data = [&](const std::string& decoded) {
+        if (in_head)       head_text += decoded;            // titles stay plain
+        else if (in_para)  para_html += html_escape(decoded); // body → HTML-safe
+    };
+
+    size_t i = 0, n = xml.size();
+    bool in_tag = false;
+    std::string tag;
+
+    while (i < n) {
+        char c = xml[i];
+        if (c == '<') { in_tag = true; tag.clear(); ++i; continue; }
+        if (c == '>') {
+            in_tag = false;
+            std::string t = trim(tag);
+            if (!t.empty() && t.back() == '/') { t.pop_back(); t = trim(t); }
+
+            std::string name = t, attrs;
+            size_t sp = t.find_first_of(" \t");
+            if (sp != std::string::npos) { name = t.substr(0, sp); attrs = t.substr(sp + 1); }
+
+            auto attr = [&](const char* key) -> std::string {
+                std::string k = std::string(key) + "=\"";
+                size_t p = attrs.find(k);
+                if (p == std::string::npos) return "";
+                p += k.size();
+                size_t q = attrs.find('"', p);
+                if (q == std::string::npos) return "";
+                return attrs.substr(p, q - p);
+            };
+
+            if      (name == "office:text")  in_body = true;
+            else if (name == "/office:text") in_body = false;
+
+            else if (in_body && name == "text:h") {
+                in_head = true;
+                head_text.clear();
+                std::string lv = attr("text:outline-level");
+                if (!lv.empty()) {
+                    head_level = std::atoi(lv.c_str());
+                } else {
+                    std::string st = attr("text:style-name");   // fallback
+                    head_level = (st.find("Heading_20_2") != std::string::npos ||
+                                  st.find("Heading 2")    != std::string::npos) ? 2 : 1;
+                }
+                if (head_level < 1) head_level = 1;
+            }
+            else if (in_body && name == "/text:h") {
+                in_head = false;
+                found_heading = true;
+                std::string title = trim(head_text);
+                if (head_level <= 1) {
+                    ImportNode g;
+                    g.is_group = true; g.depth = 0;
+                    g.title = title.empty() ? "Chapter" : title;
+                    g.html  = "<p></p>";
+                    nodes.push_back(std::move(g));
+                    have_group = true;
+                    cur_scene  = -1;
+                } else {
+                    ImportNode s;
+                    s.is_group = false;
+                    s.depth    = have_group ? 1 : 0;
+                    s.title    = title.empty() ? "Scene" : title;
+                    s.html     = "";
+                    nodes.push_back(std::move(s));
+                    cur_scene  = (int)nodes.size() - 1;
+                }
+            }
+            else if (in_body && name == "text:p") {
+                in_para = true;
+                para_html.clear();
+                span_close.clear();
+                std::string st = attr("text:style-name");
+                para_italic = italic_styles.count(st) > 0;
+                para_bold   = bold_styles.count(st)   > 0;
+            }
+            else if (in_body && name == "/text:p") {
+                in_para = false;
+                if (cur_scene < 0) {           // prose before any scene heading
+                    ImportNode s;
+                    s.is_group = false;
+                    s.depth    = have_group ? 1 : 0;
+                    s.title    = "Scene";
+                    s.html     = "";
+                    nodes.push_back(std::move(s));
+                    cur_scene  = (int)nodes.size() - 1;
+                }
+                std::string open, close;
+                if (para_bold)   { open += "<b>"; close = "</b>" + close; }
+                if (para_italic) { open += "<i>"; close = "</i>" + close; }
+                nodes[(size_t)cur_scene].html += "<p>" + open + para_html + close + "</p>";
+            }
+            else if (in_body && in_para && name == "text:span") {
+                std::string st = attr("text:style-name");
+                std::string opened;
+                if (bold_styles.count(st))   { para_html += "<b>"; opened = "</b>" + opened; }
+                if (italic_styles.count(st)) { para_html += "<i>"; opened = "</i>" + opened; }
+                span_close.push_back(opened);
+            }
+            else if (in_body && in_para && name == "/text:span") {
+                if (!span_close.empty()) { para_html += span_close.back(); span_close.pop_back(); }
+            }
+            else if (in_body && in_para && name == "text:tab") {
+                para_html += " ";
+            }
+            else if (in_body && in_para && name == "text:line-break") {
+                para_html += " ";
+            }
+            else if (in_body && in_para && name == "text:s") {
+                int cnt = 1;
+                std::string cc = attr("text:c");
+                if (!cc.empty()) cnt = std::max(1, std::atoi(cc.c_str()));
+                for (int k = 0; k < cnt; ++k) para_html += " ";
+            }
+            ++i; continue;
+        }
+        if (in_tag) { tag += c; ++i; continue; }
+
+        if (in_body && (in_para || in_head)) {
+            if (c == '&') {
+                size_t semi = xml.find(';', i);
+                if (semi != std::string::npos && semi - i <= 8) {
+                    append_char_data(odt_decode_entity(xml.substr(i, semi - i + 1)));
+                    i = semi + 1;
+                    continue;
+                }
+            }
+            append_char_data(std::string(1, c));
+        }
+        ++i;
+    }
+
+    for (auto& nd : nodes)
+        if (!nd.is_group && nd.html.empty()) nd.html = "<p></p>";
+
+    return nodes;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parse_odt
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -749,6 +1016,17 @@ ImportResult Importer::parse_odt(const std::vector<uint8_t>& zip_bytes,
         return r;
     }
     std::string xml(reinterpret_cast<const char*>(xml_bytes.data()), xml_bytes.size());
+
+    // Structured path: chapters (outline 1) + scenes (outline 2) + italic/bold.
+    bool found_heading = false;
+    auto nodes = odt_to_nodes(xml, found_heading);
+    if (found_heading && !nodes.empty()) {
+        ImportResult r;
+        r.nodes = std::move(nodes);
+        return r;
+    }
+
+    // No headings → fall back to flat separator-split (same model as Markdown).
     std::string plain = odt_xml_to_plain(xml);
     return parse_txt(plain, s, opts);
 }

@@ -41,7 +41,7 @@ Editor::Editor(DocumentModel &model, FolioPrefs &prefs)
       m_multi_placeholder_box(Gtk::Orientation::VERTICAL, 16),
       m_footer(Gtk::Orientation::HORIZONTAL, 12), m_map_canvas(model, prefs),
       m_relationship_timeline(model, prefs),
-      m_cmm_canvas(prefs), m_ruler(prefs) {
+      m_cmm_canvas(model, prefs), m_ruler(prefs) {
   set_vexpand(true);
   set_hexpand(true);
 
@@ -530,6 +530,13 @@ void Editor::load_node(BinderNode *node) {
   // valid until the text view has been allocated and measured).
   double saved_scroll = node->scroll_value;
 
+  // Hide the text while we position it. The content is about to paint at the
+  // previous scroll offset and the timeout below then recentres it; revealing
+  // only after positioning turns that visible jump into a brief blank page
+  // rather than a flicker. Set AFTER all early-returns above, and cleared
+  // unconditionally in the timeout, so the view can never get stuck invisible.
+  m_text_view.set_opacity(0.0);
+
   // Allow notify::width reflows after layout settles.
   // Also restore the saved scroll position here — the vadjustment upper-bound
   // only becomes valid once the text view has been measured after layout.
@@ -572,8 +579,16 @@ void Editor::load_node(BinderNode *node) {
           LOG_DEBUG("load_node timeout: cursor placed at offset={}", off);
         }
 
-        // Restore scroll last — after font reflow and cursor placement.
-        if (saved_scroll > 0.0) {
+        // Position the view. Typewriter/focus mode pins the cursor at a fixed
+        // fraction of the viewport, so centre on the cursor directly —
+        // saved_scroll is a normal-mode reading position and in typewriter mode
+        // lands arbitrarily (often the document end). This used to happen as a
+        // side effect of the cursor select_range above firing mark_set; that
+        // path is now gated by m_loading, so do it explicitly here.
+        if (m_typewriter_mode || m_in_focus) {
+          scroll_to_cursor_center();
+          LOG_DEBUG("load_node timeout: typewriter centre on cursor");
+        } else if (saved_scroll > 0.0) {
           if (auto vadj = m_write_scroll.get_vadjustment()) {
             double upper = vadj->get_upper() - vadj->get_page_size();
             double target = std::min(saved_scroll, std::max(0.0, upper));
@@ -591,7 +606,17 @@ void Editor::load_node(BinderNode *node) {
         // first click then lands in an already-focused view: no reset, no
         // spurious "select to end" glob. Re-assert the caret on a short timeout
         // so it lands after GTK's focus-in reset whether that fires sync or async.
-        m_text_view.grab_focus();
+        // s88 — but NOT while an inline rename is in progress: a double-click
+        // both selects (→ this load) and opens the rename entry, and this grab
+        // would steal focus from the entry and snap it shut. The sidebar raises
+        // m_suppress_load_focus for the duration of the rename.
+        if (!m_suppress_load_focus)
+          m_text_view.grab_focus();
+
+        // Positioned — reveal. Unconditional: the view must never stay hidden,
+        // even if a positioning step bailed.
+        m_text_view.set_opacity(1.0);
+
         Glib::signal_timeout().connect_once(
             [this, saved_cursor, saved_scroll]() {
               if (!m_buffer) return;
@@ -601,7 +626,9 @@ void Editor::load_node(BinderNode *node) {
               m_loading = true;
               m_buffer->select_range(it, it);   // clear any focus-reset selection
               m_loading = false;
-              if (saved_scroll > 0.0) {
+              if (m_typewriter_mode || m_in_focus) {
+                scroll_to_cursor_center();
+              } else if (saved_scroll > 0.0) {
                 if (auto v = m_write_scroll.get_vadjustment()) {
                   double upper = v->get_upper() - v->get_page_size();
                   v->set_value(std::min(saved_scroll, std::max(0.0, upper)));
@@ -612,11 +639,10 @@ void Editor::load_node(BinderNode *node) {
       },
       100);
 
-  // In typewriter/focus mode scroll to cursor centre after layout settles,
-  // but only when there is no saved scroll position to restore.
-  if ((m_typewriter_mode || m_in_focus) && saved_scroll <= 0.0) {
-    queue_scroll_to_center();
-  }
+  // Typewriter/focus positioning is handled authoritatively by the load timeout
+  // above (it centres on the cursor once layout has settled). An early centre
+  // here would fire before the new content is measured and just add a visible
+  // pre-settle jump, so it is intentionally not done.
 }
 
 void Editor::load_empty() { load_node(nullptr); }
@@ -1055,6 +1081,15 @@ void Editor::toggle_typewriter_slider() {
 }
 
 void Editor::scroll_to_cursor_center() {
+  // Never recentre while the primary button is held. Any viewport shift between
+  // mouse-press and release makes GTK interpret the click as a drag and grab a
+  // spurious, arbitrary selection (and the caret appears to "bounce"). The call
+  // sites already gate on m_mouse_btn_held, but guarding here too closes every
+  // path — stale idles, direct calls, focus-driven recentres — so a plain click
+  // just places the caret and the view stays put. Typing (button not held) still
+  // recentres normally.
+  if (m_mouse_btn_held)
+    return;
   auto vadj = m_write_scroll.get_vadjustment();
   if (!vadj)
     return;

@@ -30,6 +30,9 @@ MapGlyph map_glyph_for(IidKind kind) {
         case IidKind::Character:  return MapGlyph::Circle;   // a person/agent
         case IidKind::Place:      return MapGlyph::Pin;      // a location
         case IidKind::Asset:      return MapGlyph::Thumb;    // an image / research binary
+        case IidKind::Thread:     return MapGlyph::Circle;   // s87 — a storyline (its own cluster
+
+                                                             //  + thread colour disambiguate; no 6th shape)
 
         case IidKind::Reference:                             // default until form known
         case IidKind::Group:

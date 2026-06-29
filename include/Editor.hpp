@@ -7,6 +7,7 @@
 #include <gtkmm.h>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "DocumentModel.hpp"
@@ -69,6 +70,10 @@ public:
   // ── Load content ──────────────────────────────────────────────────────────
   // Load any BinderNode — flushes current content first.
   void load_node(BinderNode* node);
+  // s88 — while true, load_node won't grab editor focus (the sidebar holds this
+  // during an inline rename so the open triggered by the same click doesn't
+  // steal focus from the rename entry).
+  void set_suppress_load_focus(bool b) { m_suppress_load_focus = b; }
   // Refresh the open surface's displayed title from the current node (no reload).
   // Used after an in-binder rename so the journal's own header / the editor's
   // title label track the new name without resetting caret or scroll.
@@ -294,6 +299,9 @@ private:
   // ── Loading guard ─────────────────────────────────────────────────────────
   bool m_loading        = false;
   bool m_loading_joined = false; // blocks on_text_changed debounce during load_joined
+  bool m_suppress_load_focus = false; // s88: held true by the sidebar during an
+                                      // inline rename so load_node won't steal
+                                      // focus from the rename entry
   // Tag-extension state — populated by signal_insert_text (before insert),
   // consumed on the next idle to re-apply format tags to the inserted chars.
   bool                                       m_extend_tags_pending = false;
@@ -818,6 +826,15 @@ private:
   // Board card factories
   Gtk::Widget *make_board_card_node(const std::vector<int> &path);
   Gtk::Widget *make_board_card(Section section, const std::vector<int> &path);
+
+  // s87 — board card left-edge colour accent (a wall of grey reads as one).
+  // Rule: the node's own color_idx if set -> else its dominant linked subject's
+  // colour (scenes) / its category hue (subjects) -> else neutral (no accent).
+  // m_board_subj_accent maps a scene iid -> the dominant linked subject's hex,
+  // recomputed once per show_board from the unified edge projection.
+  std::unordered_map<std::string, std::string> m_board_subj_accent;
+  std::string card_accent_hex(const BinderNode *node) const;
+  static void apply_card_accent(Gtk::Widget *card, const std::string &hex);
 
   // Status dot CSS class — returns string literal, never dangling
   static const char *status_css(NodeStatus s);

@@ -53,7 +53,6 @@ constexpr int TRACK_PAD     = 12;   // gap from the spine cards to the first tra
 constexpr int TRACK_H       = 26;   // track row height
 constexpr int TRACK_GAP     = 6;    // vertical gap between tracks
 constexpr int BAR_H         = 12;   // relief bar thickness
-constexpr int DOT_R         = 6;    // relief dot / bar-cap radius
 // s84 — the thread band (step 7): a display-only relief band below the subject
 // tracks. Its own header row + one TRACK_H row per authored thread.
 constexpr int THREAD_PAD     = 16;  // gap above the thread band
@@ -2658,8 +2657,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
       for (const auto& seg : rel.segments) {
         const bool target = seg_is_target(seg);
         if (seg.kind == ReliefSegment::Kind::Bar) {
-          const double bx = col_cx(seg.start_pos - 1) - KP_DIAMOND_R;
-          const double bw = (col_cx(seg.end_pos - 1) + KP_DIAMOND_R) - bx;
+          const double bx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;            // s87 edge-to-edge
+          const double bw = (col_cx(seg.end_pos - 1) + CARD_W / 2.0) - bx;
           rounded_rect(cr, bx, kcy - KP_BAR_H / 2.0, bw, KP_BAR_H, KP_BAR_H / 2.0);
           set_src(cr, hue, 0.95);
           cr->fill_preserve();
@@ -2751,8 +2750,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
       const Relief rel = compute_relief(m_spine_iids, *cl);
       for (const auto& seg : rel.segments) {
         if (seg.kind == ReliefSegment::Kind::Bar) {
-          const double bx = col_cx(seg.start_pos - 1) - DOT_R;
-          const double bw = (col_cx(seg.end_pos - 1) + DOT_R) - bx;
+          const double bx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;           // s87 edge-to-edge
+          const double bw = (col_cx(seg.end_pos - 1) + CARD_W / 2.0) - bx;
           rounded_rect(cr, bx, scy - BAR_H / 2.0, bw, BAR_H, BAR_H / 2.0);
           set_src(cr, hue, 0.45);
           cr->fill();
@@ -2857,8 +2856,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
     // bars (contiguous runs) and dots (singletons)
     for (const auto& seg : rel.segments) {
       if (seg.kind == ReliefSegment::Kind::Bar) {
-        const double bx = col_cx(seg.start_pos - 1) - DOT_R;
-        const double bw = (col_cx(seg.end_pos - 1) + DOT_R) - bx;
+        const double bx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;             // s87 edge-to-edge
+        const double bw = (col_cx(seg.end_pos - 1) + CARD_W / 2.0) - bx;
         rounded_rect(cr, bx, cy - BAR_H / 2.0, bw, BAR_H, BAR_H / 2.0);
         set_src(cr, hue, a_bar);
         cr->fill();
@@ -2925,8 +2924,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
       // bars (contiguous blocks) and single-scene pills (a lone beat of a thread)
       for (const auto& seg : rel.segments) {
         if (seg.kind == ReliefSegment::Kind::Bar) {
-          const double bx = col_cx(seg.start_pos - 1) - DOT_R;
-          const double bw = (col_cx(seg.end_pos - 1) + DOT_R) - bx;
+          const double bx = col_cx(seg.start_pos - 1) - CARD_W / 2.0;           // s87 edge-to-edge
+          const double bw = (col_cx(seg.end_pos - 1) + CARD_W / 2.0) - bx;
           rounded_rect(cr, bx, cy - BAR_H / 2.0, bw, BAR_H, BAR_H / 2.0);
           set_src(cr, hue, 0.90);
           cr->fill();
@@ -2952,8 +2951,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
       Gdk::RGBA hue; hue.set(subject_hex(m_tracks[static_cast<std::size_t>(m_sweep_track)].color_idx, m_tracks[static_cast<std::size_t>(m_sweep_track)].category));
       const double cy = ttop + static_cast<double>(m_sweep_track) * (TRACK_H + TRACK_GAP)
                         + TRACK_H / 2.0;
-      const double px = col_cx(lo - 1) - DOT_R;
-      const double pw = (col_cx(hi - 1) + DOT_R) - px;
+      const double px = col_cx(lo - 1) - CARD_W / 2.0;            // s87 edge-to-edge
+      const double pw = (col_cx(hi - 1) + CARD_W / 2.0) - px;
       const double ph = BAR_H + 6.0;
       rounded_rect(cr, px, cy - ph / 2.0, pw, ph, ph / 2.0);
       if (unlink) {
@@ -2989,8 +2988,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
     if (sr.valid) {
       Gdk::RGBA hue; hue.set(armed_hue());
       const double cy = staging_top() + STAGE_H / 2.0;
-      const double px = col_cx(lo - 1) - DOT_R;
-      const double pw = (col_cx(hi - 1) + DOT_R) - px;
+      const double px = col_cx(lo - 1) - CARD_W / 2.0;            // s87 edge-to-edge
+      const double pw = (col_cx(hi - 1) + CARD_W / 2.0) - px;
       const double ph = BAR_H + 6.0;
       rounded_rect(cr, px, cy - ph / 2.0, pw, ph, ph / 2.0);
       if (unlink) {
@@ -3027,8 +3026,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
       const double cy = thread_rows_top()
                       + static_cast<double>(m_sweep_band_thread) * (TRACK_H + TRACK_GAP)
                       + TRACK_H / 2.0;
-      const double px = col_cx(sr.lo - 1) - DOT_R;
-      const double pw = (col_cx(sr.hi - 1) + DOT_R) - px;
+      const double px = col_cx(sr.lo - 1) - CARD_W / 2.0;         // s87 edge-to-edge
+      const double pw = (col_cx(sr.hi - 1) + CARD_W / 2.0) - px;
       const double ph = BAR_H + 6.0;
       rounded_rect(cr, px, cy - ph / 2.0, pw, ph, ph / 2.0);
       if (sr.remove) {
@@ -3053,8 +3052,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
     if (sr.valid) {
       Gdk::RGBA hue; hue.set(kp_hex(ln.color_idx));
       const double cy = kp_top() + KP_H / 2.0;
-      const double px = col_cx(sr.lo - 1) - DOT_R;
-      const double pw = (col_cx(sr.hi - 1) + DOT_R) - px;
+      const double px = col_cx(sr.lo - 1) - CARD_W / 2.0;         // s87 edge-to-edge
+      const double pw = (col_cx(sr.hi - 1) + CARD_W / 2.0) - px;
       const double ph = BAR_H + 6.0;
       rounded_rect(cr, px, cy - ph / 2.0, pw, ph, ph / 2.0);
       if (sr.remove) {

@@ -137,6 +137,7 @@ private:
   void action_save_report();
   void action_split_node(Section section, const std::vector<int>& path);
   void action_combine_nodes(Section section, std::vector<std::vector<int>> paths);
+  void action_convert_node_kind(Section section, const std::vector<int>& path); // s89
   std::unique_ptr<PreferencesDialog> m_prefs_dialog;
   std::vector<std::string> m_tag_ids_before_prefs;  // s81: KP swatch-id order snapshot for remap
   std::unique_ptr<SnapshotDialog>    m_snapshot_dialog;

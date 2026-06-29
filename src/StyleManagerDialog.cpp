@@ -5,7 +5,11 @@
 #include "StyleManagerDialog.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <memory>
 #include <pangomm.h>
+
+#include "RulerUnits.hpp"
 
 namespace Folio {
 
@@ -17,6 +21,18 @@ StyleManagerDialog::StyleManagerDialog(Gtk::Window &parent, FolioPrefs &prefs)
   set_default_size(700, 640);
   set_resizable(true);
   add_css_class("folio-style-manager");
+  // Group existing styles into Paragraph/Character sections. If this reorders
+  // the (shared) vector, the editor dropdown — which maps index → style — is now
+  // stale; flush a rebuild when the dialog closes.
+  if (regroup_styles())
+    m_styles_dirty = true;
+  signal_close_request().connect(
+      [this]() -> bool {
+        if (m_styles_dirty)
+          notify_styles_changed();
+        return false;
+      },
+      false);
   build_ui();
   rebuild_style_list();
   if (!m_prefs.text_styles.empty())
@@ -43,6 +59,59 @@ void StyleManagerDialog::build_ui() {
 
   m_style_list.add_css_class("style-manager-listbox");
   m_style_list.set_selection_mode(Gtk::SelectionMode::SINGLE);
+
+  // Section headers: "Paragraph styles" / "Character styles". The vector is kept
+  // grouped by kind (regroup_styles), so a header is drawn before the first row
+  // and wherever the kind changes.
+  m_style_list.set_header_func(
+      [this](Gtk::ListBoxRow *row, Gtk::ListBoxRow *before) {
+        int i = row->get_index();
+        if (i < 0 || i >= (int)m_prefs.text_styles.size()) {
+          gtk_list_box_row_set_header(row->gobj(), nullptr);
+          return;
+        }
+        const std::string &kind = m_prefs.text_styles[(size_t)i].kind;
+        bool need = (before == nullptr);
+        if (!need) {
+          int bi = before->get_index();
+          if (bi < 0 || bi >= (int)m_prefs.text_styles.size() ||
+              m_prefs.text_styles[(size_t)bi].kind != kind)
+            need = true;
+        }
+        if (need) {
+          auto *hdr = Gtk::make_managed<Gtk::Label>(
+              kind == "paragraph" ? "Paragraph styles" : "Character styles");
+          hdr->set_xalign(0.0f);
+          hdr->add_css_class("style-section-header");
+          hdr->set_margin_start(12);
+          hdr->set_margin_top(8);
+          hdr->set_margin_bottom(2);
+          row->set_header(*hdr);
+        } else {
+          gtk_list_box_row_set_header(row->gobj(), nullptr);
+        }
+      });
+
+  // Section-header + drag/drop feedback styling (registered once for the
+  // display). Drop indicator is an inset top/bottom rule; the dragged row dims.
+  if (!m_dnd_css) {
+    m_dnd_css = Gtk::CssProvider::create();
+    try {
+      m_dnd_css->load_from_data(
+          ".style-section-header{font-weight:700;opacity:0.55;font-size:0.82em;"
+          "letter-spacing:0.04em;}"
+          ".style-row-grip{opacity:0.38;padding:0 2px;font-size:13px;}"
+          ".style-row-grip:hover{opacity:0.8;}"
+          ".style-row-dragging{opacity:0.4;}"
+          ".style-row-drop-before{box-shadow:inset 0 2px 0 0 #4a90d9;}"
+          ".style-row-drop-after{box-shadow:inset 0 -2px 0 0 #4a90d9;}");
+    } catch (...) {
+    }
+    if (auto disp = Gdk::Display::get_default())
+      Gtk::StyleContext::add_provider_for_display(
+          disp, m_dnd_css, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+  }
+
   m_style_list.signal_row_selected().connect([this](Gtk::ListBoxRow *row) {
     if (!row)
       return;
@@ -69,15 +138,20 @@ void StyleManagerDialog::build_ui() {
     TextStyle ts;
     ts.kind = "paragraph";
     ts.name = "Paragraph " + std::to_string(m_prefs.text_styles.size() + 1);
-    m_prefs.text_styles.push_back(ts);
+    // Insert at the end of the paragraph group so the vector stays grouped
+    // (paragraphs first, characters after).
+    int nPara = 0;
+    for (const auto &s : m_prefs.text_styles)
+      if (s.kind == "paragraph")
+        ++nPara;
+    m_prefs.text_styles.insert(m_prefs.text_styles.begin() + nPara, ts);
     try {
       m_prefs.save();
     } catch (...) {
     }
     rebuild_style_list();
-    select_row((int)m_prefs.text_styles.size() - 1);
-    if (on_styles_changed)
-      on_styles_changed();
+    select_row(nPara);
+    notify_styles_changed();
   });
 
   m_btn_add_char.set_label("+ Character");
@@ -95,8 +169,7 @@ void StyleManagerDialog::build_ui() {
     }
     rebuild_style_list();
     select_row((int)m_prefs.text_styles.size() - 1);
-    if (on_styles_changed)
-      on_styles_changed();
+    notify_styles_changed();
   });
 
   m_btn_delete.set_icon_name("user-trash-symbolic");
@@ -117,8 +190,7 @@ void StyleManagerDialog::build_ui() {
       select_row(new_sel);
     else
       m_editor_stack.set_visible_child("empty");
-    if (on_styles_changed)
-      on_styles_changed();
+    notify_styles_changed();
   });
 
   auto *add_box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
@@ -138,14 +210,14 @@ void StyleManagerDialog::build_ui() {
   m_btn_reset.set_tooltip_text("Replace all styles with the built-in defaults");
   m_btn_reset.signal_clicked().connect([this]() {
     m_prefs.text_styles = m_prefs.default_styles();
+    regroup_styles();
     try { m_prefs.save(); } catch (...) {}
     m_selected_idx = -1;
     rebuild_style_list();
     m_editor_stack.set_visible_child("empty");
     if (!m_prefs.text_styles.empty())
       select_row(0);
-    if (on_styles_changed)
-      on_styles_changed();
+    notify_styles_changed();
   });
   m_left_panel.append(m_btn_reset);
 
@@ -440,6 +512,80 @@ void StyleManagerDialog::build_ui() {
   m_lh_row->append(*lh_hint);
   m_editor_pane.append(*m_lh_row);
 
+  // Space above (paragraph only) — s88
+  m_space_above_spin = Gtk::make_managed<Gtk::SpinButton>();
+  m_space_above_spin->set_adjustment(Gtk::Adjustment::create(0, 0, 144, 1, 6));
+  m_space_above_spin->set_digits(0);
+  m_space_above_spin->set_numeric(true);
+  m_space_above_spin->set_width_chars(4);
+  m_space_above_spin->set_tooltip_text("Extra space above the paragraph, in pt");
+  m_space_above_spin->signal_value_changed().connect([this]() {
+    if (!m_inhibit)
+      update_preview();
+  });
+  m_space_above_row = make_hrow();
+  m_space_above_row->append(*make_lbl("Space above"));
+  m_space_above_row->append(*m_space_above_spin);
+  {
+    auto *u = Gtk::make_managed<Gtk::Label>("pt");
+    u->add_css_class("stat-label");
+    m_space_above_row->append(*u);
+  }
+  m_editor_pane.append(*m_space_above_row);
+
+  // Space below (paragraph only) — s88
+  m_space_below_spin = Gtk::make_managed<Gtk::SpinButton>();
+  m_space_below_spin->set_adjustment(Gtk::Adjustment::create(0, 0, 144, 1, 6));
+  m_space_below_spin->set_digits(0);
+  m_space_below_spin->set_numeric(true);
+  m_space_below_spin->set_width_chars(4);
+  m_space_below_spin->set_tooltip_text("Extra space below the paragraph, in pt");
+  m_space_below_spin->signal_value_changed().connect([this]() {
+    if (!m_inhibit)
+      update_preview();
+  });
+  m_space_below_row = make_hrow();
+  m_space_below_row->append(*make_lbl("Space below"));
+  m_space_below_row->append(*m_space_below_spin);
+  {
+    auto *u = Gtk::make_managed<Gtk::Label>("pt");
+    u->add_css_class("stat-label");
+    m_space_below_row->append(*u);
+  }
+  m_editor_pane.append(*m_space_below_row);
+
+  // First-line indent (paragraph only, tri-state) — s88
+  m_indent_spin = Gtk::make_managed<Gtk::SpinButton>();
+  m_indent_spin->set_adjustment(Gtk::Adjustment::create(0, 0, 144, 1, 6));
+  m_indent_spin->set_digits(0);
+  m_indent_spin->set_numeric(true);
+  m_indent_spin->set_width_chars(4);
+  m_indent_spin->set_tooltip_text(
+      "First-line indent, in pt  (0 = none). Used when 'Inherit global' is off");
+  m_indent_spin->signal_value_changed().connect([this]() {
+    if (!m_inhibit)
+      update_preview();
+  });
+  m_indent_inherit.set_label("Inherit global");
+  m_indent_inherit.set_tooltip_text(
+      "Use the global first-line indent preference for this style");
+  m_indent_inherit.signal_toggled().connect([this]() {
+    if (m_indent_spin)
+      m_indent_spin->set_sensitive(!m_indent_inherit.get_active());
+    if (!m_inhibit)
+      update_preview();
+  });
+  m_indent_row = make_hrow();
+  m_indent_row->append(*make_lbl("First-line indent"));
+  m_indent_row->append(m_indent_inherit);
+  m_indent_row->append(*m_indent_spin);
+  {
+    auto *u = Gtk::make_managed<Gtk::Label>("pt");
+    u->add_css_class("stat-label");
+    m_indent_row->append(*u);
+  }
+  m_editor_pane.append(*m_indent_row);
+
   // Preview
   m_editor_pane.append(
       *Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL));
@@ -476,11 +622,68 @@ void StyleManagerDialog::build_ui() {
 void StyleManagerDialog::rebuild_style_list() {
   while (auto *row = m_style_list.get_row_at_index(0))
     m_style_list.remove(*row);
-  for (const auto &ts : m_prefs.text_styles)
-    m_style_list.append(*make_style_row(ts));
+  for (int i = 0; i < (int)m_prefs.text_styles.size(); ++i)
+    m_style_list.append(*make_style_row(m_prefs.text_styles[(size_t)i], i));
 }
 
-Gtk::ListBoxRow *StyleManagerDialog::make_style_row(const TextStyle &s) {
+bool StyleManagerDialog::regroup_styles() {
+  // Detect interleaving: a paragraph style appearing after any character style
+  // means the vector is not grouped. Stable-partition only if needed so the
+  // common (already-grouped) case is a no-op and never flags the editor stale.
+  bool seen_char = false, needs = false;
+  for (const auto &s : m_prefs.text_styles) {
+    if (s.kind == "character")
+      seen_char = true;
+    else if (seen_char) {
+      needs = true;
+      break;
+    }
+  }
+  if (needs)
+    std::stable_partition(
+        m_prefs.text_styles.begin(), m_prefs.text_styles.end(),
+        [](const TextStyle &s) { return s.kind == "paragraph"; });
+  return needs;
+}
+
+void StyleManagerDialog::notify_styles_changed() {
+  m_styles_dirty = false;
+  if (on_styles_changed)
+    on_styles_changed();
+}
+
+void StyleManagerDialog::reorder_style(int src, int dst, bool after) {
+  int n = (int)m_prefs.text_styles.size();
+  if (src < 0 || src >= n || dst < 0 || dst >= n)
+    return;
+  // Same-section only — never let a paragraph land among character styles.
+  if (m_prefs.text_styles[(size_t)src].kind !=
+      m_prefs.text_styles[(size_t)dst].kind)
+    return;
+  int target = after ? dst + 1 : dst; // desired slot in current indexing
+  if (src == target || (after && src == dst))
+    return;
+  TextStyle moved = m_prefs.text_styles[(size_t)src];
+  m_prefs.text_styles.erase(m_prefs.text_styles.begin() + src);
+  if (src < target)
+    --target; // erase shifted everything after src down by one
+  if (target < 0)
+    target = 0;
+  if (target > (int)m_prefs.text_styles.size())
+    target = (int)m_prefs.text_styles.size();
+  m_prefs.text_styles.insert(m_prefs.text_styles.begin() + target, moved);
+  // A same-kind move within a grouped vector can't break grouping.
+  try {
+    m_prefs.save();
+  } catch (...) {
+  }
+  rebuild_style_list();
+  select_row(target);
+  notify_styles_changed();
+}
+
+Gtk::ListBoxRow *StyleManagerDialog::make_style_row(const TextStyle &s,
+                                                    int idx) {
   auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
   auto *box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
   box->set_margin_top(6);
@@ -498,7 +701,91 @@ Gtk::ListBoxRow *StyleManagerDialog::make_style_row(const TextStyle &s) {
   name_lbl->set_hexpand(true);
   name_lbl->set_xalign(0.0f);
   box->append(*name_lbl);
+  // Drag-handle affordance (house standard: ☰ grip). The whole row is the drag
+  // source, so grabbing the grip reorders too; it just signals the capability.
+  auto *grip = Gtk::make_managed<Gtk::Label>("\u2630");
+  grip->add_css_class("style-row-grip");
+  grip->set_tooltip_text("Drag to reorder within its section");
+  box->append(*grip);
   row->set_child(*box);
+
+  // ── Drag-and-drop reordering (within the same section) ─────────────────
+  // The dragged style carries its current index as an int. Drops are accepted
+  // only onto rows of the same kind, so paragraph and character styles stay in
+  // their own sections. A click still selects (GTK separates click from drag).
+  auto alive = std::make_shared<bool>(true);
+  row->signal_destroy().connect([alive] { *alive = false; });
+
+  auto src = Gtk::DragSource::create();
+  src->set_actions(Gdk::DragAction::MOVE);
+  src->signal_prepare().connect(
+      [this, idx](double, double) -> Glib::RefPtr<Gdk::ContentProvider> {
+        m_drag_src_idx = idx;
+        Glib::Value<int> v;
+        v.init(G_TYPE_INT);
+        v.set(idx);
+        return Gdk::ContentProvider::create(v);
+      },
+      false);
+  src->signal_drag_begin().connect(
+      [row, alive](const Glib::RefPtr<Gdk::Drag> &) {
+        if (*alive)
+          row->add_css_class("style-row-dragging");
+      },
+      false);
+  src->signal_drag_end().connect(
+      [this, row, alive](const Glib::RefPtr<Gdk::Drag> &, bool) {
+        m_drag_src_idx = -1;
+        if (*alive)
+          row->remove_css_class("style-row-dragging");
+      },
+      false);
+  row->add_controller(src);
+
+  auto dst = Gtk::DropTarget::create(G_TYPE_INT, Gdk::DragAction::MOVE);
+  auto clear_hl = [row, alive] {
+    if (!*alive)
+      return;
+    row->remove_css_class("style-row-drop-before");
+    row->remove_css_class("style-row-drop-after");
+  };
+  dst->signal_motion().connect(
+      [this, idx, row, alive, clear_hl](double, double y) -> Gdk::DragAction {
+        if (!*alive)
+          return Gdk::DragAction{};
+        // Same-section only: reject if the dragged style's kind differs.
+        if (m_drag_src_idx < 0 ||
+            m_drag_src_idx >= (int)m_prefs.text_styles.size() ||
+            idx >= (int)m_prefs.text_styles.size() ||
+            m_prefs.text_styles[(size_t)m_drag_src_idx].kind !=
+                m_prefs.text_styles[(size_t)idx].kind ||
+            m_drag_src_idx == idx)
+          return Gdk::DragAction{};
+        bool after = (y > row->get_height() * 0.5);
+        clear_hl();
+        row->add_css_class(after ? "style-row-drop-after"
+                                 : "style-row-drop-before");
+        return Gdk::DragAction::MOVE;
+      },
+      false);
+  dst->signal_leave().connect([clear_hl] { clear_hl(); }, false);
+  dst->signal_drop().connect(
+      [this, idx, row, alive, clear_hl](const Glib::ValueBase &value, double,
+                                        double y) -> bool {
+        if (!*alive)
+          return false;
+        clear_hl();
+        const GValue *gv = value.gobj();
+        if (!gv || !G_VALUE_HOLDS_INT(gv))
+          return false;
+        int src_idx = g_value_get_int(gv);
+        bool after = (y > row->get_height() * 0.5);
+        reorder_style(src_idx, idx, after);
+        return true;
+      },
+      false);
+  row->add_controller(dst);
+
   return row;
 }
 
@@ -538,6 +825,12 @@ void StyleManagerDialog::load_style_to_editor(int idx) {
     m_just_row->set_visible(is_para);
   if (m_lh_row)
     m_lh_row->set_visible(is_para);
+  if (m_space_above_row)
+    m_space_above_row->set_visible(is_para);
+  if (m_space_below_row)
+    m_space_below_row->set_visible(is_para);
+  if (m_indent_row)
+    m_indent_row->set_visible(is_para);
   if (is_para) {
     if (ts.justification == "center")
       m_just_center.set_active(true);
@@ -550,6 +843,24 @@ void StyleManagerDialog::load_style_to_editor(int idx) {
   }
   if (m_lh_spin)
     m_lh_spin->set_value(ts.line_height);
+
+  // Paragraph spacing + first-line indent (s88). Stored in px (GTK's native
+  // spacing unit); shown/edited in pt for consistency with font size + ruler.
+  if (m_space_above_spin)
+    m_space_above_spin->set_value(
+        std::round(RulerUnits::px_to_pt(ts.space_above_px)));
+  if (m_space_below_spin)
+    m_space_below_spin->set_value(
+        std::round(RulerUnits::px_to_pt(ts.space_below_px)));
+  {
+    bool inherit = (ts.first_line_indent_px < 0);
+    m_indent_inherit.set_active(inherit);
+    if (m_indent_spin) {
+      m_indent_spin->set_value(
+          inherit ? 0 : std::round(RulerUnits::px_to_pt(ts.first_line_indent_px)));
+      m_indent_spin->set_sensitive(!inherit);
+    }
+  }
 
   // Text colour
   m_fg_transparent = (ts.fg_color == "transparent");
@@ -612,9 +923,26 @@ void StyleManagerDialog::save_editor_to_style() {
     else
       ts.justification = "left";
     ts.line_height = m_lh_spin ? m_lh_spin->get_value() : 0.0;
+    ts.space_above_px =
+        m_space_above_spin
+            ? (int)std::lround(RulerUnits::pt_to_px(m_space_above_spin->get_value()))
+            : 0;
+    ts.space_below_px =
+        m_space_below_spin
+            ? (int)std::lround(RulerUnits::pt_to_px(m_space_below_spin->get_value()))
+            : 0;
+    ts.first_line_indent_px =
+        m_indent_inherit.get_active()
+            ? -1
+            : (m_indent_spin
+                   ? (int)std::lround(RulerUnits::pt_to_px(m_indent_spin->get_value()))
+                   : 0);
   } else {
     ts.justification = "";
     ts.line_height = 0.0;
+    ts.space_above_px = 0;
+    ts.space_below_px = 0;
+    ts.first_line_indent_px = -1;
   }
 
   if (m_fg_set && m_color_btn) {
@@ -651,8 +979,7 @@ void StyleManagerDialog::save_editor_to_style() {
   }
   rebuild_style_list();
   select_row(m_selected_idx);
-  if (on_styles_changed)
-    on_styles_changed();
+  notify_styles_changed();
 }
 
 void StyleManagerDialog::update_preview() {

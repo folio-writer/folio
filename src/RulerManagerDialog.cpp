@@ -435,6 +435,7 @@ void RulerManagerDialog::rebuild_tab_list() {
 
         auto* del = Gtk::make_managed<Gtk::Button>();
         del->set_icon_name("list-remove-symbolic");
+        del->set_tooltip_text("Remove this ruler");
         del->add_css_class("flat");
 
         spin->signal_value_changed().connect([this, spin, i]() {

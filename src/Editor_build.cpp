@@ -169,6 +169,7 @@ void Editor::build_font_controls() {
               if (!m_mouse_btn_held) {
                 update_font_controls_from_selection();
                 update_writing_mode_dd();
+                sync_ruler();
               }
             });
           }
@@ -183,6 +184,7 @@ void Editor::build_font_controls() {
         // positions and leaving a spurious selection.
         if (mark == m_buffer->get_insert()) {
           if ((m_typewriter_mode || m_in_focus) && !m_mouse_btn_held &&
+              !m_loading &&
               !(m_format_popover && m_format_popover->get_visible())) {
             queue_scroll_to_center();
           }
@@ -193,12 +195,57 @@ void Editor::build_font_controls() {
       });
 
   // signal_changed fires on every text insertion/deletion — mark_set does NOT
-  // fire when typing, so we need both signals for typewriter mode.
+  // fire when typing, so we need both signals for typewriter mode. Skip while
+  // m_loading: filling the buffer on a scene change must not queue a recentre,
+  // or the view paints, snaps to the cursor, then jumps again to the restored
+  // scroll — the "flash then settle" on every scene click. The load path does
+  // its own positioning (explicit centre / saved-scroll restore).
   m_buffer->signal_changed().connect([this]() {
-    if ((m_typewriter_mode || m_in_focus) &&
+    if ((m_typewriter_mode || m_in_focus) && !m_loading &&
         !(m_format_popover && m_format_popover->get_visible()))
       queue_scroll_to_center();
   });
+
+  // s88 — re-stamp the base font onto every freshly typed run. GtkTextTags are
+  // anchored to existing characters, so text inserted at the very start/end of a
+  // scene (no neighbouring char to inherit the tag from) lands OUTSIDE the
+  // base-font span — letting the cursor "walk past the format" and showing the
+  // CSS fallback font for that run. Stamping the base tag over each inserted
+  // range closes the gap so the body font covers all text, boundaries included.
+  // base_font is display-only (never serialized; re-stamped wholesale on load),
+  // so this is purely cosmetic for the live session.
+  //
+  // The apply_tag is DEFERRED to idle, not done inline: mutating the buffer
+  // synchronously inside the insert signal runs mid-IM-commit, which under
+  // Wayland trips GtkIMContextWayland's "notify_surrounding_text: code should
+  // not be reached" warning and can disturb composition (CJK/dead keys). Idle is
+  // the same pattern the character-tag extender in Editor.cpp uses. We capture
+  // OFFSETS (iterators would be invalidated) and re-clamp before applying.
+  m_buffer->signal_insert().connect(
+      [this](const Gtk::TextBuffer::iterator &pos, const Glib::ustring &text,
+             int /*bytes*/) {
+        if (m_loading || !m_tag_base_font)
+          return;
+        const int end_off = pos.get_offset(); // after=true → end of new text
+        const int len     = static_cast<int>(text.length());
+        if (len <= 0)
+          return;
+        Glib::signal_idle().connect_once([this, end_off, len]() {
+          if (!m_buffer || !m_tag_base_font)
+            return;
+          const int buf = m_buffer->get_char_count();
+          const int e   = std::min(end_off, buf);
+          const int s   = std::max(0, e - len);
+          if (s >= e)
+            return;
+          auto si = m_buffer->get_iter_at_offset(s);
+          auto ei = m_buffer->get_iter_at_offset(e);
+          m_loading = true; // suppress the apply_tag → on_text_changed cascade
+          m_buffer->apply_tag(m_tag_base_font, si, ei);
+          m_loading = false;
+        });
+      },
+      /* after = */ true);
 
   apply_editor_font();
 
@@ -1900,6 +1947,23 @@ void Editor::build_editor_area() {
         }
       }
     }
+
+    // A plain click moves the caret, but the mark_set that fired during the
+    // press was gated out (the button was still held), so the toolbar and ruler
+    // never refreshed for click-driven cursor moves. Re-sync now on idle — after
+    // GTK's own click and focus-scroll handling — so the style dropdown, font
+    // controls and indent ruler reflect the clicked-to paragraph.
+    if (!m_font_update_pending) {
+      m_font_update_pending = true;
+      Glib::signal_idle().connect_once([this]() {
+        m_font_update_pending = false;
+        if (!m_mouse_btn_held) {
+          update_font_controls_from_selection();
+          update_writing_mode_dd();
+          sync_ruler();
+        }
+      });
+    }
   });
   left_click->signal_cancel().connect(
       [this](Gdk::EventSequence *) { m_mouse_btn_held = false; });
@@ -2578,7 +2642,7 @@ void Editor::build_editor_area() {
         }
         Folio::ImageImporter imp(m_model.current_path,
                                  Folio::normalize_policy_from_prefs(m_prefs));
-        const Folio::ImportResult r = imp.import_file(
+        const Folio::ImageImportResult r = imp.import_file(
             path, m_model.image_pool(), m_prefs.gallery_default_detail_tier);
         out.ok = r.ok;
         out.iid = r.iid;
@@ -2598,7 +2662,7 @@ void Editor::build_editor_area() {
         }
         Folio::ImageImporter imp(m_model.current_path,
                                  Folio::normalize_policy_from_prefs(m_prefs));
-        const Folio::ImportResult r = imp.import_bytes(
+        const Folio::ImageImportResult r = imp.import_bytes(
             data, m_model.image_pool(), caption,
             m_prefs.gallery_default_detail_tier);
         out.ok = r.ok;

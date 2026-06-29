@@ -53,6 +53,9 @@ public:
     // Fired when user requests combine from binder multi-select context menu.
     // Paths are in document order.
     using CombineNodesCallback   = std::function<void(Section, std::vector<std::vector<int>>)>;
+    // s89 — request a Scene↔Group conversion for a Manuscript node (the host
+    // flips the kind in place, rebuilds the sidebar, and refreshes the lens).
+    using ConvertNodeCallback    = std::function<void(Section, std::vector<int>)>;
     // Fired when user escalates sidebar filter to global search dialog.
     using GlobalSearchCallback   = std::function<void(const std::string& query)>;
     // s38 — request the schema builder for a Template binder node (by iid).
@@ -67,6 +70,10 @@ public:
 
     void set_node_selected_callback(NodeSelectedCallback cb)   { m_on_selected   = std::move(cb); }
     void set_node_renamed_callback(NodeRenamedCallback cb)     { m_on_renamed    = std::move(cb); }
+    // s88 — fired when an inline rename starts/ends, so the host can stop the
+    // editor stealing focus from the rename entry while it's open.
+    void set_rename_begin_callback(std::function<void()> cb)   { m_on_rename_begin = std::move(cb); }
+    void set_rename_end_callback(std::function<void()> cb)     { m_on_rename_end   = std::move(cb); }
     void set_node_opened_callback(NodeOpenedCallback cb)       { m_on_opened     = std::move(cb); }
     void set_edit_template_callback(EditTemplateCallback cb)   { m_on_edit_template = std::move(cb); }
     void set_before_remove_callback(BeforeRemoveCallback cb)   { m_on_before_remove = std::move(cb); }
@@ -92,6 +99,7 @@ public:
     void set_nodes_moved_callback(NodesMovedCallback cb)       { m_on_nodes_moved = std::move(cb); }
     void set_split_node_callback(SplitNodeCallback cb)         { m_on_split_node  = std::move(cb); }
     void set_combine_nodes_callback(CombineNodesCallback cb)   { m_on_combine     = std::move(cb); }
+    void set_convert_node_callback(ConvertNodeCallback cb)     { m_on_convert_node = std::move(cb); }
     void set_global_search_callback(GlobalSearchCallback cb)   { m_on_global_search = std::move(cb); }
 
     void rebuild();
@@ -224,6 +232,7 @@ private:
         Gtk::Revealer*   revealer = nullptr;
         Gtk::Label*      arrow    = nullptr;
         bool             expanded = true;
+        std::string      iid;          // s89 — stable key for collapse persistence
     };
     std::vector<CollapseEntry> m_collapse_entries;
     void toggle_node(int idx);
@@ -233,6 +242,8 @@ private:
         Section          section;
         std::vector<int> path;
         Gtk::Widget*     row = nullptr;
+        Gtk::Label*      title_lbl = nullptr;  // in-place rename: the title widget
+        Gtk::Box*        title_box = nullptr;  // its parent box (where we swap an entry in)
     };
     std::vector<RowEntry> m_row_entries;
 
@@ -320,6 +331,8 @@ private:
     // ── Callbacks ─────────────────────────────────────────────────────────────
     NodeSelectedCallback   m_on_selected;
     NodeRenamedCallback    m_on_renamed;
+    std::function<void()>  m_on_rename_begin;
+    std::function<void()>  m_on_rename_end;
     NodeOpenedCallback     m_on_opened;
     BeforeRemoveCallback   m_on_before_remove;
     EditTemplateCallback   m_on_edit_template;   // s38
@@ -327,6 +340,7 @@ private:
     NodesMovedCallback     m_on_nodes_moved;
     SplitNodeCallback      m_on_split_node;
     CombineNodesCallback   m_on_combine;
+    ConvertNodeCallback    m_on_convert_node;   // s89
     GlobalSearchCallback   m_on_global_search;
     bool                   m_allow_cross_category = false;
 

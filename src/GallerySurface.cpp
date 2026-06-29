@@ -506,7 +506,7 @@ void GallerySurface::import_files(const std::vector<std::string>& paths) {
   std::vector<std::string> lowres;     // §13b — imported, but below the chosen detail
   for (const std::string& path : paths) {
     if (path.empty()) continue;
-    ImportResult r = imp.import_file(path, m_model->image_pool(), tier);
+    ImageImportResult r = imp.import_file(path, m_model->image_pool(), tier);
     if (r.ok) {
       m_order.push_back(r.iid);
       ++ok;
@@ -531,7 +531,7 @@ void GallerySurface::import_bytes_blob(const std::string& data) {
     return;
   }
   ImageImporter imp(m_model->current_path, normalize_policy_from_prefs(*m_prefs));
-  ImportResult r = imp.import_bytes(data, m_model->image_pool(), std::string{},
+  ImageImportResult r = imp.import_bytes(data, m_model->image_pool(), std::string{},
                                     m_prefs->gallery_default_detail_tier);
   if (r.ok) {
     m_order.push_back(r.iid);

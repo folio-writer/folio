@@ -15,17 +15,8 @@
 
 namespace Folio {
 
-// s19: which iid kind a binder node mints under.
-static IidKind iid_kind_for(BinderKind k) {
-    switch (k) {
-        case BinderKind::Group:     return IidKind::Group;
-        case BinderKind::Character: return IidKind::Character;
-        case BinderKind::Place:     return IidKind::Place;
-        case BinderKind::Reference: return IidKind::Reference;
-        case BinderKind::Template:  return IidKind::Template;
-        default:                    return IidKind::Scene;
-    }
-}
+// s19: iid_kind_for(BinderKind) is now an inline helper in DocumentModel.hpp
+// (reused by the Map lens to resolve a node's CURRENT role; see s89).
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Timestamp helper
@@ -150,6 +141,8 @@ json BinderNode::to_json() const {
         j["cursor_offset"] = cursor_offset;
     if (scroll_value > 0.0)
         j["scroll_value"]  = scroll_value;
+    if (collapsed)
+        j["collapsed"] = true;   // s89 — sparse: only groups the user folded
 
     json snap_arr = json::array();
     for (const auto& s : snapshots) snap_arr.push_back(s.to_json());
@@ -231,6 +224,7 @@ void BinderNode::from_json(const json& j) {
     trash_origin_path_str = j.value("trash_origin_path_str", "");
     cursor_offset = j.value("cursor_offset", 0);
     scroll_value  = j.value("scroll_value",  0.0);
+    collapsed     = j.value("collapsed",     false);   // s89 — legacy/new → expanded
 
     snapshots.clear();
     if (j.contains("snapshots") && j["snapshots"].is_array())
@@ -320,6 +314,31 @@ void DocumentModel::set_active(Section section, const std::vector<int>& path) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void DocumentModel::mark_modified() { is_modified = true; }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DocumentModel — convert_node_kind (Scene ↔ Group, s89)
+//
+// A flip-in-place role toggle on ONE identity: the iid is preserved, so every
+// folio-link / backlink keyed by iid keeps resolving and the on-disk
+// content/<iid>.md stays put — nothing to migrate.  The rule (Manuscript-only;
+// Group→Scene only when childless) lives in offered_conversion() so it is
+// GTK-free and sandbox-tested.  Childless Group→Scene means there is never a
+// child move here, so no binder-vector realloc and no BinderNode* invalidation.
+// content is intentionally left untouched: the same string is read as prose
+// (Scene) or as a preface (Group).
+// ─────────────────────────────────────────────────────────────────────────────
+bool DocumentModel::convert_node_kind(Section section,
+                                      const std::vector<int>& path) {
+    BinderNode* n = node_at(section, path);
+    if (!n) return false;
+    switch (offered_conversion(section, n->kind, !n->children.empty())) {
+        case KindConversion::ToGroup: n->kind = BinderKind::Group; break;
+        case KindConversion::ToScene: n->kind = BinderKind::Scene; break;
+        case KindConversion::None:    return false;
+    }
+    mark_modified();
+    return true;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DocumentModel — collect_all_nodes

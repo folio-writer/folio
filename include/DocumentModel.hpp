@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include "FolioPrefs.hpp"
+#include "Iid.hpp"          // IidKind + iid_kind_for (BinderKind → IidKind)
 #include "ObjectStore.hpp"   // s31 — objects & templates registry + instances
 #include "ImagePool.hpp"     // s58 — the shared image pool (gallery data layer)
 #include <chrono>
@@ -89,6 +90,53 @@ inline BinderKind section_leaf_kind(Section s) {
         case Section::References: return BinderKind::Reference;
         case Section::Templates:  return BinderKind::Template;
         default:                  return BinderKind::Scene;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scene ↔ Group conversion rule (pure; s89)
+//
+// A Group and a Scene are the SAME BinderNode struct in two roles: a Group owns
+// `children` and its `content` is a preface; a Scene is a childless leaf whose
+// `content` is prose.  Converting is a role toggle on ONE identity — the iid is
+// preserved (no re-mint), so every folio-link / backlink keyed by iid keeps
+// resolving and the on-disk content/<iid>.md stays put.
+//
+//   • Manuscript only — Scene exists only there, and a Group elsewhere is a
+//     section folder (Characters/Places/References), not a manuscript chapter.
+//   • Scene → Group is always safe (a leaf gains the capacity to own children;
+//     content becomes the preface; children stays empty).
+//   • Group → Scene is offered only for a CHILDLESS group, so the result is a
+//     clean leaf with no child move — no binder-vector realloc, no BinderNode*
+//     invalidation (the deferred split-corruption class in BUGS.md).
+//
+// PURE / GTK-free so it is sandbox-unit-checkable.  If you edit the truth table
+// here, mirror it in tests/test_kind_convert.cpp (it carries a copy because
+// DocumentModel.hpp transitively pulls glibmm and can't compile in the sandbox).
+enum class KindConversion { None, ToGroup, ToScene };
+
+inline KindConversion offered_conversion(Section section, BinderKind kind,
+                                         bool has_children) {
+    if (section != Section::Manuscript) return KindConversion::None;
+    if (kind == BinderKind::Scene)      return KindConversion::ToGroup;
+    if (kind == BinderKind::Group && !has_children)
+        return KindConversion::ToScene;
+    return KindConversion::None;
+}
+
+// Which iid kind a binder node mints under / currently IS. The iid PREFIX records
+// the kind at creation; this maps the live `kind` field, which is authoritative
+// after a Scene↔Group conversion (the prefix is not re-minted). Callers that need
+// a node's CURRENT role from an iid should resolve the node and use this, falling
+// back to iid_kind_of() for non-binder iids (threads / KPs / pooled assets).
+inline IidKind iid_kind_for(BinderKind k) {
+    switch (k) {
+        case BinderKind::Group:     return IidKind::Group;
+        case BinderKind::Character: return IidKind::Character;
+        case BinderKind::Place:     return IidKind::Place;
+        case BinderKind::Reference: return IidKind::Reference;
+        case BinderKind::Template:  return IidKind::Template;
+        default:                    return IidKind::Scene;
     }
 }
 
@@ -413,6 +461,12 @@ struct BinderNode {
     int    cursor_offset = 0;   // buffer char offset of insert mark
     double scroll_value  = 0.0; // vadjustment value (pixels from top)
 
+    // s89 — binder disclosure state for a Group (false = expanded, the default,
+    // so legacy projects and new nodes load open). Persisted in the bundle like
+    // cursor/scroll above, so the binder remembers its open/collapsed folds
+    // across sessions. Meaningless for leaf kinds (always treated as expanded).
+    bool   collapsed = false;
+
     // Word count
     int word_count() const { return count_words(content); }
     int total_words() const {
@@ -591,6 +645,13 @@ public:
 
     void remove_node(Section section, const std::vector<int>& path);
 
+    // Scene ↔ Group conversion (s89). Flips a Manuscript node's kind in place,
+    // PRESERVING its iid (no re-mint, so links/backlinks keep resolving). See
+    // offered_conversion() for the rule: Manuscript-only; Group→Scene only when
+    // childless. Returns true if a conversion was applied, false (no-op) when the
+    // node is missing or the conversion isn't offered.
+    bool convert_node_kind(Section section, const std::vector<int>& path);
+
     // Soft-delete: move node to Trash, recording its origin
     void trash_node(Section section, const std::vector<int>& path);
 
@@ -767,5 +828,17 @@ private:
     // Backlink index storage — keyed by target node iid (s20)
     std::map<std::string, std::vector<BacklinkEntry>> m_backlinks;
 };
+
+// Resolve a node's CURRENT role from an iid (s89). For a binder node the live
+// `kind` field is authoritative — it is what changes on a Scene↔Group conversion
+// (the iid prefix is NOT re-minted). For a non-binder iid (story thread, KP
+// swatch, pooled image asset — none are binder nodes) fall back to the prefix.
+// Lens code that has only an iid string should resolve role through this so a
+// converted node draws/classifies by its current kind rather than its birth kind.
+inline IidKind current_kind(const DocumentModel& model, const std::string& iid) {
+    if (const BinderNode* n = model.find_node_by_iid(iid))
+        return iid_kind_for(n->kind);
+    return iid_kind_of(iid);
+}
 
 } // namespace Folio

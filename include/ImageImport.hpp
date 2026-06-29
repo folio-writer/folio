@@ -44,7 +44,7 @@ NormalizePolicy normalize_policy_from_prefs(const FolioPrefs& prefs);
 
 // Outcome of one import. `ok` true → `iid` is the new fragment's id; false →
 // `error` is a clear, user-facing message (never silent — §5).
-struct ImportResult {
+struct ImageImportResult {
   bool ok = false;
   std::string iid;
   std::string error;
@@ -62,7 +62,7 @@ public:
   // asset+thumb into the bundle, and add the fragment to `pool`. Returns the new
   // iid or a clear error; sets `low_res` when the source couldn't fill the tier.
   // Does NOT save the project — the caller marks the model modified.
-  ImportResult import_file(const std::string& path, ImagePool& pool,
+  ImageImportResult import_file(const std::string& path, ImagePool& pool,
                            int tier = kMaxDetailTier);
 
   // Door 2 (paste / image-drop): import an image from already-encoded bytes — a
@@ -73,7 +73,7 @@ public:
   // pixbuf text field wins if present); empty → Untitled. The signature is
   // deliberately byte-based, not pixbuf-based, so this header stays GTK-free.
   // Does NOT save the project — the caller marks the model modified.
-  ImportResult import_bytes(const std::string& data, ImagePool& pool,
+  ImageImportResult import_bytes(const std::string& data, ImagePool& pool,
                             const std::string& caption = {},
                             int tier = kMaxDetailTier);
 

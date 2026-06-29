@@ -42,10 +42,11 @@
 namespace Folio {
 
 class FolioPrefs;   // category-colour palette (tag_colors) for owned edges
+class DocumentModel; // s89 — resolve an anchor target's CURRENT kind (convert-aware glyph)
 
 class CustomMindMapCanvas : public Gtk::Box {
 public:
-    explicit CustomMindMapCanvas(FolioPrefs& prefs);
+    CustomMindMapCanvas(DocumentModel& model, FolioPrefs& prefs);
 
     // ── Document lifecycle ─────────────────────────────────────────────────────
     // Load a CMMDoc as the editing surface. `set_document` takes a parsed doc;
@@ -92,6 +93,7 @@ public:
     void set_color_provider(ColorProvider p) { m_color_of = std::move(p); }
 
 private:
+    DocumentModel& m_model;   // s89 — anchor-target kind resolution (convert-aware)
     FolioPrefs& m_prefs;
 
     // ── Owned model ────────────────────────────────────────────────────────────

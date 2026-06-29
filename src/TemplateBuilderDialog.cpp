@@ -346,6 +346,7 @@ void TemplateBuilderDialog::append_field_row(const Folio::FieldSchema& f, bool i
 
         auto* del = Gtk::make_managed<Gtk::Button>();
         del->set_icon_name("user-trash-symbolic");
+        del->set_tooltip_text("Delete this field");
         del->add_css_class("flat");
         del->signal_clicked().connect([this, field_id]() {
             if (TemplateEdit::remove_field(m_draft, field_id)) rebuild_field_rows();
@@ -404,6 +405,7 @@ void TemplateBuilderDialog::append_field_row(const Folio::FieldSchema& f, bool i
 
     auto* del = Gtk::make_managed<Gtk::Button>();
     del->set_icon_name("user-trash-symbolic");
+    del->set_tooltip_text("Delete this field");
     del->add_css_class("flat");
     del->set_sensitive(!is_buffer);       // never delete the floor buffer
     del->signal_clicked().connect([this, field_id]() {
@@ -517,6 +519,7 @@ void TemplateBuilderDialog::build_options_config(Gtk::Box& host, const std::stri
         });
         auto* del = Gtk::make_managed<Gtk::Button>();
         del->set_icon_name("user-trash-symbolic");
+        del->set_tooltip_text("Delete this option");
         del->add_css_class("flat");
         del->signal_clicked().connect([this, field_id, oid, &host]() {
             TemplateEdit::remove_option(m_draft, field_id, oid);

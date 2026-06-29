@@ -314,6 +314,35 @@ void Editor::spell_add_to_dict(const std::string &word) {
 // The text from the cursor to the end becomes a new sibling scene.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// s87 — extract whole <p>…</p> blocks, tolerant of ATTRIBUTES on the opening
+// tag. The HTML serializer emits styled paragraphs as <p data-sp="…">, <p
+// data-ol="…">, or <p data-anchor="…"> (see EditorHtmlSerializer::para_tag), so
+// a literal find("<p>") silently skips them and mis-pairs the </p> tags — which
+// garbled every split of any scene that contained a styled paragraph. Matching
+// "<p" followed by '>' , whitespace, or '/' catches all paragraph forms while
+// not false-matching <pre>/<param>.
+static std::vector<std::string> split_html_paragraphs(const std::string &html) {
+  std::vector<std::string> paras;
+  size_t pos = 0;
+  while (pos < html.size()) {
+    size_t open = html.find("<p", pos);
+    if (open == std::string::npos)
+      break;
+    const char after = (open + 2 < html.size()) ? html[open + 2] : '\0';
+    if (after != '>' && after != ' ' && after != '\t' && after != '\n' &&
+        after != '\r' && after != '/') {
+      pos = open + 2; // e.g. <pre> / <param> — not a paragraph, keep scanning
+      continue;
+    }
+    size_t close = html.find("</p>", open);
+    if (close == std::string::npos)
+      break;
+    paras.push_back(html.substr(open, close + 4 - open));
+    pos = close + 4;
+  }
+  return paras;
+}
+
 void Editor::split_at_cursor() {
   if (!m_current_node || binder_kind_is_group(m_current_node->kind))
     return;
@@ -333,20 +362,7 @@ void Editor::split_at_cursor() {
   // cursor_line. HTML is stored as <p>…</p><p>…</p>… — count paragraphs to find
   // split point.
   const std::string &html = m_current_node->content;
-  std::vector<std::string> paras;
-  {
-    size_t pos = 0;
-    while (pos < html.size()) {
-      size_t open = html.find("<p>", pos);
-      if (open == std::string::npos)
-        break;
-      size_t close = html.find("</p>", open);
-      if (close == std::string::npos)
-        break;
-      paras.push_back(html.substr(open, close + 4 - open));
-      pos = close + 4;
-    }
-  }
+  std::vector<std::string> paras = split_html_paragraphs(html);
   if ((int)paras.size() <= cursor_line)
     return;
 
@@ -424,21 +440,9 @@ void Editor::split_on_separator(const std::string &sep) {
     return;
 
   // Split the stored HTML on </p><p> boundaries, then scan for separator text
-  // We work in plain-paragraph units: split HTML into <p>…</p> blocks.
-  std::vector<std::string> paras;
-  {
-    size_t pos = 0;
-    while (pos < html.size()) {
-      size_t open = html.find("<p>", pos);
-      if (open == std::string::npos)
-        break;
-      size_t close = html.find("</p>", open);
-      if (close == std::string::npos)
-        break;
-      paras.push_back(html.substr(open, close + 4 - open));
-      pos = close + 4;
-    }
-  }
+  // We work in plain-paragraph units: split HTML into <p>…</p> blocks (tolerant
+  // of attributed <p …> tags — see split_html_paragraphs).
+  std::vector<std::string> paras = split_html_paragraphs(html);
 
   if (paras.size() < 2)
     return; // nothing to split
@@ -729,12 +733,16 @@ void Editor::sync_ruler() {
                     : std::max(1, (int)(scroll_w * active_pct / 100.0));
   int indent_px = m_first_line_indent ? m_first_line_indent_px : 0;
 
-  // Read li:/ri: tags at cursor to reflect current paragraph indents
+  // Read li:/ri:/fi: tags for the caret's paragraph to reflect its indents on
+  // the ruler. Probe the START of the line: these tags span the whole paragraph,
+  // so reading at the first character is reliable even when the caret sits at
+  // the paragraph end (where get_tags() on the bare cursor can miss them).
   int left_px = m_left_indent_px;
   int right_px = m_right_indent_px;
   if (m_buffer) {
-    auto cursor = m_buffer->get_iter_at_mark(m_buffer->get_insert());
-    for (auto &tag : cursor.get_tags()) {
+    auto line_it = m_buffer->get_iter_at_mark(m_buffer->get_insert());
+    line_it.set_line_offset(0);
+    for (auto &tag : line_it.get_tags()) {
       std::string tn = tag->property_name().get_value();
       if (tn.size() > 3 && tn.substr(0, 3) == "li:")
         try {
@@ -744,6 +752,13 @@ void Editor::sync_ruler() {
       else if (tn.size() > 3 && tn.substr(0, 3) == "ri:")
         try {
           right_px = std::stoi(tn.substr(3));
+        } catch (...) {
+        }
+      else if (tn.size() > 3 && tn.substr(0, 3) == "fi:")
+        try {
+          // Per-style first-line indent (tri-state ≥0) overrides the global
+          // first-line indent for this paragraph.
+          indent_px = std::stoi(tn.substr(3));
         } catch (...) {
         }
     }
@@ -878,8 +893,21 @@ void Editor::update_font_controls_from_selection() {
   if (m_format_popover && m_format_popover->get_visible())
     return;
   Gtk::TextBuffer::iterator sel_start, sel_end;
-  if (!m_buffer->get_selection_bounds(sel_start, sel_end))
-    return;
+  if (!m_buffer->get_selection_bounds(sel_start, sel_end)) {
+    // No selection: probe the formatting at the cursor so the toolbar still
+    // reflects the run the caret sits in. Inspect the character to the LEFT of
+    // the caret (the run you are typing within); at the very start of the
+    // buffer, inspect the character to the right instead. Without this the
+    // style dropdown and font controls only updated on a drag-select, never on
+    // a plain click.
+    auto ci = m_buffer->get_insert()->get_iter();
+    sel_start = ci;
+    sel_end = ci;
+    if (!sel_start.is_start())
+      sel_start.backward_char();
+    else
+      sel_end.forward_char();
+  }
 
   std::string first_family;
   int first_size = -1;
@@ -964,9 +992,8 @@ void Editor::update_font_controls_from_selection() {
   // marker tag and update the dropdown to show the matching named style.
   // If no marker tag is present, reset the dropdown to the placeholder.
   if (m_style_dropdown && !m_inhibit_style_dd) {
-    auto cursor = m_buffer->get_insert()->get_iter();
     std::string found_style_name;
-    for (auto &tag : cursor.get_tags()) {
+    for (auto &tag : sel_start.get_tags()) {
       std::string tn = tag->property_name().get_value();
       if (tn.size() > 12 && tn.substr(0, 12) == "folio-style:") {
         found_style_name = tn.substr(12);
@@ -1003,6 +1030,15 @@ void Editor::update_font_controls_from_selection() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Editor::apply_style(const TextStyle &style) {
+  // Capture the user's caret/selection up front. Applying a style from the
+  // toolbar dropdown moves focus out of the text view; when focus returns, GTK
+  // resets the insert mark to offset 0, leaving a spurious selection from the
+  // old anchor to the top of the scene. We restore these at the end.
+  const int orig_ins =
+      m_buffer->get_insert()->get_iter().get_offset();
+  const int orig_bound =
+      m_buffer->get_selection_bound()->get_iter().get_offset();
+
   // Determine the range to work with
   Gtk::TextBuffer::iterator s, e;
   bool has_sel = m_buffer->get_selection_bounds(s, e);
@@ -1145,6 +1181,45 @@ void Editor::apply_style(const TextStyle &style) {
     m_buffer->apply_tag(lt, s, e);
   }
 
+  // Paragraph spacing + first-line indent (paragraph styles only) — s88.
+  // These map onto GtkTextTag's pixels_above_lines / pixels_below_lines /
+  // indent. Tags are created on demand (so they carry higher priority than the
+  // document-wide m_tag_indent created at setup) and named pa:/pb:/fi: so the
+  // serializer round-trips them as margin-top / margin-bottom / text-indent.
+  if (style.kind == "paragraph") {
+    if (style.space_above_px > 0) {
+      std::string tn = "pa:" + std::to_string(style.space_above_px);
+      auto tt = table->lookup(tn);
+      if (!tt) {
+        tt = m_buffer->create_tag(tn);
+        tt->property_pixels_above_lines() = style.space_above_px;
+      }
+      m_buffer->apply_tag(tt, s, e);
+    }
+    if (style.space_below_px > 0) {
+      std::string tn = "pb:" + std::to_string(style.space_below_px);
+      auto tt = table->lookup(tn);
+      if (!tt) {
+        tt = m_buffer->create_tag(tn);
+        tt->property_pixels_below_lines() = style.space_below_px;
+      }
+      m_buffer->apply_tag(tt, s, e);
+    }
+    // First-line indent — tri-state. -1 means "inherit the global indent", so we
+    // apply nothing and leave the preserved m_tag_indent to act. >= 0 is an
+    // explicit value (0 = none): the fi: tag, being higher priority than
+    // m_tag_indent, wins and overrides the global for this paragraph.
+    if (style.first_line_indent_px >= 0) {
+      std::string tn = "fi:" + std::to_string(style.first_line_indent_px);
+      auto tt = table->lookup(tn);
+      if (!tt) {
+        tt = m_buffer->create_tag(tn);
+        tt->property_indent() = style.first_line_indent_px;
+      }
+      m_buffer->apply_tag(tt, s, e);
+    }
+  }
+
   // ── Style name marker tag ─────────────────────────────────────────────
   // A zero-property tag named "folio-style:NAME" is applied over the
   // styled range so the toolbar dropdown can detect the active style when
@@ -1183,6 +1258,26 @@ void Editor::apply_style(const TextStyle &style) {
     }
     m_inhibit_style_dd = false;
   }
+
+  // Restore the caret/selection the user had and return focus to the editor.
+  // Re-assert on a short timeout to override GTK's focus-in insert-mark reset
+  // (which otherwise selects from the top of the scene) — same approach as
+  // load_node's caret re-assert.
+  auto restore_sel = [this](int a, int b) {
+    int n = m_buffer->get_char_count();
+    auto ia = m_buffer->get_iter_at_offset(std::min(std::max(0, a), n));
+    auto ib = m_buffer->get_iter_at_offset(std::min(std::max(0, b), n));
+    m_loading = true;
+    m_buffer->select_range(ia, ib); // ia = insert, ib = selection_bound
+    m_loading = false;
+  };
+  m_text_view.grab_focus();
+  restore_sel(orig_ins, orig_bound);
+  Glib::signal_timeout().connect_once(
+      [orig_ins, orig_bound, restore_sel]() {
+        restore_sel(orig_ins, orig_bound);
+      },
+      60);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

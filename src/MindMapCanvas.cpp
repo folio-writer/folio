@@ -17,6 +17,8 @@
 #include "DocumentModel.hpp"
 #include "FolioPrefs.hpp"
 #include "Iid.hpp"
+#include "TimelineSpine.hpp"     // s87 — project_spine / spine_input_from_manuscript (told order)
+#include "TimelineThreads.hpp"   // s87 — assemble_thread_lanes (the SAME source the Timeline uses)
 
 namespace Folio {
 
@@ -38,6 +40,12 @@ const std::string kHubProject    = "\x01hub_project";
 const std::string kHubCharacters = "\x01hub_characters";
 const std::string kHubPlaces     = "\x01hub_places";
 const std::string kHubReferences = "\x01hub_references";
+// s87 — the STORY THREADS cluster: a peer circle to the resource hubs. Threads
+// are NOT resources (not binder nodes, not links — an ASSIGNED arc), so they get
+// their own cloud rather than mixing into characters/places/references. The hub
+// is layout scaffolding like the others; the thread NODES inside it carry their
+// real thr_ iids (model-bound, so iid-named per the house rule).
+const std::string kHubThreads    = "\x01hub_threads";
 
 inline bool is_hub(const std::string& iid) {
     return !iid.empty() && iid[0] == '\x01';
@@ -264,7 +272,10 @@ MindMapCanvas::MindMapCanvas(DocumentModel& model, FolioPrefs& prefs)
         }
         const std::string iid = hit_test(m_placements, m_vp, x, y, kHitR);
         if (!iid.empty()) {
-            if (n_press >= 2 && !is_hub(iid) && m_on_open) m_on_open(iid);   // double-click opens
+            // Hubs and thread nodes aren't navigable (no thread editor yet, s87) —
+            // double-click opens a real binder node only.
+            if (n_press >= 2 && !is_hub(iid) && iid_kind_of(iid) != IidKind::Thread && m_on_open)
+                m_on_open(iid);   // double-click opens
             return;
         }
         // Empty space: a double-click authors a Reference fragment THERE.
@@ -364,6 +375,37 @@ void MindMapCanvas::rebuild() {
     if (used_places) next.push_back(MindMapItem{ kHubPlaces,     0.0, 0.0, false, false, kHubProject });
     if (used_refs)   next.push_back(MindMapItem{ kHubReferences, 0.0, 0.0, false, false, kHubProject });
 
+    // ── s87 — the STORY THREADS cluster (a peer of the resource hubs) ─────────
+    // Threads are an ASSIGNED arc (BinderNode.thread → a thr_ iid), not links, so
+    // they come from the SAME pure source the Timeline uses (assemble_thread_lanes
+    // over the told-order spine) — Map and Timeline can't disagree about what's on
+    // a thread. Each lane becomes ONE node in the threads circle, carrying its real
+    // thr_ iid; only threads that actually claim an on-spine scene appear (no empty
+    // clouds, mirroring used_chars/places/refs). The thread→scene bundles are
+    // synthesised below, after the real edges are read.
+    m_thread_claims.clear();
+    {
+        const std::vector<std::string> spine =
+            project_spine(spine_input_from_manuscript(m_model)).spine_iids();
+        std::unordered_map<std::string, SceneThreadInfo> scene_thread;
+        for (const BinderNode* nptr : m_model.all_node_ptrs()) {
+            if (!nptr || nptr->iid.empty() || nptr->thread.empty()) continue;
+            const ThreadDef* td = m_model.find_thread(nptr->thread);
+            scene_thread.emplace(nptr->iid,
+                                 SceneThreadInfo{ nptr->thread,
+                                                  td ? td->label : std::string{},
+                                                  td ? td->color_idx : 0 });
+        }
+        m_thread_lanes = assemble_thread_lanes(spine, scene_thread);
+        if (!m_thread_lanes.empty()) {
+            next.push_back(MindMapItem{ kHubThreads, 0.0, 0.0, false, false, kHubProject });
+            for (const ThreadLane& ln : m_thread_lanes) {
+                next.push_back(MindMapItem{ ln.thread_key, 0.0, 0.0, false, false, kHubThreads });
+                m_thread_claims[ln.thread_key] = static_cast<int>(ln.claimed.size());
+            }
+        }
+    }
+
     m_items = std::move(next);
 
     // ── Effective colours: scene = its KP/label colour; chapter/part = the BLEND
@@ -382,11 +424,19 @@ void MindMapCanvas::rebuild() {
             }
         }
     }
+    // s87 — thread nodes are not binder nodes; colour them from their lane's
+    // color_idx (the registry colour), so each thread draws "in the thread's
+    // colour" and its bundle inherits it (the edge owner-colour fallback below).
+    for (const ThreadLane& ln : m_thread_lanes) {
+        if (ln.color_idx <= 0) continue;
+        const std::string hex = m_prefs.color_hex_for_idx(ln.color_idx);
+        if (!hex.empty()) { Gdk::RGBA c; c.set(hex); m_color[ln.thread_key] = c; }
+    }
     // blend: post-order average of descendant SCENE colours → assign to containers
     std::function<std::tuple<double, double, double, int>(const std::string&)> blend =
         [&](const std::string& id) -> std::tuple<double, double, double, int> {
             double r = 0, g = 0, b = 0; int n = 0;
-            if (iid_kind_of(id) == IidKind::Scene) {
+            if (current_kind(m_model, id) == IidKind::Scene) {
                 auto c = m_color.find(id);
                 if (c != m_color.end()) {
                     r += c->second.get_red(); g += c->second.get_green();
@@ -400,7 +450,7 @@ void MindMapCanvas::rebuild() {
                     r += rr; g += gg; b += bb; n += nn;
                 }
             // assign the blend to non-scene containers that actually gathered scenes
-            if (n > 0 && !is_hub(id) && iid_kind_of(id) != IidKind::Scene) {
+            if (n > 0 && !is_hub(id) && current_kind(m_model, id) != IidKind::Scene) {
                 Gdk::RGBA c; c.set_rgba(r / n, g / n, b / n, 1.0);
                 m_color[id] = c;
             }
@@ -427,6 +477,16 @@ void MindMapCanvas::rebuild() {
 
     // Edges are READ, never owned — fresh from the s20 link + s44 relation indices.
     m_edges = StoryGraph::edges_from_backlinks(m_model);
+
+    // s87 — thread→scene bundles. A thread arc is ASSIGNED, not linked, so it has
+    // no StoryGraph edge; we synthesise one headless line per claimed scene so the
+    // thread node fans to its scenes exactly like a character fans to the scenes it
+    // appears in. Reference kind = no arrowhead (a thread "contains" a scene, it
+    // doesn't point at it); the owner-colour fallback in draw() tints the bundle in
+    // the thread's colour. These lines live ONLY in the lens, never the model.
+    for (const ThreadLane& ln : m_thread_lanes)
+        for (const std::string& scn : ln.claimed)
+            m_edges.push_back(StoryEdge{ ln.thread_key, scn, EdgeKind::Reference, "", "" });
 
     bool any_real = false;                     // the Project hub always exists; ignore it
     for (const MindMapItem& it : m_items) if (!is_hub(it.iid)) { any_real = true; break; }
@@ -558,6 +618,8 @@ void MindMapCanvas::draw(const Cairo::RefPtr<Cairo::Context>& cr, int w, int h) 
         if (const BinderNode* n = m_model.find_node_by_iid(owner)) {
             const std::string hex = m_prefs.color_hex_for_idx(n->color_idx);
             if (!hex.empty()) col.set(hex);
+        } else if (auto mc = m_color.find(owner); mc != m_color.end()) {
+            col = mc->second;   // s87 — non-binder owner (a thread node): its lane colour
         }
 
         // Soft, thin, gently BOWED — a whispering web under the structure, not
@@ -615,14 +677,18 @@ void MindMapCanvas::draw(const Cairo::RefPtr<Cairo::Context>& cr, int w, int h) 
         if (s.x < -r * 4 || s.x > w + r * 4 || s.y < -r * 4 || s.y > h + r * 4)
             continue;   // cull off-screen
 
-        const IidKind  k = iid_kind_of(p.iid);
+        const IidKind  k = current_kind(m_model, p.iid);
+        // Shape from the CURRENT role too, so a converted Scene↔Group draws the
+        // right glyph; non-binder iids (hubs/threads) keep their assembled glyph.
+        MapGlyph glyph = p.glyph;
+        if (m_model.find_node_by_iid(p.iid)) glyph = map_glyph_for(k);
         Gdk::RGBA tint;
         auto cit = m_color.find(p.iid);
         if (cit != m_color.end()) tint = cit->second;          // KP / blend / label colour
         else tint = themed(m_area, is_hub(p.iid) ? "tx3" : kind_color_token(k), "#5bc8af");
 
         // Fill (tinted, soft) + stroke (full tint).
-        glyph_path(cr, p.glyph, s.x, s.y, r);
+        glyph_path(cr, glyph, s.x, s.y, r);
         cr->set_source_rgba(tint.get_red(), tint.get_green(), tint.get_blue(), 0.22);
         cr->fill_preserve();
         cr->set_source_rgb(tint.get_red(), tint.get_green(), tint.get_blue());
@@ -662,11 +728,17 @@ void MindMapCanvas::draw_hover_card(const Cairo::RefPtr<Cairo::Context>& cr, int
     // ── Gather the lines ──
     std::string title = node_title(m_hover_iid);
     std::string sub, accent, body;
-    const IidKind k = iid_kind_of(m_hover_iid);
+    const IidKind k = current_kind(m_model, m_hover_iid);
     if (is_hub(m_hover_iid)) {
         auto d = m_descendants.find(m_hover_iid);
         const int n = (d != m_descendants.end()) ? std::max(0, static_cast<int>(d->second.size()) - 1) : 0;
         sub = std::to_string(n) + (n == 1 ? " item" : " items");
+    } else if (k == IidKind::Thread) {   // s87 — a thread node (not a binder node)
+        const auto cc = m_thread_claims.find(m_hover_iid);
+        const int n = (cc != m_thread_claims.end()) ? cc->second : 0;
+        sub = "Story thread · " + std::to_string(n) + (n == 1 ? " scene" : " scenes");
+        if (const ThreadDef* td = m_model.find_thread(m_hover_iid))
+            if (td->color_idx > 0) accent = m_prefs.color_name_for_idx(td->color_idx);
     } else if (const BinderNode* nd = m_model.find_node_by_iid(m_hover_iid)) {
         const char* kind = (k == IidKind::Scene) ? "Scene"
                          : (k == IidKind::Character) ? "Character"
@@ -843,6 +915,12 @@ std::string MindMapCanvas::node_title(const std::string& iid) const {
     if (iid == kHubCharacters) return "Characters";
     if (iid == kHubPlaces)     return "Places";
     if (iid == kHubReferences) return "References";
+    if (iid == kHubThreads)    return "Story Threads";
+    if (iid_kind_of(iid) == IidKind::Thread) {   // s87 — label from the thread registry
+        if (const ThreadDef* td = m_model.find_thread(iid))
+            return td->label.empty() ? iid : td->label;
+        return iid;
+    }
     if (const BinderNode* n = m_model.find_node_by_iid(iid))
         return n->title.empty() ? iid : n->title;
     return iid;

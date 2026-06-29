@@ -123,15 +123,41 @@ void Editor::find_update() {
   }
   m_find_entry->remove_css_class("find-error");
 
+  // search_plain returns BYTE offsets (std::sregex_iterator positions into the
+  // UTF-8 std::string), but Gtk::TextBuffer::get_iter_at_offset expects CHARACTER
+  // offsets. For ASCII the two coincide; once the text holds multi-byte UTF-8
+  // (curly quotes, em dashes, accents) they diverge, and the gap ACCUMULATES down
+  // the document — so the first match lands right and later ones drift forward
+  // onto random spans. Build a byte->char table over the buffer text once (O(n))
+  // and translate every match through it. byte_to_char[b] = number of characters
+  // before byte b (count of UTF-8 lead bytes in plain[0..b)).
+  std::vector<int> byte_to_char(plain.size() + 1, 0);
+  {
+    int ch = 0;
+    for (size_t b = 0; b <= plain.size(); ++b) {
+      byte_to_char[b] = ch;
+      if (b < plain.size() &&
+          (static_cast<unsigned char>(plain[b]) & 0xC0) != 0x80)
+        ++ch; // advance on each lead byte, skip continuation bytes (10xxxxxx)
+    }
+  }
+  auto b2c = [&](int byte_off) -> int {
+    if (byte_off < 0) byte_off = 0;
+    if (byte_off > static_cast<int>(plain.size())) byte_off = static_cast<int>(plain.size());
+    return byte_to_char[static_cast<size_t>(byte_off)];
+  };
+
   // Convert plain-text offsets to buffer iterators and apply tags
   m_loading = true; // suppress on_text_changed
   for (auto &rm : raw_matches) {
-    auto it_s = m_buffer->get_iter_at_offset(rm.offset);
-    auto it_e = m_buffer->get_iter_at_offset(rm.offset + rm.length);
+    int cs_off = b2c(rm.offset);
+    int ce_off = b2c(rm.offset + rm.length);
+    auto it_s = m_buffer->get_iter_at_offset(cs_off);
+    auto it_e = m_buffer->get_iter_at_offset(ce_off);
     m_buffer->apply_tag(m_tag_find_match, it_s, it_e);
     FindMatch fm;
-    fm.start = rm.offset;
-    fm.end = rm.offset + rm.length;
+    fm.start = cs_off;
+    fm.end = ce_off;
     m_find_matches.push_back(fm);
   }
   m_loading = false;

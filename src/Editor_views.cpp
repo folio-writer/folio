@@ -10,6 +10,7 @@
 #include <EditorHtmlSerializer.hpp>
 #include <FolioLog.hpp>
 #include <Iid.hpp>
+#include <StoryGraph.hpp>      // s87 — edges_from_backlinks (dominant linked subject)
 #include <algorithm>
 #include <cmath>
 #include <gtkmm/eventcontrollermotion.h>
@@ -1146,6 +1147,31 @@ int Editor::segment_index_at_iter(const Gtk::TextBuffer::iterator &it) const {
 // show_board
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace {
+// §9.6 category hues (the same channel the timeline's subject_hex falls back to).
+const char *subj_category_hue(Folio::IidKind k) {
+  switch (k) {
+  case Folio::IidKind::Character: return "#89b4fa"; // blue
+  case Folio::IidKind::Place:     return "#a6e3a1"; // green
+  case Folio::IidKind::Reference: return "#cba6f7"; // mauve
+  case Folio::IidKind::Asset:     return "#fab387"; // peach (images)
+  default:                        return "";        // not a coloured subject kind
+  }
+}
+// Dominance priority when a scene links several subjects (lower = wins). The
+// "dominant linked subject" call (s87): a scene is most defined by its people,
+// then its place, then its references. First-appearance breaks ties within a
+// rank. One spot to change if a different notion of dominance is wanted later.
+int subj_category_rank(Folio::IidKind k) {
+  switch (k) {
+  case Folio::IidKind::Character: return 0;
+  case Folio::IidKind::Place:     return 1;
+  case Folio::IidKind::Reference: return 2;
+  default:                        return 3;
+  }
+}
+} // namespace
+
 void Editor::show_board(const std::vector<BoardItem> &items) {
   if (!m_board_flow)
     return;
@@ -1206,6 +1232,43 @@ void Editor::show_board(const std::vector<BoardItem> &items) {
     return;
   }
 
+  // s87 — dominant linked subject per scene, for the left-edge card accent.
+  // Computed once from the unified edge projection (cheap, O(edges)); each scene
+  // takes its highest-priority linked subject's colour (assigned, else category
+  // hue), first appearance breaking ties. Read in card_accent_hex (tier 2).
+  m_board_subj_accent.clear();
+  {
+    std::unordered_map<std::string, int> best_rank; // scene iid -> winning rank
+    const auto edges = Folio::StoryGraph::edges_from_backlinks(m_model);
+    for (const auto &e : edges) {
+      const std::string *scene = nullptr;
+      const std::string *subj = nullptr;
+      if (Folio::iid_kind_of(e.from_iid) == Folio::IidKind::Scene) {
+        scene = &e.from_iid; subj = &e.to_iid;
+      } else if (Folio::iid_kind_of(e.to_iid) == Folio::IidKind::Scene) {
+        scene = &e.to_iid; subj = &e.from_iid;
+      }
+      if (!scene || !subj)
+        continue;
+      const Folio::IidKind sk = Folio::iid_kind_of(*subj);
+      const char *hue = subj_category_hue(sk);
+      if (!*hue)
+        continue; // the other end is not a coloured subject (e.g. scene-scene)
+      const int rank = subj_category_rank(sk);
+      auto br = best_rank.find(*scene);
+      if (br != best_rank.end() && rank >= br->second)
+        continue; // a higher- or equal-priority subject already claimed it
+      std::string hex = hue; // assigned colour wins over the category hue
+      if (const BinderNode *sn = m_model.find_node_by_iid(*subj)) {
+        std::string h = m_prefs.color_hex_for_idx(sn->color_idx);
+        if (!h.empty())
+          hex = h;
+      }
+      best_rank[*scene] = rank;
+      m_board_subj_accent[*scene] = hex;
+    }
+  }
+
   bool any = false;
   for (auto &item : items) {
     const BinderNode *node = m_model.find_node_by_iid(item.iid);
@@ -1228,6 +1291,41 @@ void Editor::show_board(const std::vector<BoardItem> &items) {
 // Board card factories
 // ─────────────────────────────────────────────────────────────────────────────
 
+// The card's accent colour (tier 1/3 here; tier 2 via m_board_subj_accent).
+std::string Editor::card_accent_hex(const BinderNode *node) const {
+  if (!node)
+    return {};
+  // Tier 1 — the node's own assigned colour always wins.
+  if (node->color_idx > 0) {
+    std::string hex = m_prefs.color_hex_for_idx(node->color_idx);
+    if (!hex.empty())
+      return hex;
+  }
+  // Tier 2 — a scene with no own colour borrows its dominant subject's.
+  if (node->kind == BinderKind::Scene || node->kind == BinderKind::Group) {
+    auto it = m_board_subj_accent.find(node->iid);
+    if (it != m_board_subj_accent.end())
+      return it->second;
+    return {}; // tier 3 — neutral (no accent)
+  }
+  // A subject card (Character / Place) with no own colour keeps its category
+  // hue, so every subject card still reads as coloured (mirrors subject_hex).
+  return subj_category_hue(Folio::iid_kind_of(node->iid));
+}
+
+// Paint a thin coloured bar down the card's left edge. An inset box-shadow keeps
+// the existing border + radius intact (unlike a border-left, which would fight
+// the rounded corners). A per-card provider at APPLICATION priority overrides the
+// global .board-card rule, exactly as the chip's colour override does.
+void Editor::apply_card_accent(Gtk::Widget *card, const std::string &hex) {
+  if (!card || hex.empty())
+    return;
+  auto prov = Gtk::CssProvider::create();
+  prov->load_from_data(".board-card { box-shadow: inset 3px 0 0 0 " + hex + "; }");
+  card->get_style_context()->add_provider(prov,
+                                          GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
+
 Gtk::Widget *Editor::make_board_card_node(const std::vector<int> &path) {
   const BinderNode *node = m_model.node_at(Section::Manuscript, path);
   if (!node)
@@ -1239,6 +1337,7 @@ Gtk::Widget *Editor::make_board_card_node(const std::vector<int> &path) {
   card->add_css_class("board-card");
   card->set_size_request(240, -1); // width only — height grows naturally
   card->set_name(Folio::widget_name("board-card", node->iid)); // s19
+  apply_card_accent(card, card_accent_hex(node)); // s87 left-edge accent
 
   auto *header = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
   header->add_css_class("board-card-header");
@@ -1376,6 +1475,7 @@ Gtk::Widget *Editor::make_board_card(Section section,
   card->add_css_class("board-card");
   card->set_size_request(240, -1); // width only — height grows naturally
   card->set_name(Folio::widget_name("board-card", node->iid)); // s19
+  apply_card_accent(card, card_accent_hex(node)); // s87 left-edge accent
 
   auto *header = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
   header->add_css_class("board-card-header");

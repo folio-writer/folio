@@ -599,6 +599,7 @@ Gtk::Widget* SearchDialog::make_result_group(const SearchResult& r, int idx) {
     // Collapse toggle
     auto* collapse = Gtk::make_managed<Gtk::ToggleButton>();
     collapse->set_icon_name("pan-down-symbolic");
+    collapse->set_tooltip_text("Collapse or expand this section");
     collapse->set_active(true);
     collapse->add_css_class("flat");
     collapse->add_css_class("fmt-btn");

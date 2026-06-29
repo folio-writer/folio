@@ -16,6 +16,7 @@
 #include <unordered_map>
 
 #include "FolioPrefs.hpp"
+#include "DocumentModel.hpp"   // s89 — current_kind() / find_node_by_iid for anchor glyphs
 #include "Iid.hpp"
 
 namespace Folio {
@@ -46,8 +47,8 @@ unsigned fnv1a(const std::string& s) {
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
-CustomMindMapCanvas::CustomMindMapCanvas(FolioPrefs& prefs)
-    : Gtk::Box(Gtk::Orientation::VERTICAL, 0), m_prefs(prefs) {
+CustomMindMapCanvas::CustomMindMapCanvas(DocumentModel& model, FolioPrefs& prefs)
+    : Gtk::Box(Gtk::Orientation::VERTICAL, 0), m_model(model), m_prefs(prefs) {
     set_hexpand(true);
     set_vexpand(true);
 
@@ -645,6 +646,11 @@ void CustomMindMapCanvas::recompute() {
         p.iid   = n.id;                          // doc-local id is the hit key here
         p.x = n.x; p.y = n.y;
         p.glyph = cmm_node_glyph(n);
+        // s89 — an Anchor borrows its target's shape; resolve the target's CURRENT
+        // role from the model so a converted Scene↔Group target shows the right
+        // glyph (cmm_node_glyph reads the iid prefix, which is the birth kind).
+        if (n.kind == CMMNodeKind::Anchor && !n.iid.empty())
+            p.glyph = map_glyph_for(current_kind(m_model, n.iid));
         m_placements.push_back(p);
     }
     m_empty_hint.set_visible(m_attached && m_doc.nodes.empty());

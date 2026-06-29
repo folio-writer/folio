@@ -94,12 +94,12 @@ std::string base_name(const std::string& path) {
 // caption prefers an embedded pixbuf text field, else `caption_fallback` (a
 // filename-derived name for the file door, the caller's caption for the bytes
 // door). `src_bytes` rides into the plan only as provenance; sizing is by pixels.
-ImportResult finish_from_pixbuf(const fs::path& root, const NormalizePolicy& policy,
+ImageImportResult finish_from_pixbuf(const fs::path& root, const NormalizePolicy& policy,
                                 const Glib::RefPtr<Gdk::Pixbuf>& full, bool animated,
                                 long long src_bytes,
                                 const std::string& caption_fallback,
                                 ImagePool& pool, int tier) {
-  ImportResult r;
+  ImageImportResult r;
   if (!full) { r.error = "Could not decode the image."; return r; }
 
   SourceProbe dprobe{src_bytes, full->get_width(), full->get_height(),
@@ -161,9 +161,9 @@ ImportResult finish_from_pixbuf(const fs::path& root, const NormalizePolicy& pol
 ImageImporter::ImageImporter(fs::path bundle_root, NormalizePolicy policy)
     : m_root(std::move(bundle_root)), m_policy(std::move(policy)) {}
 
-ImportResult ImageImporter::import_file(const std::string& path, ImagePool& pool,
+ImageImportResult ImageImporter::import_file(const std::string& path, ImagePool& pool,
                                         int tier) {
-  ImportResult r;
+  ImageImportResult r;
   const std::string name = base_name(path);
 
   // The bundle must exist on disk (assets/ live inside it). A never-saved project
@@ -218,9 +218,9 @@ ImportResult ImageImporter::import_file(const std::string& path, ImagePool& pool
                             caption_from_filename(path), pool, tier);
 }
 
-ImportResult ImageImporter::import_bytes(const std::string& data, ImagePool& pool,
+ImageImportResult ImageImporter::import_bytes(const std::string& data, ImagePool& pool,
                                          const std::string& caption, int tier) {
-  ImportResult r;
+  ImageImportResult r;
 
   // The bundle must exist on disk (assets/ live inside it).
   if (m_root.empty()) {

@@ -18,10 +18,6 @@ namespace Folio {
 
 namespace {
 
-bool is_scene(const std::string& iid) {
-  return iid_kind_of(iid) == IidKind::Scene;
-}
-
 // True if the iid names a track SUBJECT (character / place / reference / image).
 bool is_subject(const std::string& iid) {
   switch (iid_kind_of(iid)) {
@@ -64,9 +60,19 @@ assemble_tracks(const std::vector<std::string>& spine,
     claims[subject].insert(scene);
   };
 
+  // A node counts as a SCENE here iff it is on the told-order spine. The spine is
+  // built from the live `kind` field (TimelineSurface::spine_input_from_manuscript
+  // → binder_kind_is_group), so this is the authoritative, conversion-correct
+  // scene test — unlike the iid prefix, which records the kind at creation and is
+  // left untouched by a Scene↔Group conversion (s89). Subjects (chr_/plc_/ref_/
+  // ast_) never appear on the manuscript spine, so pos_of membership is exactly
+  // "is a scene".
+  auto on_spine = [&](const std::string& iid) {
+    return pos_of.find(iid) != pos_of.end();
+  };
   for (const auto& e : edges) {
-    const bool f_scene = is_scene(e.from_iid);
-    const bool t_scene = is_scene(e.to_iid);
+    const bool f_scene = on_spine(e.from_iid);
+    const bool t_scene = on_spine(e.to_iid);
     if (f_scene && is_subject(e.to_iid))        note(e.to_iid, e.from_iid);
     else if (t_scene && is_subject(e.from_iid)) note(e.from_iid, e.to_iid);
     // scene↔scene and subject↔subject contribute no track claim.

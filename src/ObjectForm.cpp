@@ -115,6 +115,7 @@ void rebuild_list_rows(Gtk::Box& rows_box,
 
         auto* del = Gtk::make_managed<Gtk::Button>();
         del->set_icon_name("user-trash-symbolic");
+        del->set_tooltip_text("Remove this entry");
         del->add_css_class("flat");
         del->set_valign(Gtk::Align::CENTER);
         del->signal_clicked().connect([&rows_box, state, idx, emit]() {

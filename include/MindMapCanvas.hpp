@@ -31,6 +31,7 @@
 
 #include "MindMap.hpp"
 #include "StoryGraph.hpp"   // StoryEdge — the connection layer (read, not owned)
+#include "TimelineThreads.hpp"   // s87 — ThreadLane (the Story Threads cluster source)
 
 namespace Folio {
 
@@ -76,6 +77,12 @@ private:
     std::vector<StoryEdge>                 m_edges;       // read from StoryGraph
     std::vector<ReflowRule>                m_rules;       // default: lane.kind on
     std::vector<MindMapLayout::Placement>  m_placements;  // last reflow (draw+hit)
+
+    // s87 — the Story Threads cluster. Lanes come from assemble_thread_lanes (the
+    // SAME pure source the Timeline uses), rebuilt each rebuild(); the claim map is
+    // thread iid → # of on-spine scenes it holds, for the hover read-out.
+    std::vector<ThreadLane>             m_thread_lanes;
+    std::unordered_map<std::string, int> m_thread_claims;
 
     // s48 — effective node colour: a Scene wears its KP/label colour, a Chapter/
     // Part the BLEND (RGB average) of its descendant scenes' colours, an entity its

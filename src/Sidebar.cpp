@@ -221,6 +221,13 @@ void Sidebar::build_ui() {
           return true;
         }
 
+        // F2: rename the selected node in place (single selection only).
+        if (k == GDK_KEY_F2 && m_board_selection.size() == 1) {
+          const auto &sel = *m_board_selection.begin();
+          begin_rename(sel.section, sel.path);
+          return true;
+        }
+
         // Ctrl+A: select all nodes in the same category as the current selection.
         // No-op if nothing is selected.
         bool ctrl_held = (s & Gdk::ModifierType::CONTROL_MASK) != Gdk::ModifierType{};
@@ -804,6 +811,10 @@ void Sidebar::set_subtree_expanded(Section section, const std::vector<int>& root
     if (ce.section != section || !in_subtree(ce.path))
       continue;
     ce.expanded = expand;
+    if (BinderNode *n = m_model.find_node_by_iid(ce.iid)) {
+      n->collapsed = !expand;   // s89 — persist fold on the node
+      m_model.mark_modified();
+    }
     if (ce.revealer) ce.revealer->set_reveal_child(expand);
     if (ce.arrow) {
       ce.arrow->set_text(expand ? "▾" : "▸");
@@ -1621,6 +1632,33 @@ void Sidebar::show_node_ctx_menu(Section section, const std::vector<int> &path,
       gm->append_section({}, split_sec);
     }
 
+    // Section 2c: convert Scene ↔ Group (Manuscript only; s89). A Group and a
+    // Scene are one BinderNode in two roles, so convert flips the kind IN PLACE,
+    // preserving the iid — every folio-link/backlink keyed by iid keeps
+    // resolving and content/<iid>.md stays put. offered_conversion() gates it:
+    // Scene→Group always; Group→Scene only when childless (no child move).
+    {
+      const KindConversion conv =
+          offered_conversion(section, node->kind, !node->children.empty());
+      if (conv != KindConversion::None && m_on_convert_node) {
+        auto conv_sec = Gio::Menu::create();
+        const char *conv_label = (conv == KindConversion::ToGroup)
+                                     ? "Convert to Group"
+                                     : "Convert to Scene";
+        conv_sec->append_item(mi(conv_label, "ctx.convert-kind"));
+        ag->add_action("convert-kind", [this, section, path] {
+          // Defer out of the popover handler: the host mutates the model and
+          // rebuilds the sidebar + active lens, which tears down the row this
+          // popover is anchored to (s24 rule).
+          Glib::signal_idle().connect_once([this, section, path] {
+            if (m_on_convert_node)
+              m_on_convert_node(section, path);
+          });
+        });
+        gm->append_section({}, conv_sec);
+      }
+    }
+
     auto del_sec = Gio::Menu::create();
     del_sec->append_item(mi(remove_label, "ctx.remove"));
     ag->add_action("remove",
@@ -2088,9 +2126,14 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
     tbox->set_hexpand(true);
     tbox->set_valign(Gtk::Align::CENTER);
 
-    auto *arrow = Gtk::make_managed<Gtk::Label>("▾");
+    // s89 — restore this group's fold from the node's persisted state (default
+    // expanded for a new or just-converted group; the field rides the bundle so
+    // it also survives across sessions).
+    bool init_expanded = !node->collapsed;
+
+    auto *arrow = Gtk::make_managed<Gtk::Label>(init_expanded ? "▾" : "▸");
     arrow->add_css_class("part-arrow");
-    arrow->add_css_class("expanded");
+    arrow->add_css_class(init_expanded ? "expanded" : "collapsed");
 
     // The triangle IS the disclosure: clicking it toggles this node; Ctrl+click
     // expands/collapses the whole subtree. It claims the press so the row's
@@ -2137,7 +2180,7 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
     auto *revealer = Gtk::make_managed<Gtk::Revealer>();
     revealer->set_transition_type(Gtk::RevealerTransitionType::SLIDE_DOWN);
     revealer->set_transition_duration(200);
-    revealer->set_reveal_child(true);
+    revealer->set_reveal_child(init_expanded);
 
     auto *inner = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
     for (int i = 0; i < (int)node->children.size(); ++i) {
@@ -2149,8 +2192,9 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
     card->append(*revealer);
     parent_box->append(*card);
 
-    m_collapse_entries.push_back({section, path, revealer, arrow, true});
-    m_row_entries.push_back({section, path, hdr});
+    m_collapse_entries.push_back(
+        {section, path, revealer, arrow, init_expanded, node->iid});
+    m_row_entries.push_back({section, path, hdr, tlbl, tbox});
 
     // Left-click: select · Double-click: open in timeline · Alt-click:
     // expand/collapse
@@ -2466,7 +2510,7 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
     }
 
     parent_box->append(*row);
-    m_row_entries.push_back({section, path, row});
+    m_row_entries.push_back({section, path, row, tlbl, tbox});
 
     // Left-click
     auto gc_left = Gtk::GestureClick::create();
@@ -2656,6 +2700,10 @@ void Sidebar::toggle_node(int idx) {
     return;
   auto &e = m_collapse_entries[idx];
   e.expanded = !e.expanded;
+  if (BinderNode *n = m_model.find_node_by_iid(e.iid)) {
+    n->collapsed = !e.expanded;   // s89 — persist fold on the node (rides the bundle)
+    m_model.mark_modified();
+  }
   if (e.revealer)
     e.revealer->set_reveal_child(e.expanded);
   if (e.arrow) {
@@ -2741,52 +2789,97 @@ void Sidebar::begin_rename(Section section, const std::vector<int> &path) {
   BinderNode *node = m_model.node_at(section, path);
   if (!node)
     return;
-  // Anchor the popover to this row's header widget.
-  Gtk::Widget *anchor = nullptr;
-  for (const auto &re : m_row_entries)
-    if (re.section == section && re.path == path) { anchor = re.row; break; }
-  if (!anchor)
-    return;
 
-  auto *pop = Gtk::make_managed<Gtk::Popover>();
-  pop->set_parent(*anchor);
-  pop->set_autohide(true);
+  // In-place rename (s88): edit the row's title where it sits — no popup. Commits
+  // on Enter or a real focus-leave, cancels on Escape. Hardened against the focus
+  // churn the select/open broadcast causes (editor/inspector load_node +
+  // focus_meta_tab fire just before this): the entry grabs focus on a DEFERRED
+  // idle so it lands last, and focus-leave only commits AFTER a genuine
+  // focus-enter (armed) so a spurious pre-focus leave can't snap the editor shut.
+  Gtk::Label *title_lbl = nullptr;
+  Gtk::Box   *title_box = nullptr;
+  for (const auto &re : m_row_entries)
+    if (re.section == section && re.path == path) {
+      title_lbl = re.title_lbl;
+      title_box = re.title_box;
+      break;
+    }
+  if (!title_lbl || !title_box) {
+    LOG_DEBUG("begin_rename: no title widgets for this row");
+    return;
+  }
+  if (!title_lbl->get_visible())
+    return; // already editing this row
+
+  if (m_on_rename_begin) m_on_rename_begin(); // host suppresses editor focus-grab
+
   auto *entry = Gtk::make_managed<Gtk::Entry>();
+  entry->add_css_class("row-title");
   entry->set_text(node->title);
-  entry->set_margin(6);
-  entry->set_width_chars(24);
-  pop->set_child(*entry);
+  entry->set_hexpand(true);
+  entry->set_halign(Gtk::Align::FILL);
+  title_box->prepend(*entry);
+  title_lbl->set_visible(false);
 
   const Section sec = section;
   const std::vector<int> p = path;
-  auto committed = std::make_shared<bool>(false);
-  auto commit = [this, sec, p, entry, pop, committed]() {
-    if (*committed) return;          // activate + closed both fire; write once
-    *committed = true;
-    BinderNode *n = m_model.node_at(sec, p);
-    if (n) {
-      const std::string text = std::string(entry->get_text());
-      if (text != n->title) {
-        n->title = text;
-        m_model.mark_modified();
-        // After the popover finishes closing: refresh the row, and refresh any
-        // open surface's title via the rename channel. Selection moved to the
-        // board model, so reselecting the already-open node is a no-op — a full
-        // reload would also reset caret/scroll, so this updates the title only.
-        Glib::signal_idle().connect_once([this, sec, p]() {
-          rebuild_section(sec);
-          if (m_on_renamed) m_on_renamed(sec, p);
-        });
+  auto done  = std::make_shared<bool>(false);
+  auto armed = std::make_shared<bool>(false);
+
+  // finish(commit): write the title (if changed), then swap the label back in
+  // place — deferred to idle so we never mutate the widget tree from inside the
+  // entry's own focus/key handler. No rebuild_section: the row stays alive (a
+  // rebuild here is exactly what produced the earlier "flash then reset").
+  auto finish = [this, sec, p, entry, title_lbl, title_box, done](bool commit) {
+    if (*done) return;              // Enter + leave can both fire — run once
+    *done = true;
+    bool changed = false;
+    if (commit) {
+      BinderNode *n = m_model.node_at(sec, p);
+      if (n) {
+        std::string text = std::string(entry->get_text());
+        if (text != n->title) { n->title = text; changed = true; m_model.mark_modified(); }
       }
     }
-    pop->popdown();
+    Glib::signal_idle().connect_once(
+        [this, sec, p, entry, title_lbl, title_box, changed]() {
+          if (entry->get_parent() == title_box) title_box->remove(*entry);
+          if (title_lbl) {
+            if (changed) {
+              const BinderNode *n = m_model.node_at(sec, p);
+              if (n) title_lbl->set_text(n->title.empty() ? "Untitled" : n->title);
+            }
+            title_lbl->set_visible(true);
+          }
+          if (changed && m_on_renamed) m_on_renamed(sec, p);
+          if (m_on_rename_end) m_on_rename_end(); // re-enable editor focus-grab
+        });
   };
-  entry->signal_activate().connect(commit);
-  pop->signal_closed().connect([commit, pop]() { commit(); pop->unparent(); });
 
-  pop->popup();
-  entry->grab_focus();
-  entry->select_region(0, -1);
+  entry->signal_activate().connect([finish]() { finish(true); }); // Enter
+
+  auto focus = Gtk::EventControllerFocus::create();
+  focus->signal_enter().connect([armed]() { *armed = true; });
+  focus->signal_leave().connect([finish, armed]() {
+    if (*armed) finish(true);      // ignore the spurious pre-focus leave
+  });
+  entry->add_controller(focus);
+
+  auto key = Gtk::EventControllerKey::create();
+  key->signal_key_pressed().connect(
+      [finish](guint keyval, guint, Gdk::ModifierType) -> bool {
+        if (keyval == GDK_KEY_Escape) { finish(false); return true; }
+        return false;
+      },
+      false);
+  entry->add_controller(key);
+
+  // Grab focus on the NEXT idle so it runs after the select/open broadcast's own
+  // focus moves (which are scheduled earlier in the queue) — the entry wins.
+  Glib::signal_idle().connect_once([entry]() {
+    entry->grab_focus();
+    entry->select_region(0, -1);
+  });
 }
 
 void Sidebar::on_add_leaf(Section section,

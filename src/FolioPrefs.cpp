@@ -361,6 +361,9 @@ void FolioPrefs::load() {
         ts.fg_color      = sv("fg-color");
         ts.bg_color      = sv("bg-color");
         ts.line_height   = g_key_file_get_double(kf, GROUP_STYLES, (pfx + "line-height").c_str(), nullptr);
+        ts.space_above_px       = intv(GROUP_STYLES, (pfx + "space-above").c_str(),       0);
+        ts.space_below_px       = intv(GROUP_STYLES, (pfx + "space-below").c_str(),       0);
+        ts.first_line_indent_px = intv(GROUP_STYLES, (pfx + "first-line-indent").c_str(), -1);
         text_styles.push_back(ts);
     }
     // If no styles were saved yet, seed with the built-in defaults and save
@@ -697,6 +700,9 @@ void FolioPrefs::save() const {
         sk("fg-color",      ts.fg_color);
         sk("bg-color",      ts.bg_color);
         g_key_file_set_double(kf, GROUP_STYLES,  (pfx+"line-height").c_str(), ts.line_height);
+        g_key_file_set_integer(kf, GROUP_STYLES, (pfx+"space-above").c_str(),       ts.space_above_px);
+        g_key_file_set_integer(kf, GROUP_STYLES, (pfx+"space-below").c_str(),       ts.space_below_px);
+        g_key_file_set_integer(kf, GROUP_STYLES, (pfx+"first-line-indent").c_str(), ts.first_line_indent_px);
     }
 
     // Custom compile formats (s18) — one group "CompileFormat-N" per format.
@@ -852,7 +858,7 @@ std::vector<TextStyle> FolioPrefs::default_styles() const {
     v.push_back({"paragraph", "Body Text",        S, 12, false, false, false, "left",   "", "", 1.9});
 
     // Body Text First — opening paragraph of a section, no indent
-    v.push_back({"paragraph", "Body Text First",  S, 12, false, false, false, "left",   "", "", 1.9});
+    v.push_back({"paragraph", "Body Text First",  S, 12, false, false, false, "left",   "", "", 1.9, 0, 0, 0});
 
     // Block Quote — indented both sides, slightly smaller
     v.push_back({"paragraph", "Block Quote",      S, 11, false, true,  false, "left",   "", "", 1.6});
