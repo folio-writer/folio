@@ -2840,6 +2840,9 @@ void Editor::build_editor_area() {
   m_relationship_timeline.set_open_callback([this](const std::string& iid) {
     if (m_on_timeline_open) m_on_timeline_open(iid);
   });
+  m_relationship_timeline.set_palette_changed_callback([this]() {
+    if (m_on_palette_changed) m_on_palette_changed();   // s89 — relay to host
+  });
   m_view_stack.add(m_relationship_timeline, "timeline-lens");
 
   // ── s51 — the owned Mind Map document surface ───────────────────────────────

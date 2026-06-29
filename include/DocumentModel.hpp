@@ -595,6 +595,11 @@ public:
     };
     std::vector<SavedTab> open_tabs;
     int                   timeline_active_idx = -1;
+    // s90 — which Relationship Timeline resource-rail disclosures are collapsed,
+    // by category key (TrackCategory enum 0..3; -1 Story Threads; -2 Key Points).
+    // Stored as a sparse list (only collapsed keys present), mirroring how the
+    // binder fold state persists on the node. Saved per-project.
+    std::vector<int>      timeline_rail_collapsed;
 
     // ── Sidebar selection state (saved per-project) ───────────────────────────
     Section     sidebar_selected_section = Section::Manuscript;
@@ -631,6 +636,11 @@ public:
 
     // Mutations
     void mark_modified();
+    // s90 — Relationship Timeline rail disclosure fold state (sparse: a key is
+    // present in timeline_rail_collapsed iff that category is collapsed).
+    // set_rail_collapsed marks the project modified so the choice is saved.
+    bool is_rail_collapsed(int key) const;
+    void set_rail_collapsed(int key, bool collapsed);
     void add_session_words(int delta) { session_words = std::max(0, session_words + delta); }
 
     std::vector<int> add_group(Section section,

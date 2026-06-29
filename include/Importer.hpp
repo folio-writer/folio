@@ -5,6 +5,7 @@
 // No GTK dependency.
 // ─────────────────────────────────────────────────────────────────────────────
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,15 @@ struct ImportOptions {
     // ── Folder-as-group ───────────────────────────────────────────────────────
     // When importing a folder: wrap all scenes in a Group named after the folder.
     bool folder_as_group = true;
+
+    // ── High-fidelity conversion (s89) ────────────────────────────────────────
+    // When true AND a LibreOffice binary (soffice/libreoffice) is on PATH, .docx
+    // and .rtf files are first converted to .odt via `soffice --headless
+    // --convert-to odt` and imported through the ODT path (which preserves
+    // paragraph alignment + heading structure). Falls back silently to the
+    // native parser when LibreOffice is absent or conversion fails. Almost every
+    // Linux desktop ships LibreOffice, so this is the default for those formats.
+    bool use_libreoffice = true;
 };
 
 // ─── ImportNode ───────────────────────────────────────────────────────────────
@@ -59,6 +69,10 @@ struct ImportResult {
 
 class Importer {
 public:
+    // Whether a LibreOffice binary (soffice/libreoffice) is on PATH — lets the
+    // import dialog enable the high-fidelity .docx/.rtf conversion option. (s89)
+    static bool libreoffice_available();
+
     // Import a single file.  Format is inferred from the extension.
     static ImportResult import_file(const std::string& path,
                                     const ImportOptions& opts = {});
@@ -118,6 +132,22 @@ private:
 
     // Strip RTF control sequences → plain UTF-8 text.
     static std::string rtf_to_plain(const std::string& rtf);
+
+    // ── LibreOffice high-fidelity conversion (s89) ────────────────────────────
+    // Whether a LibreOffice binary is on PATH (for the import dialog to enable
+    // the option). Returns the resolved program path, or "" if none found.
+    static std::string libreoffice_program();
+    // Split a search PATH string into directories (pure; sandbox-tested).
+    static std::vector<std::string> split_search_path(const std::string& path);
+    // Convert `input` to a temp .odt via the given LibreOffice program; returns
+    // the produced .odt path (in a fresh temp dir the caller must clean up), or
+    // "" on failure.
+    static std::string convert_to_odt(const std::string& program,
+                                      const std::string& input);
+    // Try the convert→parse_odt path for a .docx/.rtf; std::nullopt → fall back
+    // to the native parser. Cleans up its own temp dir.
+    static std::optional<ImportResult> try_libreoffice_import(
+        const std::string& path, const std::string& st, const ImportOptions& opts);
 
     // Parse word/document.xml → plain text (preserving paragraph breaks).
     static std::string docx_xml_to_plain(const std::string& xml);

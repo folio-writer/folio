@@ -106,6 +106,7 @@ private:
   void navigate_to_link(const std::string& target_iid, const std::string& anchor_id);
   void on_tab_closed(const OpenTab &tab);
   void on_meta_changed(BinderNode* node);
+  void on_timeline_palette_changed();  // s89 — timeline palette edit → refresh Inspector/sidebar
 
   // sync_sidebar=false when called from sidebar (it already has correct state)
   // sync_sidebar=true when called from tab click, app restore, etc.
@@ -117,6 +118,8 @@ private:
 
   // ── File operations ───────────────────────────────────────────────────────
   void action_new();
+  void action_close_project();   // s89 — close project, keep app open
+  void swap_to_new_project();    // s89 — shared safe reset (no confirm)
   void action_new_from_pattern();   // s23 — scaffold the manuscript from a module
   void action_open_sample();        // s48 — load the built-in demo project (eval data)
   void action_open();

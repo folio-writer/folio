@@ -229,6 +229,21 @@ void ImportDialog::build_options() {
         "When importing a folder, create a Group node named after the folder and "
         "place all imported scenes inside it.");
     m_opts_box.append(m_chk_folder_group);
+
+    // ── Section: Fidelity (s89) ───────────────────────────────────────────────
+    m_opts_box.append(*make_section("Word / RTF Fidelity"));
+
+    const bool lo = Importer::libreoffice_available();
+    m_chk_libreoffice.set_label("Use LibreOffice for .docx / .rtf (better fidelity)");
+    m_chk_libreoffice.set_active(lo);
+    m_chk_libreoffice.set_sensitive(lo);
+    m_chk_libreoffice.set_tooltip_text(
+        lo ? "Convert .docx and .rtf to ODT via LibreOffice before importing, "
+             "preserving paragraph alignment and heading structure. Falls back to "
+             "the built-in parser if conversion fails."
+           : "LibreOffice (soffice) was not found on your PATH, so .docx/.rtf use "
+             "the built-in parser.");
+    m_opts_box.append(m_chk_libreoffice);
 }
 
 ImportOptions ImportDialog::current_opts() const {
@@ -236,6 +251,7 @@ ImportOptions ImportDialog::current_opts() const {
     opts.separator               = m_sep_entry.get_text();
     opts.md_headings_as_hierarchy = m_chk_md_headings.get_active();
     opts.folder_as_group         = m_chk_folder_group.get_active();
+    opts.use_libreoffice         = m_chk_libreoffice.get_active();   // s89
 
     switch (m_title_dd ? m_title_dd->get_selected() : 0) {
     case 1:  opts.title_source = ImportOptions::TitleSource::Filename;   break;
@@ -431,6 +447,12 @@ void ImportDialog::update_preview() {
 
     // Quick dry-run to count expected nodes
     ImportOptions opts = current_opts();
+    // s89 — the preview is a node COUNT and re-runs on every option keystroke;
+    // never shell out to LibreOffice here (it would freeze the dialog and spawn a
+    // conversion per keystroke). Count with the fast native parser; the real
+    // import (on_import) does the high-fidelity conversion. The count is an
+    // estimate — converted heading structure may yield a few more groups.
+    opts.use_libreoffice = false;
     int total_scenes = 0, total_groups = 0, errors = 0;
 
     for (auto& e : m_entries) {

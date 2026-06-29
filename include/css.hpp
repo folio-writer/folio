@@ -389,10 +389,17 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
     }
     /* category disclosures (binder-style): the expander title carries the
        header label + the disclosure arrow; the body holds the subject rows. */
+    /* category disclosures (binder-style, s90): a clickable header row carries
+       the heading label + a chevron; the whole row toggles a Revealer body.
+       (Replaces the Gtk::Expander whose internal arrow node ignored clicks.) */
     .timeline-rail-group { margin: 2px 0 0 0; }
-    .timeline-rail-group > title,
-    .timeline-rail-group > box.title { padding: 0; }
-    .timeline-rail-group > title:hover { background-color: @adw_overlay; border-radius: 5px; }
+    .timeline-rail-group-hdr { padding: 0; border-radius: 5px; }
+    .timeline-rail-group-hdr:hover { background-color: @adw_overlay; }
+    .timeline-rail-arrow {
+        font-size: 11px; color: @tx3; padding: 0 4px;
+        transition: color 150ms;
+    }
+    .timeline-rail-group-hdr:hover .timeline-rail-arrow { color: @tx2; }
     .timeline-rail-group .timeline-rail-header { padding: 6px 4px 4px 2px; }
     .timeline-rail-group-body { margin: 0 0 2px 2px; }
     /* s85 — the inline "new thread" mint row in the Story Threads section. */

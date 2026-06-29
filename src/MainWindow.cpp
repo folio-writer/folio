@@ -571,7 +571,7 @@ void MainWindow::setup_headerbar() {
   project_sec->append_item(make_item("Save", "win.save", "<Ctrl>s"));
   project_sec->append_item(
       make_item("Save As…", "win.save-as", "<Ctrl><Shift>s"));
-  project_sec->append_item(make_item("Close Window", "win.quit", "<Ctrl>w"));
+  project_sec->append_item(make_item("Close Project", "win.close-project", "<Ctrl>w"));
   file_menu->append_section(project_sec);
 
   // ── Share submenu: Import / Export / Print / Report ───────────────────────
@@ -1231,6 +1231,9 @@ void MainWindow::wire_callbacks() {
     m_view_mode_dd.set_selected(0);   // back to Write
     navigate_to_link(iid, "");
   });
+  // s89 — a palette/thread edit on the timeline lens → live-refresh the surfaces
+  // that read the palette but aren't the timeline itself.
+  m_editor->set_palette_changed_callback([this]() { on_timeline_palette_changed(); });
 
   // s48 slice 2 — double-click empty map → author a Reference fragment there.
   // Creates a real leaf in the References section (honouring the user's reference
@@ -1605,6 +1608,21 @@ void MainWindow::on_meta_changed(BinderNode *node) {
   update_title_bar();
 }
 
+// s89 — a palette edit made on the timeline lens (rail/band/KP recolour, rename,
+// delete, mint) changes m_prefs.tag_colors and/or the thread registry. The
+// timeline redraws itself; this refreshes the OTHER surfaces that read the
+// palette — the Inspector colour dropdowns + project tab, and the sidebar
+// swatches — which previously only updated on lens exit. Called idle-deferred
+// (TimelineSurface::notify_palette_changed), so rebuilding views here is safe.
+void MainWindow::on_timeline_palette_changed() {
+  if (m_inspector) {
+    m_inspector->refresh_prefs_dropdowns();
+    m_inspector->refresh_project_tab();
+  }
+  if (m_sidebar)
+    m_sidebar->rebuild();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Title bar
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1675,26 +1693,39 @@ void MainWindow::confirm_discard_async(std::function<void()> then) {
   });
 }
 
+// s89 — the safe project-swap body shared by New Project and Close Project. Drops
+// the editor's current node BEFORE the model swap frees the old tree (save_current
+// writes through m_current_node — the same use-after-free guard as
+// action_open_sample), resets to a fresh blank project, and rebuilds the surfaces.
+// Callers wrap this in confirm_discard_async.
+void MainWindow::swap_to_new_project() {
+  if (m_timeline)
+    m_timeline->clear();
+  if (m_editor)
+    m_editor->load_empty();
+  m_model = DocumentModel::new_project();
+  m_model.daily_target = m_prefs.daily_word_goal;
+  m_model.on_node_changed = [this](BinderNode *n) { on_node_changed(n); };
+  if (m_sidebar) {
+    m_sidebar->rebuild();
+    m_sidebar->refresh_session();
+  }
+  if (m_inspector)
+    m_inspector->load_project();
+  apply_selection({});
+  update_title_bar();
+}
+
 void MainWindow::action_new() {
-  confirm_discard_async([this]() {
-    if (m_timeline)
-      m_timeline->clear();
-    // Drop the editor's current node before the swap frees the old tree (same
-    // use-after-free guard as action_open_sample — save_current writes through it).
-    if (m_editor)
-      m_editor->load_empty();
-    m_model = DocumentModel::new_project();
-    m_model.daily_target = m_prefs.daily_word_goal;
-    m_model.on_node_changed = [this](BinderNode *n) { on_node_changed(n); };
-    if (m_sidebar) {
-      m_sidebar->rebuild();
-      m_sidebar->refresh_session();
-    }
-    if (m_inspector)
-      m_inspector->load_project();
-    apply_selection({});
-    update_title_bar();
-  });
+  confirm_discard_async([this]() { swap_to_new_project(); });
+}
+
+// s89 — Close the current project without quitting the app. Folio is
+// single-window, so "Close Window"/"Quit" end the app; this gives the close
+// gesture (Ctrl+W) a non-quitting home — it runs the same safe reset as New
+// Project, leaving you on a fresh blank project from which to Open or build.
+void MainWindow::action_close_project() {
+  confirm_discard_async([this]() { swap_to_new_project(); });
 }
 
 void MainWindow::action_open_sample() {
@@ -1736,8 +1767,7 @@ void MainWindow::action_new_from_pattern() {
     m_pattern_dialog->set_apply_callback([this](const Module& mod, const PlanInputs& in) {
       if (m_timeline)
         m_timeline->clear();
-      m_model = DocumentModel::new_project();
-      m_model.root(Section::Manuscript).clear();   // drop new_project's seed Part I/Chapter 1
+      m_model = DocumentModel::new_project();   // s90: already empty — scaffold builds onto a blank spine
       m_model.daily_target = m_prefs.daily_word_goal;
       m_model.on_node_changed = [this](BinderNode *n) { on_node_changed(n); };
 
@@ -1937,6 +1967,7 @@ void MainWindow::setup_actions() {
   };
 
   add("new", [this]() { action_new(); });
+  add("close-project", [this]() { action_close_project(); });
   add("new-from-pattern", [this]() { action_new_from_pattern(); });
   add("open", [this]() { action_open(); });
   add("open-sample", [this]() { action_open_sample(); });
@@ -2088,7 +2119,8 @@ void MainWindow::setup_actions() {
     app->set_accels_for_action("win.preferences", {"<Ctrl>comma"});
     app->set_accels_for_action("win.pomodoro", {"<Ctrl><Shift>p"});
     app->set_accels_for_action("win.batch-snapshot", {"<Ctrl><Shift>t"});
-    app->set_accels_for_action("win.quit", {"<Ctrl>q", "<Ctrl>w"});
+    app->set_accels_for_action("win.quit", {"<Ctrl>q"});
+    app->set_accels_for_action("win.close-project", {"<Ctrl>w"});  // s89
     app->set_accels_for_action("win.focus-mode", {"<Ctrl><Shift>f"});
     app->set_accels_for_action("win.toggle-binder", {"<Ctrl><Shift>b"});
     app->set_accels_for_action("win.toggle-inspector", {"<Ctrl><Shift>i"});
@@ -2751,7 +2783,7 @@ void MainWindow::show_shortcuts_window() {
               <property name="accelerator">&lt;Ctrl&gt;o</property>
             </object></child>
             <child><object class="GtkShortcutsShortcut">
-              <property name="title">Close Window</property>
+              <property name="title">Close Project</property>
               <property name="accelerator">&lt;Ctrl&gt;w</property>
             </object></child>
             <child><object class="GtkShortcutsShortcut">

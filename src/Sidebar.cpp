@@ -871,8 +871,8 @@ void Sidebar::build_section_header(Section section) {
                                        : "user-trash-symbolic";
 
   const char *tip = section == Section::Trash
-                        ? "Click to toggle · Ctrl+click to expand/collapse all · Right-click to empty trash"
-                        : "Click to toggle · Ctrl+click to expand/collapse all · Right-click to add\nCtrl+Alt+E = expand all · Ctrl+Alt+K = collapse all";
+                        ? "Click to toggle · Ctrl+click expand/collapse this section · Ctrl+Alt+click whole binder · Right-click to empty trash"
+                        : "Click to toggle · Ctrl+click expand/collapse this section · Ctrl+Alt+click whole binder · Right-click to add\nCtrl+Alt+E = expand · Ctrl+Alt+K = collapse";
 
   auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 4);
   row->set_cursor(Gdk::Cursor::create("pointer"));
@@ -903,21 +903,26 @@ void Sidebar::build_section_header(Section section) {
   m_scroll_content.append(*row);
 
   // Left-click: toggle section collapse
-  // Ctrl+click: expand all groups in section
-  // Alt+click: collapse all groups in section
+  // Ctrl+click: smart expand/collapse THIS section (its groups)
+  // Ctrl+Alt+click: smart expand/collapse the WHOLE binder (every section)
   auto gc_left = Gtk::GestureClick::create();
   gc_left->set_button(1);
   gc_left->signal_pressed().connect(
       [this, gc_left, section](int, double, double) {
         Gdk::ModifierType mods = gc_left->get_current_event_state();
         bool ctrl = (mods & Gdk::ModifierType::CONTROL_MASK) != Gdk::ModifierType{};
-        if (ctrl) {
-          // Expand/collapse the WHOLE category: the section's own disclosure AND
-          // every group within, so the result is always visible. Smart toggle:
-          // if the section is closed or anything inside is collapsed, open
-          // everything; otherwise collapse everything.
-          bool expand = !section_header(section).expanded ||
-                        any_collapsed_in_subtree(section, {});
+        bool alt  = (mods & Gdk::ModifierType::ALT_MASK)     != Gdk::ModifierType{};
+        // Smart toggle direction (shared by both scopes): if the clicked section
+        // is closed or anything inside it is collapsed, the verb is EXPAND;
+        // otherwise COLLAPSE.
+        const bool expand = !section_header(section).expanded ||
+                            any_collapsed_in_subtree(section, {});
+        if (ctrl && alt) {
+          // Whole binder — every section + all groups (the clicked one decides).
+          set_all_sections_expanded(expand);
+        } else if (ctrl) {
+          // This section: its own disclosure AND every group within, so the
+          // result is always visible.
           if (section_header(section).expanded != expand)
             toggle_section(section);                 // open/close the category itself
           set_subtree_expanded(section, {}, expand);  // and all groups within
@@ -937,19 +942,38 @@ void Sidebar::build_section_header(Section section) {
   row->add_controller(gc_right);
 }
 
-void Sidebar::toggle_section(Section s) {
+void Sidebar::set_section_expanded(Section s, bool expand) {
   auto &sh = section_header(s);
-  sh.expanded = !sh.expanded;
+  sh.expanded = expand;
   if (sh.revealer)
-    sh.revealer->set_reveal_child(sh.expanded);
+    sh.revealer->set_reveal_child(expand);
   if (sh.arrow) {
-    if (sh.expanded) {
+    if (expand) {
       sh.arrow->set_text("▾");
       sh.arrow->remove_css_class("section-arrow-collapsed");
     } else {
       sh.arrow->set_text("▸");
       sh.arrow->add_css_class("section-arrow-collapsed");
     }
+  }
+}
+
+void Sidebar::toggle_section(Section s) {
+  set_section_expanded(s, !section_header(s).expanded);
+  if (m_on_disclosure_changed)
+    m_on_disclosure_changed();
+}
+
+// s90 — Ctrl+Alt+click on any section header sweeps the WHOLE binder: every
+// section's own disclosure AND every group within. The clicked section's state
+// picks the verb (mirrors the Relationship Timeline rail). Section folds go
+// silently so the disclosure callback (which saves prefs) fires once at the end;
+// set_subtree_expanded persists the group folds on the model as it goes.
+void Sidebar::set_all_sections_expanded(bool expand) {
+  for (Section s : {Section::Manuscript, Section::Characters, Section::Places,
+                    Section::References, Section::Templates, Section::Trash}) {
+    set_section_expanded(s, expand);
+    set_subtree_expanded(s, {}, expand);
   }
   if (m_on_disclosure_changed)
     m_on_disclosure_changed();

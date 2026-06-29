@@ -110,6 +110,9 @@ public:
     void refresh_session();
     void expand_all_in_section(Section section);
     void collapse_all_in_section(Section section);
+    // s90 — whole-binder expand/collapse (every section + all groups), driven by
+    // Ctrl+Alt+click on any section header. Fires the disclosure callback once.
+    void set_all_sections_expanded(bool expand);
     // Expand/collapse a whole subtree rooted at `root` (an empty root == every
     // group in the section). Used by the disclosure triangle's Ctrl+click and by
     // the section-wide expand/collapse helpers above.
@@ -323,6 +326,10 @@ private:
         return m_sec_manuscript;
     }
     void toggle_section(Section s);
+    // s90 — set a section's own disclosure without firing the disclosure callback
+    // (toggle_section = this + the callback). Lets a whole-binder sweep batch to a
+    // single callback/prefs-save at the end.
+    void set_section_expanded(Section s, bool expand);
 
     // ── Model / prefs ─────────────────────────────────────────────────────────
     DocumentModel& m_model;

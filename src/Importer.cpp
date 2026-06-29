@@ -10,9 +10,18 @@
 #include <dirent.h>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <optional>
 #include <set>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <sstream>
 #include <zlib.h>
+
+// The POSIX global environment, declared at global scope for posix_spawn's envp.
+// (Declaring it inside namespace Folio would name a nonexistent Folio::environ.)
+extern "C" char** environ;
 
 namespace Folio {
 
@@ -836,6 +845,51 @@ static void odt_collect_emphasis_styles(const std::string& xml,
     }
 }
 
+// Collect paragraph style names that carry a non-default alignment, by scanning
+// each <style:style> block for fo:text-align (which lives in
+// <style:paragraph-properties>). ODT/XSL-FO values: start/left = default (omit),
+// end/right, center, justify. Maps the style name → the editor's text-align
+// token, so a paragraph referencing the style can be wrapped to match. (s89 —
+// import alignment fidelity. Pure; sandbox-tested in test_odt_align.cpp.)
+static void odt_collect_align_styles(const std::string& xml,
+                                     std::map<std::string, std::string>& align) {
+    size_t pos = 0;
+    while (true) {
+        size_t s = xml.find("<style:style", pos);
+        if (s == std::string::npos) break;
+        size_t hdr_end = xml.find('>', s);
+        if (hdr_end == std::string::npos) break;
+        size_t e = xml.find("</style:style>", s);
+
+        std::string open = xml.substr(s, hdr_end - s);
+        std::string name;
+        size_t np = open.find("style:name=\"");
+        if (np != std::string::npos) {
+            np += 12;
+            size_t nq = open.find('"', np);
+            if (nq != std::string::npos) name = open.substr(np, nq - np);
+        }
+        std::string block = (e == std::string::npos) ? open : xml.substr(s, e - s);
+        if (!name.empty()) {
+            size_t ap = block.find("fo:text-align=\"");
+            if (ap != std::string::npos) {
+                ap += 15;   // length of: fo:text-align="
+                size_t aq = block.find('"', ap);
+                if (aq != std::string::npos) {
+                    std::string v = block.substr(ap, aq - ap);
+                    std::string mapped;
+                    if      (v == "center")               mapped = "center";
+                    else if (v == "end" || v == "right")  mapped = "right";
+                    else if (v == "justify")              mapped = "justify";
+                    // start / left → editor default (left); leave unmapped.
+                    if (!mapped.empty()) align[name] = mapped;
+                }
+            }
+        }
+        pos = (e == std::string::npos) ? hdr_end + 1 : e + 14;
+    }
+}
+
 static std::string odt_decode_entity(const std::string& e) {
     if (e == "&amp;")  return "&";
     if (e == "&lt;")   return "<";
@@ -851,6 +905,8 @@ static std::vector<ImportNode> odt_to_nodes(const std::string& xml,
     found_heading = false;
     std::set<std::string> italic_styles, bold_styles;
     odt_collect_emphasis_styles(xml, italic_styles, bold_styles);
+    std::map<std::string, std::string> align_styles;   // s89 — style → text-align
+    odt_collect_align_styles(xml, align_styles);
 
     std::vector<ImportNode> nodes;
     int  cur_scene  = -1;     // index into nodes of the scene we're filling
@@ -861,6 +917,7 @@ static std::vector<ImportNode> odt_to_nodes(const std::string& xml,
     std::string head_text;    // plain (decoded) heading text → node title
     std::string para_html;    // inner HTML of the current paragraph
     bool para_italic = false, para_bold = false;
+    std::string para_align;   // s89 — "center"/"right"/"justify" or "" (default)
     std::vector<std::string> span_close;  // per-open-span closing tags
 
     auto append_char_data = [&](const std::string& decoded) {
@@ -939,6 +996,8 @@ static std::vector<ImportNode> odt_to_nodes(const std::string& xml,
                 std::string st = attr("text:style-name");
                 para_italic = italic_styles.count(st) > 0;
                 para_bold   = bold_styles.count(st)   > 0;
+                auto ai = align_styles.find(st);       // s89
+                para_align = (ai != align_styles.end()) ? ai->second : std::string();
             }
             else if (in_body && name == "/text:p") {
                 in_para = false;
@@ -952,6 +1011,13 @@ static std::vector<ImportNode> odt_to_nodes(const std::string& xml,
                     cur_scene  = (int)nodes.size() - 1;
                 }
                 std::string open, close;
+                // s89 — alignment is paragraph-level: wrap it OUTERMOST (over any
+                // b/i) so the whole paragraph range carries the editor's
+                // text-align span, which from_html maps to a justify_* tag.
+                if (!para_align.empty()) {
+                    open  += "<span style=\"text-align:" + para_align + "\">";
+                    close  = "</span>" + close;
+                }
                 if (para_bold)   { open += "<b>"; close = "</b>" + close; }
                 if (para_italic) { open += "<i>"; close = "</i>" + close; }
                 nodes[(size_t)cur_scene].html += "<p>" + open + para_html + close + "</p>";
@@ -1035,6 +1101,109 @@ ImportResult Importer::parse_odt(const std::vector<uint8_t>& zip_bytes,
 // import_file  — public entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LibreOffice high-fidelity conversion (s89)
+//
+// Most Linux desktops ship LibreOffice; when present we route .docx/.rtf through
+// `soffice --headless --convert-to odt`, then import the result via the ODT path
+// (which preserves paragraph alignment + heading→Group/Scene structure). An
+// isolated -env:UserInstallation profile lets this run even while the user has
+// LibreOffice open (the shared-profile lock otherwise makes --convert-to fail).
+// Every step degrades to std::nullopt so import_file falls back to the native
+// parser. posix_spawn with an argv array — no shell, so no quoting/injection.
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::vector<std::string> Importer::split_search_path(const std::string& path) {
+    std::vector<std::string> dirs;
+    size_t start = 0;
+    while (start <= path.size()) {
+        size_t colon = path.find(':', start);
+        size_t end   = (colon == std::string::npos) ? path.size() : colon;
+        if (end > start) dirs.push_back(path.substr(start, end - start));
+        if (colon == std::string::npos) break;
+        start = colon + 1;
+    }
+    return dirs;
+}
+
+std::string Importer::libreoffice_program() {
+    const char* penv = std::getenv("PATH");
+    if (!penv) return {};
+    const char* names[] = {"soffice", "libreoffice"};
+    for (const std::string& dir : split_search_path(penv)) {
+        for (const char* nm : names) {
+            std::string cand = dir + "/" + nm;
+            if (::access(cand.c_str(), X_OK) == 0) return cand;
+        }
+    }
+    return {};
+}
+
+bool Importer::libreoffice_available() {
+    return !libreoffice_program().empty();
+}
+
+std::string Importer::convert_to_odt(const std::string& program,
+                                     const std::string& input) {
+    char tmpl[] = "/tmp/folio-import-XXXXXX";
+    char* dir = ::mkdtemp(tmpl);
+    if (!dir) return {};
+    std::string outdir(dir);
+    std::string profile = "-env:UserInstallation=file://" + outdir + "/profile";
+
+    std::vector<std::string> args = {
+        program, "--headless", profile, "--convert-to", "odt",
+        "--outdir", outdir, input,
+    };
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 1);
+    for (std::string& a : args) argv.push_back(a.data());
+    argv.push_back(nullptr);
+
+    pid_t pid = 0;
+    int rc = ::posix_spawn(&pid, program.c_str(), nullptr, nullptr,
+                           argv.data(), ::environ);
+    if (rc != 0) {
+        std::error_code rm_ec; fs::remove_all(outdir, rm_ec);
+        return {};
+    }
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+
+    // LibreOffice names the output <stem>.odt; if that's not where we expect,
+    // take any .odt the run produced before giving up.
+    std::string out = outdir + "/" + stem(input) + ".odt";
+    if (!fs::exists(out)) {
+        out.clear();
+        std::error_code it_ec;
+        for (const auto& de : fs::directory_iterator(outdir, it_ec)) {
+            if (de.path().extension() == ".odt") { out = de.path().string(); break; }
+        }
+    }
+    if (!out.empty() && fs::exists(out)) return out;
+    std::error_code rm_ec; fs::remove_all(outdir, rm_ec);
+    return {};
+}
+
+std::optional<ImportResult> Importer::try_libreoffice_import(
+        const std::string& path, const std::string& st,
+        const ImportOptions& opts) {
+    if (!opts.use_libreoffice) return std::nullopt;
+    std::string program = libreoffice_program();
+    if (program.empty()) return std::nullopt;
+    std::string odt = convert_to_odt(program, path);
+    if (odt.empty()) return std::nullopt;
+
+    auto bytes = read_binary(odt);
+    std::error_code rm_ec;
+    fs::remove_all(fs::path(odt).parent_path(), rm_ec);   // clean the temp dir
+    if (bytes.empty()) return std::nullopt;
+
+    ImportResult r = parse_odt(bytes, st, opts);
+    if (!r.ok() || r.nodes.empty()) return std::nullopt;
+    return r;
+}
+
 ImportResult Importer::import_file(const std::string& path,
                                    const ImportOptions& opts) {
     std::string ext  = extension(path);
@@ -1054,11 +1223,13 @@ ImportResult Importer::import_file(const std::string& path,
     }
 
     if (ext == ".rtf") {
+        if (auto r = try_libreoffice_import(path, st, opts)) return *r;  // s89
         std::string text = read_text(path);
         return parse_rtf(text, st, opts);
     }
 
     if (ext == ".docx") {
+        if (auto r = try_libreoffice_import(path, st, opts)) return *r;  // s89
         auto bytes = read_binary(path);
         if (bytes.empty()) {
             ImportResult r; r.error = "Cannot read file: " + path; return r;

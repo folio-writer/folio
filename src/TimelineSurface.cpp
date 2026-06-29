@@ -771,6 +771,19 @@ void TimelineSurface::show_track_menu(int track_idx, double x, double y) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// s89 — tell the host a palette/registry edit happened so it can live-refresh
+// the surfaces that READ the palette but are not the timeline itself (the
+// Inspector colour dropdowns + the sidebar swatches). Deferred to idle so it is
+// safe to call from inside a rail/popover swatch handler (the s24 rule): the
+// host's refresh rebuilds views, which must not run while the popover that
+// triggered the edit is still on the stack.
+void TimelineSurface::notify_palette_changed() {
+  if (!m_on_palette_changed) return;
+  Glib::signal_idle().connect_once([this]() {
+    if (m_on_palette_changed) m_on_palette_changed();
+  });
+}
+
 // s86 — thread management (rename / recolour / delete-unused)
 //
 // The edit surface for an existing thread. Mint already lives on two surfaces
@@ -814,6 +827,7 @@ void TimelineSurface::rename_thread(const std::string& thread_iid,
     if (t.label == label) return;               // no change
     t.label = label;
     m_model.mark_modified();
+    notify_palette_changed();   // s89
     Glib::signal_idle().connect_once([this]() { rebuild(); });
     return;
   }
@@ -829,6 +843,7 @@ void TimelineSurface::recolour_thread(const std::string& thread_iid, int color_i
     if (t.color_idx == color_idx) return;       // no change
     t.color_idx = color_idx;
     m_model.mark_modified();
+    notify_palette_changed();   // s89 — refresh Inspector/sidebar
     Glib::signal_idle().connect_once([this]() { rebuild(); });
     return;
   }
@@ -856,6 +871,7 @@ void TimelineSurface::delete_thread(const std::string& thread_iid) {
       m_armed_color_idx = 0;
     }
     m_model.mark_modified();
+    notify_palette_changed();   // s89
     rebuild();
   });
 }
@@ -1149,6 +1165,7 @@ void TimelineSurface::rename_kp(const std::string& kp_id,
       }
     }
     m_model.mark_modified();
+    notify_palette_changed();   // s89 — KP label feeds the Inspector dropdowns
     Glib::signal_idle().connect_once([this]() { rebuild(); });
     return;
   }
@@ -1164,6 +1181,7 @@ void TimelineSurface::recolour_kp(const std::string& kp_id, const std::string& h
     tc.hex = hex;
     m_prefs.save();
     m_model.mark_modified();                  // the project's colours moved
+    notify_palette_changed();   // s89 — KP hue feeds dropdowns + sidebar swatches
     Glib::signal_idle().connect_once([this]() { rebuild(); });
     return;
   }
@@ -1232,6 +1250,7 @@ void TimelineSurface::delete_kp(const std::string& kp_id) {
     }
     m_prefs.save();
     m_model.mark_modified();
+    notify_palette_changed();   // s89 — delete remaps color_idx → dropdowns + swatches
     rebuild();
   });
 }
@@ -1928,6 +1947,7 @@ void TimelineSurface::build_rail(const std::vector<ResourceGroup>& groups) {
   // Tear down the previous rows (managed children destroyed on remove); the
   // member m_rail_empty is merely unparented and re-appended below.
   m_rail_rows.clear();
+  m_rail_disclosures.clear();   // s90 — repopulated as disclosures are built below
   while (Gtk::Widget* c = m_rail_box.get_first_child()) m_rail_box.remove(*c);
 
   bool any_subjects = false;
@@ -1947,29 +1967,12 @@ void TimelineSurface::build_rail(const std::vector<ResourceGroup>& groups) {
   for (const ResourceGroup& g : groups) {
     if (g.items.empty()) continue;
 
-    // Category disclosure (binder-style): an Expander titled with the §9.6
-    // heading, its body the subject rows. The author can collapse a category;
-    // the choice persists across rebuilds (view-entry, commit_sweep) via
-    // m_rail_collapsed, keyed by the TrackCategory enum value.
+    // Category disclosure (binder-style, s90): a clickable header row titled with
+    // the §9.6 heading, its Revealer body the subject rows. The author can collapse
+    // a category; the choice persists across rebuilds AND save/load (s90) via
+    // DocumentModel::timeline_rail_collapsed, keyed by the TrackCategory enum value.
     const int cat_key = static_cast<int>(g.category);
-    auto* exp = Gtk::make_managed<Gtk::Expander>();
-    exp->set_name("timeline-rail-group");
-    exp->add_css_class("timeline-rail-group");
-
-    auto* hdr = Gtk::make_managed<Gtk::Label>(category_heading(g.category));
-    hdr->set_xalign(0.0f);
-    hdr->add_css_class("timeline-rail-header");
-    hdr->set_name("timeline-rail-header");
-    exp->set_label_widget(*hdr);
-    exp->set_expanded(m_rail_collapsed.find(cat_key) == m_rail_collapsed.end());
-    exp->property_expanded().signal_changed().connect([this, cat_key, exp]() {
-      if (exp->get_expanded()) m_rail_collapsed.erase(cat_key);
-      else                     m_rail_collapsed.insert(cat_key);
-    });
-
-    auto* body = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
-    body->add_css_class("timeline-rail-group-body");
-    exp->set_child(*body);
+    Gtk::Box* body = add_rail_disclosure(category_heading(g.category), cat_key);
 
     for (const ResourceItem& it : g.items) {
       // s86 — the row swatch is the subject's own colour when set, else the
@@ -2031,8 +2034,6 @@ void TimelineSurface::build_rail(const std::vector<ResourceGroup>& groups) {
       body->append(*btn);
       m_rail_rows.emplace_back(it.iid, btn);
     }
-
-    m_rail_box.append(*exp);
   }
 
   // s85 — the Story Threads section (the §9.12.6 #4 batch-assign entry), below the
@@ -2041,9 +2042,95 @@ void TimelineSurface::build_rail(const std::vector<ResourceGroup>& groups) {
   build_kp_rail_section();
 }
 
-// s85 — the rail's "Story Threads" disclosure: one row per registered thread
+// s90 — binder-style rail disclosure (mirrors the Sidebar pomodoro tile pattern).
+// A header row [heading | chevron] wrapped in a GestureClick, above a Revealer
+// holding the body. The whole header row is the click target, so clicking the
+// chevron OR the name toggles — fixing the Gtk::Expander behaviour where only the
+// label area responded and the disclosure arrow was dead. Open/closed persists in
+// DocumentModel::timeline_rail_collapsed under `cat_key` (key present = collapsed),
+// surviving save/load as well as rebuilds. Returns the body Box for the caller to fill.
+Gtk::Box* TimelineSurface::add_rail_disclosure(const std::string& heading, int cat_key) {
+  const bool expanded = !m_model.is_rail_collapsed(cat_key);
+
+  auto* card = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+  card->add_css_class("timeline-rail-group");
+
+  auto* hdr_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 4);
+  hdr_row->add_css_class("timeline-rail-group-hdr");
+  hdr_row->set_cursor(Gdk::Cursor::create("pointer"));
+
+  auto* hdr = Gtk::make_managed<Gtk::Label>(heading);
+  hdr->set_xalign(0.0f);
+  hdr->set_hexpand(true);
+  hdr->add_css_class("timeline-rail-header");
+  hdr->set_name("timeline-rail-header");
+  hdr_row->append(*hdr);
+
+  auto* arrow = Gtk::make_managed<Gtk::Label>(expanded ? "\u25be" : "\u25b8");  // ▾ / ▸
+  arrow->add_css_class("timeline-rail-arrow");
+  arrow->set_valign(Gtk::Align::CENTER);
+  hdr_row->append(*arrow);
+  card->append(*hdr_row);
+
+  auto* rev = Gtk::make_managed<Gtk::Revealer>();
+  rev->set_transition_type(Gtk::RevealerTransitionType::SLIDE_DOWN);
+  rev->set_transition_duration(160);
+  rev->set_reveal_child(expanded);
+
+  auto* body = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+  body->add_css_class("timeline-rail-group-body");
+  rev->set_child(*body);
+  card->append(*rev);
+
+  // The whole header row toggles. State lives on the model
+  // (DocumentModel::timeline_rail_collapsed) as the single source of truth, so it
+  // persists across save/load and rebuilds — no surface-side cache to drift.
+  // set_rail_collapsed marks the project modified. No idle defer (the s24 rule):
+  // this flips a flag and animates the Revealer in place; it triggers no model
+  // rebuild and frees no tree, so an immediate toggle is safe in the handler.
+  // Ctrl+Alt+click applies to ALL categories at once — the clicked category's
+  // current state picks the verb (it's collapsed → expand all; else collapse all).
+  hdr_row->set_tooltip_text("Click to toggle \u00b7 Ctrl+Alt+click to expand/collapse all");
+  auto gc = Gtk::GestureClick::create();
+  gc->set_button(1);
+  Gtk::GestureClick* gcp = gc.get();   // raw: hdr_row owns the controller (no cycle)
+  gc->signal_pressed().connect([this, cat_key, rev, arrow, gcp](int, double, double) {
+    const Gdk::ModifierType st = gcp->get_current_event_state();
+    const bool ctrl = (st & Gdk::ModifierType::CONTROL_MASK) != Gdk::ModifierType{};
+    const bool alt  = (st & Gdk::ModifierType::ALT_MASK)     != Gdk::ModifierType{};
+    if (ctrl && alt) {
+      // Apply to all; direction from THIS category's current state.
+      set_all_rail_disclosures(/*expand=*/m_model.is_rail_collapsed(cat_key));
+      return;
+    }
+    const bool now_expanded = m_model.is_rail_collapsed(cat_key);  // collapsed → will expand
+    m_model.set_rail_collapsed(cat_key, !now_expanded);
+    rev->set_reveal_child(now_expanded);
+    arrow->set_text(now_expanded ? "\u25be" : "\u25b8");
+  });
+  hdr_row->add_controller(gc);
+
+  m_rail_disclosures.push_back({cat_key, rev, arrow});
+
+  m_rail_box.append(*card);
+  return body;
+}
+
+// s90 — expand or collapse EVERY rail disclosure built this pass, in place (no
+// rebuild). Drives the model (single source of truth, marks modified on change)
+// then the live Revealer + chevron of each registered disclosure. Invoked by a
+// Ctrl+Alt+click on any category header.
+void TimelineSurface::set_all_rail_disclosures(bool expand) {
+  for (const RailDisclosure& d : m_rail_disclosures) {
+    m_model.set_rail_collapsed(d.key, !expand);
+    if (d.rev)   d.rev->set_reveal_child(expand);
+    if (d.arrow) d.arrow->set_text(expand ? "\u25be" : "\u25b8");
+  }
+}
+
+
 // (DocumentModel::threads()) plus an inline "new thread" mint row at the bottom.
-// Mirrors a subject group exactly (Expander + .timeline-rail-row buttons, the
+// Mirrors a subject group exactly (disclosure + .timeline-rail-row buttons, the
 // same collapse-memory keyed off a sentinel int, the same armed CSS + m_rail_rows
 // bookkeeping), but rows arm a THREAD (arm_thread) and carry the thread palette
 // hue. Claim counts come from the already-assembled m_thread_lanes — the lane's
@@ -2056,23 +2143,7 @@ void TimelineSurface::build_thread_rail_section() {
   // are 0..3); -1 is the Threads disclosure's own remembered open/closed state.
   constexpr int THREAD_CAT_KEY = -1;
 
-  auto* exp = Gtk::make_managed<Gtk::Expander>();
-  exp->set_name("timeline-rail-group");
-  exp->add_css_class("timeline-rail-group");
-  auto* hdr = Gtk::make_managed<Gtk::Label>("Story Threads");
-  hdr->set_xalign(0.0f);
-  hdr->add_css_class("timeline-rail-header");
-  hdr->set_name("timeline-rail-header");
-  exp->set_label_widget(*hdr);
-  exp->set_expanded(m_rail_collapsed.find(THREAD_CAT_KEY) == m_rail_collapsed.end());
-  exp->property_expanded().signal_changed().connect([this, exp, THREAD_CAT_KEY]() {
-    if (exp->get_expanded()) m_rail_collapsed.erase(THREAD_CAT_KEY);
-    else                     m_rail_collapsed.insert(THREAD_CAT_KEY);
-  });
-
-  auto* body = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
-  body->add_css_class("timeline-rail-group-body");
-  exp->set_child(*body);
+  Gtk::Box* body = add_rail_disclosure("Story Threads", THREAD_CAT_KEY);
 
   // s86 — an always-available "what's a story thread?" link opening the teaching
   // popover (the concept is not self-evident — it's a label, not a binder node).
@@ -2217,14 +2288,12 @@ void TimelineSurface::build_thread_rail_section() {
   mint->append(*entry);
   mint->append(*add);
   body->append(*mint);
-
-  m_rail_box.append(*exp);
 }
 
 // s86 — the rail's Key Points section: mint / place / manage a KP in one place.
 // A KP is a palette swatch ("the palette is the arc"), so the roster is
 // m_prefs.tag_colors; each row arms a KP (arm_keypoint) and a sweep stamps the
-// beat. Mirrors build_thread_rail_section (Expander + .timeline-rail-row buttons,
+// beat. Mirrors build_thread_rail_section (disclosure + .timeline-rail-row buttons,
 // collapse-memory on a distinct sentinel key, the help link + empty nudge + an
 // inline mint row + a per-row right-click manage popover).
 void TimelineSurface::build_kp_rail_section() {
@@ -2234,23 +2303,7 @@ void TimelineSurface::build_kp_rail_section() {
   // the threads section (-1); -2 is the Key Points disclosure's own state.
   constexpr int KP_CAT_KEY = -2;
 
-  auto* exp = Gtk::make_managed<Gtk::Expander>();
-  exp->set_name("timeline-rail-group");
-  exp->add_css_class("timeline-rail-group");
-  auto* hdr = Gtk::make_managed<Gtk::Label>("Key Points");
-  hdr->set_xalign(0.0f);
-  hdr->add_css_class("timeline-rail-header");
-  hdr->set_name("timeline-rail-header");
-  exp->set_label_widget(*hdr);
-  exp->set_expanded(m_rail_collapsed.find(KP_CAT_KEY) == m_rail_collapsed.end());
-  exp->property_expanded().signal_changed().connect([this, exp, KP_CAT_KEY]() {
-    if (exp->get_expanded()) m_rail_collapsed.erase(KP_CAT_KEY);
-    else                     m_rail_collapsed.insert(KP_CAT_KEY);
-  });
-
-  auto* body = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
-  body->add_css_class("timeline-rail-group-body");
-  exp->set_child(*body);
+  Gtk::Box* body = add_rail_disclosure("Key Points", KP_CAT_KEY);
 
   auto* help = Gtk::make_managed<Gtk::Button>("\u24d8  What\u2019s a key point?");
   help->set_has_frame(false);
@@ -2373,6 +2426,7 @@ void TimelineSurface::build_kp_rail_section() {
     tc.id   = make_iid(IidKind::KeyPoint);
     m_prefs.tag_colors.push_back(tc);
     m_prefs.save();
+    notify_palette_changed();   // s89 — new swatch appears in the dropdowns
     const std::string kp_id = tc.id, label = nm;
     const int color_idx = static_cast<int>(m_prefs.tag_colors.size());  // new last position
     entry->set_text("");
@@ -2388,8 +2442,6 @@ void TimelineSurface::build_kp_rail_section() {
   mint->append(*entry);
   mint->append(*add);
   body->append(*mint);
-
-  m_rail_box.append(*exp);
 }
 
 void TimelineSurface::arm_subject(const std::string& iid, const std::string& label,

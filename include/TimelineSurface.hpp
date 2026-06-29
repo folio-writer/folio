@@ -61,6 +61,14 @@ public:
   using OpenCallback = std::function<void(const std::string& iid)>;
   void set_open_callback(OpenCallback cb) { m_on_open = std::move(cb); }
 
+  // s89 — fired (deferred to idle) after a rail/band/KP or thread palette edit,
+  // so the host can live-refresh the surfaces that read the palette but aren't
+  // the timeline itself: the Inspector colour dropdowns and the sidebar swatches.
+  using PaletteChangedCallback = std::function<void()>;
+  void set_palette_changed_callback(PaletteChangedCallback cb) {
+    m_on_palette_changed = std::move(cb);
+  }
+
 private:
   DocumentModel& m_model;
   FolioPrefs&    m_prefs;   // s81 — resolves a KP's color_idx → spectrum hex (§9.6
@@ -78,10 +86,17 @@ private:
   Gtk::ScrolledWindow m_rail_scroll;
   Gtk::Box            m_rail_box{Gtk::Orientation::VERTICAL, 0};
   Gtk::Label          m_rail_empty;   // shown when the project has no resources
-  // s82 — categories are disclosures (Gtk::Expander) like the binder; remember
-  // which the author collapsed (keyed by TrackCategory enum value) so a rebuild
-  // (view-entry, commit_sweep) does not reset their open/closed state.
-  std::unordered_set<int> m_rail_collapsed;
+  // s90 — rail disclosure fold state now persists on the model
+  // (DocumentModel::timeline_rail_collapsed, keyed by TrackCategory enum value;
+  // -1 Story Threads, -2 Key Points) so it survives save/load as well as
+  // in-session rebuilds. add_rail_disclosure reads/writes it via the model.
+  // The live widgets of the disclosures built this pass, so Ctrl+Alt+click on any
+  // header can expand/collapse them ALL in place (set_all_rail_disclosures);
+  // repopulated each build_rail. Raw pointers — the widgets are make_managed and
+  // owned by m_rail_box, valid until the next rebuild clears the vector.
+  struct RailDisclosure { int key; Gtk::Revealer* rev; Gtk::Label* arrow; };
+  std::vector<RailDisclosure> m_rail_disclosures;
+  void set_all_rail_disclosures(bool expand);
 
   Gtk::Overlay        m_overlay;
   Gtk::ScrolledWindow m_scroll;
@@ -183,6 +198,8 @@ private:
   std::vector<std::pair<std::string, Gtk::Widget*>> m_rail_rows;
 
   OpenCallback m_on_open;
+  PaletteChangedCallback m_on_palette_changed;            // s89
+  void notify_palette_changed();                          // s89 — idle-deferred host refresh
 
   // ── Internals ──────────────────────────────────────────────────────────────
   void draw(const Cairo::RefPtr<Cairo::Context>& cr, int w, int h);
@@ -288,6 +305,14 @@ private:
   // subject arm, or the thread palette colour (thread_hex) for a thread arm.
   // Used by the staging row + sweep preview so a thread sweep reads in its hue.
   std::string armed_hue() const;
+  // s90 — build a binder-style collapsible disclosure for the rail (header row
+  // with heading + chevron, wrapped in a Revealer) and append it to m_rail_box.
+  // The WHOLE header row toggles (one GestureClick), so the arrow and the name
+  // are both live — replacing the Gtk::Expander whose internal arrow node did
+  // not share the title's click. Open/closed persists on the model
+  // (DocumentModel::timeline_rail_collapsed) under `cat_key`, surviving save/load
+  // and rebuilds. Returns the body Box for the caller to fill with rows.
+  Gtk::Box* add_rail_disclosure(const std::string& heading, int cat_key);
   // s85 — append the rail's Story Threads section (registry-sourced) + the inline
   // "new thread" mint row. Called at the end of build_rail (after subject groups).
   void build_thread_rail_section();

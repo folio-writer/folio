@@ -315,6 +315,22 @@ void DocumentModel::set_active(Section section, const std::vector<int>& path) {
 
 void DocumentModel::mark_modified() { is_modified = true; }
 
+bool DocumentModel::is_rail_collapsed(int key) const {
+    return std::find(timeline_rail_collapsed.begin(),
+                     timeline_rail_collapsed.end(), key)
+           != timeline_rail_collapsed.end();
+}
+
+void DocumentModel::set_rail_collapsed(int key, bool collapsed) {
+    auto it = std::find(timeline_rail_collapsed.begin(),
+                        timeline_rail_collapsed.end(), key);
+    const bool present = (it != timeline_rail_collapsed.end());
+    if (collapsed && !present)       timeline_rail_collapsed.push_back(key);
+    else if (!collapsed && present)  timeline_rail_collapsed.erase(it);
+    else                             return;   // no change → don't dirty the doc
+    mark_modified();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DocumentModel — convert_node_kind (Scene ↔ Group, s89)
 //
@@ -757,6 +773,7 @@ void DocumentModel::reset() {
     active_path.clear();
     open_tabs.clear();
     timeline_active_idx = -1;
+    timeline_rail_collapsed.clear();
     pomodoro_log.clear();
     is_modified  = false;
     current_path = "";
@@ -889,6 +906,7 @@ void DocumentModel::save_to(const std::string& path) {
         }
         j["timeline_tabs"]       = tl;
         j["timeline_active_idx"] = timeline_active_idx;
+        j["timeline_rail_collapsed"] = timeline_rail_collapsed;
     }
 
     // Sidebar selection state
@@ -1045,6 +1063,7 @@ void DocumentModel::parse_blob(const json& j) {
             open_tabs.push_back(std::move(t));
         }
         timeline_active_idx = j.value("timeline_active_idx", -1);
+        timeline_rail_collapsed = j.value("timeline_rail_collapsed", std::vector<int>{});
     }
 
     // Sidebar selection state
@@ -1131,11 +1150,13 @@ void DocumentModel::parse_blob(const json& j) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 DocumentModel DocumentModel::new_project(const std::string& title) {
+    // s90: a fresh project starts EMPTY — no seed Part I/Chapter 1. An empty
+    // manuscript is the agreed clean start point (matches reset()'s startup
+    // model), so New Project and Ctrl+W close-project both open a blank spine
+    // rather than inheriting a stray Group+Scene the author has to delete.
     DocumentModel m;
     m.project_title = title;
     m.daily_target  = 1500;
-    auto gp = m.add_group(Section::Manuscript, {}, "Part I");
-    m.add_leaf(Section::Manuscript, gp, "Chapter 1");
     m.active_path.clear();
     m.is_modified = false;
     return m;

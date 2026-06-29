@@ -200,6 +200,11 @@ public:
   using TimelineOpenCallback = std::function<void(const std::string& iid)>;
   void set_timeline_open_callback(TimelineOpenCallback cb) { m_on_timeline_open = std::move(cb); }
 
+  // s89 — relayed from the timeline lens after a palette/thread edit, so the host
+  // refreshes the Inspector colour dropdowns + sidebar swatches live.
+  using PaletteChangedCallback = std::function<void()>;
+  void set_palette_changed_callback(PaletteChangedCallback cb) { m_on_palette_changed = std::move(cb); }
+
   // ── Font / geometry prefs ─────────────────────────────────────────────────
   void apply_font_prefs(const FolioPrefs &prefs);
   void apply_editor_font();   // re-applies zoom + font CSS
@@ -668,6 +673,7 @@ private:
   MapOpenCallback m_on_map_open;
   MapCreateCallback m_on_map_create;   // s48 slice 2 — double-click → new Reference
   TimelineOpenCallback m_on_timeline_open;  // s80 — card click → navigate to scene
+  PaletteChangedCallback m_on_palette_changed;  // s89 — timeline palette edit → host refresh
 
   // ── Font / CSS state ──────────────────────────────────────────────────────
   std::string m_current_font = "JansonText";

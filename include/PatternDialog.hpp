@@ -161,7 +161,6 @@ private:
     void refresh_arc_views();         // board + preview after a structural edit
     void add_keypoint();              // append a blank KP
     void load_builtin_kps();          // reseed m_arc from the built-in 14
-    void move_kp(size_t idx, int dir);// reorder by ±1 (kept; e.g. keyboard)
     // s43 — drag-and-drop reorder: move the KP at `src` to just before (after=false)
     // or after (after=true) the KP at `tgt`, then renumber (order/colour follow the
     // new position — palette = arc) and refresh. Same shape as the template

@@ -427,7 +427,7 @@ void PatternDialog::rebuild_kp_list() {
         fields->append(*mean);
         row->append(*fields);
 
-        // Controls: pin / up / down / remove.
+        // Controls: pin / remove. (Reorder is the drag grip + DropTarget, s43.)
         auto* ctl = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 2);
         ctl->set_valign(Gtk::Align::CENTER);
 
@@ -501,15 +501,6 @@ void PatternDialog::load_builtin_kps() {
     Module b = built_in_folio_keypoints();
     for (const auto& act : b.craft.acts)
         for (const auto& kp : act.kps) m_arc.push_back(kp);
-    renumber_kps();
-    rebuild_kp_list();
-    refresh_arc_views();
-}
-
-void PatternDialog::move_kp(size_t idx, int dir) {
-    const ptrdiff_t j = static_cast<ptrdiff_t>(idx) + dir;
-    if (j < 0 || j >= static_cast<ptrdiff_t>(m_arc.size())) return;
-    std::swap(m_arc[idx], m_arc[static_cast<size_t>(j)]);
     renumber_kps();
     rebuild_kp_list();
     refresh_arc_views();

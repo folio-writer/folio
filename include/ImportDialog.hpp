@@ -67,6 +67,7 @@ private:
 
     // Folder-as-group
     Gtk::CheckButton    m_chk_folder_group;
+    Gtk::CheckButton    m_chk_libreoffice;   // s89 — high-fidelity docx/rtf via LibreOffice
 
     void build_options();
     Gtk::Widget* make_section(const std::string& title);
