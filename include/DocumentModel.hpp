@@ -468,6 +468,19 @@ struct BinderNode {
     // across sessions. Meaningless for leaf kinds (always treated as expanded).
     bool   collapsed = false;
 
+    // s93 — OPTIONAL absolute story-time coordinate for the world-clock axis
+    // (DESIGN_timeline.md §9.14, build-order step 2). Seconds from a project
+    // epoch (the earliest dated scene sits at 0; may be negative). When
+    // has_story_time is false the scene is UNDATED — ordinal-only on the
+    // world-clock axis, no gap pill (§9.14.1). Stored ABSOLUTE (Option B) so a
+    // told-order reorder (§9.7) can never invalidate it: the relative "X later"
+    // phrase is recomputed from neighbours at read time via TimelineClock, never
+    // persisted. The relative "X later" authoring gesture (§9.14.2) is sugar that
+    // computes this coordinate from the previous dated scene's. Serialised
+    // omit-when-absent so untouched nodes stay byte-clean.
+    bool       has_story_time = false;
+    long long  story_time     = 0;
+
     // Word count
     int word_count() const { return count_words(content); }
     int total_words() const {

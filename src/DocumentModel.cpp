@@ -143,6 +143,8 @@ json BinderNode::to_json() const {
         j["scroll_value"]  = scroll_value;
     if (collapsed)
         j["collapsed"] = true;   // s89 — sparse: only groups the user folded
+    if (has_story_time)
+        j["story_time"] = story_time;   // s93 — world-clock coordinate (omit when undated)
 
     json snap_arr = json::array();
     for (const auto& s : snapshots) snap_arr.push_back(s.to_json());
@@ -225,6 +227,8 @@ void BinderNode::from_json(const json& j) {
     cursor_offset = j.value("cursor_offset", 0);
     scroll_value  = j.value("scroll_value",  0.0);
     collapsed     = j.value("collapsed",     false);   // s89 — legacy/new → expanded
+    has_story_time = j.contains("story_time");          // s93 — presence = a dated scene
+    story_time     = j.value("story_time", static_cast<long long>(0));
 
     snapshots.clear();
     if (j.contains("snapshots") && j["snapshots"].is_array())

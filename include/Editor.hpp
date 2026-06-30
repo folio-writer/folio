@@ -124,6 +124,24 @@ public:
                    const std::string& anchor_id,
                    const std::string& display_text);
 
+  // s93 — focus-mode formatting seams. The focus window owns no toolbar, so it
+  // drives the editor's own buffer ops on the SHARED buffer with the caret /
+  // selection offsets read from its own view. Each mirrors the body of the
+  // editor's toolbar handler, exposed by CHARACTER offset (get_iter_at_offset /
+  // get_offset, never bytes) so an apply lands exactly where the focus caret was
+  // — the toolbar path is itself offset-based (m_saved_sel_*) for the same
+  // reason: GTK can reset the insert mark once focus leaves a text view. Inline
+  // ops need a real selection (no-op when start==end); apply_named_style_range
+  // styles the caret's paragraph for a paragraph style and requires a selection
+  // for a character style, and suppresses apply_style's editor-view refocus so
+  // the focus window keeps its own caret (no cross-window focus grab / timer).
+  void format_bold_range(int start_off, int end_off);
+  void format_italic_range(int start_off, int end_off);
+  void format_underline_range(int start_off, int end_off);
+  void format_strikethrough_range(int start_off, int end_off);
+  void clear_format_range(int start_off, int end_off);
+  void apply_named_style_range(int style_index, int start_off, int end_off);
+
   // ── Board view ────────────────────────────────────────────────────────────
   void show_board(const std::vector<BoardItem> &items);
   void show_grid(const std::vector<BoardItem> &items);  // populate grid from selection
@@ -705,6 +723,11 @@ private:
   // Saved selection offsets (preserved when focus leaves the text view)
   int m_saved_sel_start = -1;
   int m_saved_sel_end = -1;
+  // s93 — set by apply_named_style_range so apply_style skips its editor-view
+  // grab_focus + 60ms caret re-assert: the focus window drives the apply and owns
+  // the caret on the shared buffer, so the editor view must NOT steal focus back
+  // (and re-introduce the cross-surface timer race the focus redesign removed).
+  bool m_suppress_style_refocus = false;
 
   // ── Build helpers ─────────────────────────────────────────────────────────
   void build_toolbar();
@@ -822,6 +845,10 @@ private:
   void toggle_format_tag(const Glib::RefPtr<Gtk::TextTag> &tag,
                          Gtk::TextBuffer::iterator start,
                          Gtk::TextBuffer::iterator end);
+  // s93 — shared body of the four public format_*_range seams (toggle `tag` over
+  // a clamped character-offset span; no-op when the span is empty).
+  void format_inline_range(const Glib::RefPtr<Gtk::TextTag> &tag,
+                           int start_off, int end_off);
 
   void apply_font_to_selection();
   void apply_line_spacing_to_selection();

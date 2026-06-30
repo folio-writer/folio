@@ -612,6 +612,17 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
     }
     .focus-nav-title:hover { background-color: @adw_overlay; color: @tx1; }
 
+    /* s93 — focus format bar: a floating pill (styles dropdown + inline buttons),
+       top-centre below the navbar. Same lifted-card vocabulary as the navbar. */
+    .focus-format-bar {
+        background-color: alpha(@adw_surface, 0.97);
+        border: 1px solid @border_subtle;
+        border-radius: 12px;
+        padding: 4px 6px;
+        box-shadow: 0 8px 28px rgba(0,0,0,0.50);
+    }
+    .focus-format-bar separator { background-color: @border_subtle; margin: 2px 2px; }
+
     /* s46 — transient confirmation pill (bottom-centre), fades in then out */
     .focus-toast {
         background-color: alpha(@adw_surface, 0.92);

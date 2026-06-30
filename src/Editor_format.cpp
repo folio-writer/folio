@@ -55,6 +55,97 @@ void Editor::expand_to_paragraphs(Gtk::TextBuffer::iterator &start,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// s93 — focus-mode formatting seams (public; declared in Editor.hpp). The focus
+// window has no toolbar, so it drives these on the SHARED buffer with the
+// caret/selection offsets read from its own view. Each is the body of the
+// editor's own toolbar handler, exposed by CHARACTER offset so an apply lands
+// where the focus caret was. Offsets are clamped; character offsets throughout.
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Editor::format_inline_range(const Glib::RefPtr<Gtk::TextTag> &tag,
+                                 int start_off, int end_off) {
+  if (!m_buffer || !tag)
+    return;
+  const int n = m_buffer->get_char_count();
+  start_off = std::clamp(start_off, 0, n);
+  end_off   = std::clamp(end_off, 0, n);
+  if (start_off >= end_off)
+    return; // inline formatting needs a real selection (mirrors the toolbar)
+  auto s = m_buffer->get_iter_at_offset(start_off);
+  auto e = m_buffer->get_iter_at_offset(end_off);
+  toggle_format_tag(tag, s, e);
+}
+
+void Editor::format_bold_range(int s, int e) { format_inline_range(m_tag_bold, s, e); }
+void Editor::format_italic_range(int s, int e) { format_inline_range(m_tag_italic, s, e); }
+void Editor::format_underline_range(int s, int e) {
+  format_inline_range(m_tag_underline, s, e);
+}
+void Editor::format_strikethrough_range(int s, int e) {
+  format_inline_range(m_tag_strikethrough, s, e);
+}
+
+void Editor::clear_format_range(int start_off, int end_off) {
+  if (!m_buffer)
+    return;
+  const int n = m_buffer->get_char_count();
+  start_off = std::clamp(start_off, 0, n);
+  end_off   = std::clamp(end_off, 0, n);
+  if (start_off >= end_off)
+    return;
+  auto s = m_buffer->get_iter_at_offset(start_off);
+  auto e = m_buffer->get_iter_at_offset(end_off);
+  m_buffer->begin_user_action();
+  auto table = m_buffer->get_tag_table();
+  // Collect first — modifying the table while iterating is unsafe.
+  std::vector<Glib::RefPtr<Gtk::TextTag>> all_tags;
+  table->foreach (
+      [&all_tags](const Glib::RefPtr<Gtk::TextTag> &tag) { all_tags.push_back(tag); });
+  for (auto &tag : all_tags)
+    m_buffer->remove_tag(tag, s, e);
+  // Re-assert the authored body font so clearing doesn't drop to the GTK default
+  // (mirror of the toolbar clear). The canonical size is the AUTHORED size, not
+  // the focus display size, so a tag created in focus is still correct on exit.
+  int canonical_size =
+      (m_in_focus && m_saved_font_size > 0) ? m_saved_font_size : m_current_font_size;
+  std::string tn = "font:" + m_current_font + ":" + std::to_string(canonical_size);
+  auto base_tag = table->lookup(tn);
+  if (!base_tag) {
+    base_tag = m_buffer->create_tag(tn);
+    base_tag->property_family() = m_current_font;
+    base_tag->property_size_points() = (double)canonical_size * m_zoom_factor;
+  }
+  m_buffer->apply_tag(base_tag, s, e);
+  m_buffer->end_user_action();
+}
+
+void Editor::apply_named_style_range(int style_index, int start_off, int end_off) {
+  if (!m_buffer)
+    return;
+  if (style_index < 0 || style_index >= (int)m_prefs.text_styles.size())
+    return;
+  const int n = m_buffer->get_char_count();
+  start_off = std::clamp(start_off, 0, n);
+  end_off   = std::clamp(end_off, 0, n);
+  auto s = m_buffer->get_iter_at_offset(start_off);
+  auto e = m_buffer->get_iter_at_offset(end_off);
+  // Position the shared buffer to the requested range so apply_style (which reads
+  // the live selection / caret) operates exactly there. A caret (start==end) lets
+  // a paragraph style take the caret's paragraph; a character style needs the
+  // selection. Pinning m_saved_sel_* to this range stops a stale toolbar value
+  // from redirecting the apply via apply_style's saved-offset fallback.
+  if (start_off == end_off)
+    m_buffer->place_cursor(s);
+  else
+    m_buffer->select_range(s, e);
+  m_saved_sel_start = start_off;
+  m_saved_sel_end   = end_off;
+  m_suppress_style_refocus = true;
+  apply_style(m_prefs.text_styles[(std::size_t)style_index]);
+  m_suppress_style_refocus = false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // buffer_to_html / html_to_buffer — delegated to EditorHtmlSerializer
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1263,6 +1354,12 @@ void Editor::apply_style(const TextStyle &style) {
   // Re-assert on a short timeout to override GTK's focus-in insert-mark reset
   // (which otherwise selects from the top of the scene) — same approach as
   // load_node's caret re-assert.
+  // s93 — when driven by the focus window (apply_named_style_range), skip this
+  // entirely: the focus surface owns the caret on the shared buffer and grabs
+  // its OWN view back, so the editor's hidden view must not seize focus or arm a
+  // timer (the cross-surface focus/timer race the focus redesign exists to kill).
+  if (m_suppress_style_refocus)
+    return;
   auto restore_sel = [this](int a, int b) {
     int n = m_buffer->get_char_count();
     auto ia = m_buffer->get_iter_at_offset(std::min(std::max(0, a), n));

@@ -127,6 +127,21 @@ private:
     void flash_toast(const std::string& msg);  // s46 — show + auto-hide the toast
     void build_drawer();        // s45 — left settings drawer (replaces the hover pill)
     void build_switcher();      // type-to-filter scene overlay
+    // s93 — focus format bar. Focus owns no toolbar, so this is a small toggleable
+    // strip (Ctrl+/) over the text: a named-style dropdown (the gap Scott hit —
+    // styles) plus inline bold/italic/underline/strike/clear. Every control calls
+    // an Editor seam on the SHARED buffer with the caret/selection offsets read
+    // from m_view (fmt_caret_range) — never a focus-local reimplementation. The
+    // bar is hidden until toggled; Esc, the toggle key, or clicking back into the
+    // text dismisses it ("temporary, then back to business"). A style pick commits
+    // and hands focus back to the page (which auto-hides the bar); inline ops stay
+    // open for chaining. rebuild_fmt_styles refills the dropdown from prefs.
+    void build_format_bar();
+    void toggle_format_bar();
+    void hide_format_bar();
+    void rebuild_fmt_styles();
+    std::pair<int, int> fmt_caret_range() const;  // shared-buffer caret/selection, low→high
+    void fmt_return_to_view(int a, int b);         // re-assert [a,b] + grab m_view (hides bar)
     void build_link_picker();   // s46 — focus-owned node picker for link insert (mirrors switcher)
     void open_link_picker();    // s46 — rebuild entries + show the link picker overlay
     void repopulate_link_picker();              // s46 — refill m_link_list from entries + filter
@@ -223,6 +238,13 @@ private:
     // focus doesn't have (see the cross-section fork in the slice notes).
     Gtk::Box*            m_navbar    = nullptr;
     Gtk::Button*         m_nav_title = nullptr;
+
+    // s93 — focus format bar widgets (see build_format_bar). m_fmt_dd_guard
+    // suppresses the dropdown's changed signal while we set it programmatically
+    // (rebuild / reset-to-prompt), the editor's m_inhibit_style_dd pattern.
+    Gtk::Box*            m_fmt_bar      = nullptr;
+    Gtk::DropDown*       m_fmt_style_dd = nullptr;
+    bool                 m_fmt_dd_guard = false;
 
     // s46 — top-left text-tool strip. Icon buttons that reach the editor's
     // existing model/buffer paths (never a focus-local reimplementation of the

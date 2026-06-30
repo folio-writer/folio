@@ -29,6 +29,7 @@
 
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -41,6 +42,7 @@
 #include "TimelineKp.hpp"       // s81 step 6 — the KP lane (relief of kp_id)
 #include "TimelineThreads.hpp"  // s84 step 7 — the thread lane (relief of BinderNode.thread)
 #include "TimelineResources.hpp"  // s82 — the resource-rail roster (the §3 armer)
+#include "TimelineFocus.hpp"    // s92 — persistent focus (FocusSet + the pure toggles)
 
 namespace Folio {
 
@@ -102,6 +104,15 @@ private:
   Gtk::ScrolledWindow m_scroll;
   Gtk::DrawingArea    m_area;
   Gtk::Label          m_empty_hint;   // shown when the manuscript has no scenes
+  // s93 — the two-lens control is drawn ON the canvas, in the gutter under the
+  // "SPINE" label (the row it reorders), as two pills: Told Order / Chrono. A
+  // mutually-exclusive reveal — clicking redraws the single canvas to lay the scenes
+  // and the shared relief against told order or story-time. lens_toggle_geom() gives
+  // the BASE-coord hit rects shared by the painter and the click handler.
+  struct LensToggleGeom { double told_x, chrono_x, y, told_w, chrono_w, h; };
+  LensToggleGeom lens_toggle_geom() const;
+  void           draw_lens_toggle(const Cairo::RefPtr<Cairo::Context>& cr);
+  bool           lens_toggle_click(double bx, double by);  // true if the click hit a pill
 
   // s84 — the scene PEEK panel. The right side of the split is a vertical box:
   // [ canvas (vexpand) | peek revealer (bottom) ]. A single-click on a scene card
@@ -118,6 +129,14 @@ private:
   Glib::RefPtr<Gtk::TextBuffer> m_peek_synopsis_buf;
   Gtk::Label          m_peek_meta;       // status / KP / thread (shown)
   Gtk::Label          m_peek_links;      // links-at-a-glance readout (shown)
+  // s93 — STORY-TIME authoring (world-clock, DESIGN_timeline.md §9.14.2). The
+  // readout shows the DERIVED gap to the previous dated scene; the row authors a
+  // relative gap that writes an ABSOLUTE coordinate (Option B) via
+  // apply_relative_gap, so a told-order reorder never invalidates it.
+  Gtk::Label          m_peek_storytime;  // derived gap to previous dated scene (shown)
+  Gtk::SpinButton     m_peek_st_count;   // relative gap count
+  Gtk::DropDown       m_peek_st_unit;    // unit (years … seconds)
+  Gtk::DropDown       m_peek_st_dir;     // later / earlier
   std::string         m_selected_iid;    // the peeked scene ("" = none)
   bool                m_peek_loading = false;  // guard: populate must not write back
 
@@ -141,6 +160,18 @@ private:
   sigc::connection m_zoom_anchor_conn;  // one pending zoom-anchor scroll fix
 
   std::vector<std::string> m_spine_iids;   // cached told-order iids (relief input)
+  // s93 — world-clock axis (DESIGN_timeline.md §9.14, step 3). m_story_axis flips
+  // the spine from told order to story-time (presentation-only, like focus — not
+  // serialised). m_chrono_order is ALL scenes in chronological order (undated ones
+  // carry forward and hold their slot, s93); m_chrono_undated is retained but empty;
+  // m_title_of / m_told_pos map an iid to its title and stable told/binder number so
+  // the Chrono lens labels cards identically to Told Order (the scene looks the same
+  // in both lenses). Recomputed on rebuild, on toggle, and after any story-time edit.
+  bool                     m_story_axis = false;
+  std::vector<std::string> m_chrono_order;
+  std::vector<std::string> m_chrono_undated;
+  std::unordered_map<std::string, std::string> m_title_of;
+  std::unordered_map<std::string, int>         m_told_pos;   // iid -> told/binder position (1-based)
   std::vector<TimelineTrack> m_tracks;     // s80 step 3 — subject relief rows
   // s81 step 6 — the KP lane: on-spine scenes grouped by kp_id (relief of kp_id,
   // §9.4). A SINGLE strip up against the spine — KPs partition the spine (a scene
@@ -163,6 +194,23 @@ private:
   // so it does not commit the still-open §9.8 #1 persistent focus-key model.
   int m_hover_track = -1;   // index into m_tracks, or -1
   int m_hover_col   = -1;   // 1-based lit told-order column, or -1
+
+  // s92 — PERSISTENT focus (§4 / §9.8 #1 / §9.12.5). Unlike the transient hover
+  // above, a focused set STICKS until the author unpins it: pick a relief row
+  // (subject track / thread lane / KP) and walk the spine with everything else
+  // dimmed, to SEE the gaps and draw the missing links. Focus keys on ANY row
+  // uniformly — all three are (label, colour, scene-set) — via a kind-namespaced
+  // key (fk_subject/fk_thread/fk_keypoint in the .cpp), so the three id
+  // namespaces never collide in one set. Plain click = single-focus that row
+  // (re-click clears); Shift+click = toggle it in the spotlighted set; Esc
+  // clears. While focus is active it OVERRIDES the hover-isolate (the pin wins);
+  // hovering a scene card to light its column still works. Presentation-only
+  // this slice (NOT serialised — the cross-session question is an open call,
+  // s92 handoff); pruned to live rows on every rebuild, the m_selected_iid
+  // peek-sync shape. m_focus_positions caches focus_positions() so draw() reads
+  // it instead of recomputing per frame — refreshed on a focus change / rebuild.
+  FocusSet      m_focus;            // namespaced keys currently focused ({} = off)
+  std::set<int> m_focus_positions;  // told-order cols any focused row claims (cache)
 
   // s80 step 5c — live subject-first sweep. Press-drag along a track row links
   // that row's subject across the swept span of scene columns (additive,
@@ -221,12 +269,41 @@ private:
   // ── Internals ──────────────────────────────────────────────────────────────
   void draw(const Cairo::RefPtr<Cairo::Context>& cr, int w, int h);
   std::string scene_at(double x, double y) const;  // card hit-test → iid ("" none)
+  // s93 — world-clock chronological view (§9.14.3). draw_story_axis renders the
+  // story-time re-lay (isolated so the told-order draw is untouched); scene_at_story
+  // hit-tests its cards + undated tray; recompute_chrono rebuilds the order caches.
+  void draw_story_axis(const Cairo::RefPtr<Cairo::Context>& cr);
+  std::string scene_at_story(double x, double y) const;
+  void recompute_chrono();
+  // s93 — subject-track relief shared by both axes (positions from compute_relief
+  // over the passed order); apply_focus gates told-order focus/hover dimming.
+  void draw_subject_tracks(const Cairo::RefPtr<Cairo::Context>& cr,
+                           const std::vector<std::string>& order,
+                           double ttop, bool apply_focus);
+  void draw_kp_strip(const Cairo::RefPtr<Cairo::Context>& cr,
+                     const std::vector<std::string>& order,
+                     int kt, bool apply_focus, bool draw_pins);
+  void draw_thread_band(const Cairo::RefPtr<Cairo::Context>& cr,
+                        const std::vector<std::string>& order,
+                        int hdr_y, int rtop, bool apply_focus);
+  // s93 — ONE scene-card painter (square, border, selection ring, position badges,
+  // title) shared by the Told Order and Chrono draws, so a scene looks identical in
+  // either lens. `order_badge` is the position in the CURRENT view (upper-left);
+  // `told_badge` is the stable told/manuscript number (upper-right, both lenses).
+  // The caller draws the axis dot / ruler stem around it.
+  void draw_scene_card(const Cairo::RefPtr<Cairo::Context>& cr,
+                       const std::string& iid, const std::string& title,
+                       int order_badge, int told_badge, double cardx, int top);
   // s84 — the scene peek panel. build_peek_panel wires the bottom widget once;
   // select_scene sets the selection + reveals + populates; populate_peek fills the
   // synopsis/metadata/links readout from the model for the given scene.
   void build_peek_panel();
   void select_scene(const std::string& iid);
   void populate_peek(const std::string& iid);
+  // s93 — STORY-TIME authoring (§9.14.2): Set writes an absolute coordinate from
+  // the relative gap typed against the previous dated scene; Clear marks undated.
+  void apply_story_time();
+  void clear_story_time();
   int column_at(double x) const;        // 1-based told-order column under x, or 0
   int clamped_col(double x) const;      // column under x, clamped into [1, n] for sweep
   int track_row_at(double y) const;     // m_tracks index under y, or -1
@@ -238,6 +315,19 @@ private:
   bool over_kp_strip(double y) const;
   int  kp_lane_at_col(int col) const;
   void commit_sweep();                  // write plan_sweep's adds into subject_links
+
+  // s92 — persistent-focus helpers. focus_key_at resolves the relief row under a
+  // BASE-coord point to its kind-namespaced focus key ("" if not a focusable
+  // row); recompute_focus_positions refreshes the m_focus_positions cache from
+  // m_focus + the current lanes; prune_focus drops keys whose row vanished (a
+  // rebuild may delete a subject/thread/KP), the m_selected_iid peek-sync shape;
+  // clear_focus unpins everything (Esc / programmatic). focus_lanes builds the
+  // uniform (key, claimed) adapter over all three lane vectors for the pure read.
+  std::string focus_key_at(double x, double y) const;
+  std::vector<FocusLane> focus_lanes() const;
+  void recompute_focus_positions();
+  void prune_focus();
+  void clear_focus();
 
   // s82 — removing a placed subject (the inverse of the sweep). A secondary
   // (right) click on a relief track row opens a context menu: remove the whole

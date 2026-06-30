@@ -40,6 +40,7 @@ FocusWindow::FocusWindow(DocumentModel& model, FolioPrefs& prefs, Editor& editor
     build_drawer();
     build_switcher();
     build_link_picker();   // s46 — focus-owned link picker overlay (top of the overlay stack)
+    build_format_bar();    // s93 — toggleable formatting strip (styles + inline)
     build_toast();         // s46 — transient confirmation pill (topmost; snapshot/link feedback)
     wire_keys();
 
@@ -956,14 +957,170 @@ void FocusWindow::activate_switch_row(Gtk::ListBoxRow* row) {
     }
 }
 
+// ── Format bar (s93) ─────────────────────────────────────────────────────────
+// The shared buffer carries all tags, so anything applied here renders in m_view
+// for free (the same reason spell marks and links already show through). Each
+// control resolves the caret/selection from the shared buffer at apply time
+// (fmt_caret_range) and calls an Editor seam by offset — no focus-local op.
+void FocusWindow::build_format_bar() {
+    auto* bar = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 4);
+    bar->set_name("focus-format-bar");
+    bar->add_css_class("focus-format-bar");
+    bar->set_halign(Gtk::Align::CENTER);
+    bar->set_valign(Gtk::Align::START);
+    bar->set_margin_top(54);   // clears the navbar breadcrumb above it
+
+    // Named-style dropdown — the centrepiece (index 0 = the "Style…" prompt,
+    // index i+1 = m_prefs.text_styles[i], exactly like the editor's toolbar).
+    m_fmt_style_dd = Gtk::make_managed<Gtk::DropDown>();
+    m_fmt_style_dd->add_css_class("style-picker-dropdown");
+    m_fmt_style_dd->set_size_request(150, -1);
+    m_fmt_style_dd->set_tooltip_text("Apply a named style");
+    rebuild_fmt_styles();
+    m_fmt_style_dd->property_selected().signal_changed().connect([this]() {
+        if (m_fmt_dd_guard) return;
+        guint idx = m_fmt_style_dd->get_selected();
+        if (idx == 0 || idx == GTK_INVALID_LIST_POSITION) return;
+        int si = (int)idx - 1;
+        auto [a, b] = fmt_caret_range();
+        m_editor.apply_named_style_range(si, a, b);
+        // A style pick is a commit: reset the prompt and return to the page (which
+        // auto-hides the bar via m_view's focus-enter), so the writer is back in.
+        m_fmt_dd_guard = true;
+        m_fmt_style_dd->set_selected(0);
+        m_fmt_dd_guard = false;
+        fmt_return_to_view(a, b);
+    });
+    bar->append(*m_fmt_style_dd);
+    bar->append(*Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::VERTICAL));
+
+    // Inline buttons — each toggles over the selection and re-asserts it so a
+    // second inline op (B then I) hits the same run; the bar stays open (focus is
+    // on the button, not the view) for chaining.
+    auto add_inline = [this, bar](const char* icon, const char* tip,
+                                  std::function<void(int, int)> op) {
+        auto* b = Gtk::make_managed<Gtk::Button>();
+        b->set_icon_name(icon);
+        b->add_css_class("fmt-btn");
+        b->add_css_class("flat");
+        b->set_tooltip_text(tip);
+        b->signal_clicked().connect([this, op]() {
+            auto [s, e] = fmt_caret_range();
+            if (s == e) return;   // inline needs a selection
+            op(s, e);
+            if (auto buf = m_editor.shared_buffer()) {
+                buf->select_range(buf->get_iter_at_offset(s), buf->get_iter_at_offset(e));
+            }
+        });
+        bar->append(*b);
+    };
+    add_inline("format-text-bold-symbolic", "Bold (Ctrl+B)",
+               [this](int s, int e) { m_editor.format_bold_range(s, e); });
+    add_inline("format-text-italic-symbolic", "Italic (Ctrl+I)",
+               [this](int s, int e) { m_editor.format_italic_range(s, e); });
+    add_inline("format-text-underline-symbolic", "Underline (Ctrl+U)",
+               [this](int s, int e) { m_editor.format_underline_range(s, e); });
+    add_inline("format-text-strikethrough-symbolic", "Strikethrough",
+               [this](int s, int e) { m_editor.format_strikethrough_range(s, e); });
+
+    bar->append(*Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::VERTICAL));
+    auto* clr = Gtk::make_managed<Gtk::Button>();
+    clr->set_icon_name("folio-clear-format-symbolic");
+    clr->add_css_class("fmt-btn");
+    clr->add_css_class("flat");
+    clr->set_tooltip_text("Clear formatting");
+    clr->signal_clicked().connect([this]() {
+        auto [s, e] = fmt_caret_range();
+        if (s == e) return;
+        m_editor.clear_format_range(s, e);
+        if (auto buf = m_editor.shared_buffer()) {
+            buf->select_range(buf->get_iter_at_offset(s), buf->get_iter_at_offset(e));
+        }
+    });
+    bar->append(*clr);
+
+    m_fmt_bar = bar;
+    m_overlay.add_overlay(*bar);
+    bar->set_visible(false);
+
+    // Auto-dismiss: when the text view regains focus (the writer clicks back into
+    // the page, or a style pick handed focus back), the bar steps aside. Opening
+    // the bar focuses the dropdown — NOT the view — so this never fires on open.
+    auto foc = Gtk::EventControllerFocus::create();
+    foc->signal_enter().connect([this]() {
+        if (m_fmt_bar && m_fmt_bar->get_visible()) m_fmt_bar->set_visible(false);
+    });
+    m_view.add_controller(foc);
+}
+
+void FocusWindow::rebuild_fmt_styles() {
+    if (!m_fmt_style_dd) return;
+    std::vector<Glib::ustring> names;
+    names.push_back("Style…");
+    for (const auto& ts : m_prefs.text_styles) names.push_back(ts.name);
+    m_fmt_dd_guard = true;
+    m_fmt_style_dd->set_model(Gtk::StringList::create(names));
+    m_fmt_style_dd->set_selected(0);
+    m_fmt_dd_guard = false;
+}
+
+void FocusWindow::toggle_format_bar() {
+    if (!m_fmt_bar) return;
+    if (m_fmt_bar->get_visible()) { hide_format_bar(); return; }
+    rebuild_fmt_styles();                 // pick up any style edits since last open
+    m_fmt_bar->set_visible(true);
+    if (m_fmt_style_dd) m_fmt_style_dd->grab_focus();  // dropdown, not the view
+}
+
+void FocusWindow::hide_format_bar() {
+    if (m_fmt_bar && m_fmt_bar->get_visible()) {
+        m_fmt_bar->set_visible(false);
+        m_view.grab_focus();
+    }
+}
+
+// The shared-buffer caret/selection as character offsets, ordered low→high. A
+// bare caret returns {off, off}; the apply seams treat that as "this paragraph"
+// for a paragraph style and a no-op for inline / character ops.
+std::pair<int, int> FocusWindow::fmt_caret_range() const {
+    auto buf = m_editor.shared_buffer();
+    if (!buf) return {0, 0};
+    Gtk::TextBuffer::iterator s, e;
+    if (buf->get_selection_bounds(s, e))
+        return {s.get_offset(), e.get_offset()};
+    int off = buf->get_insert()->get_iter().get_offset();
+    return {off, off};
+}
+
+void FocusWindow::fmt_return_to_view(int a, int b) {
+    if (auto buf = m_editor.shared_buffer()) {
+        int n = buf->get_char_count();
+        a = std::clamp(a, 0, n);
+        b = std::clamp(b, 0, n);
+        auto ia = buf->get_iter_at_offset(a);
+        auto ib = buf->get_iter_at_offset(b);
+        if (a == b) buf->place_cursor(ia);
+        else        buf->select_range(ia, ib);
+    }
+    m_view.grab_focus();   // focus-enter on m_view hides the bar
+}
+
 void FocusWindow::wire_keys() {
     auto key = Gtk::EventControllerKey::create();
+    // s93 — CAPTURE phase: the text view binds some of our chords itself (Ctrl+/
+    // is its select-all), and a bubble-phase window controller only sees a key
+    // AFTER the focused view has already consumed it. Capturing at the window
+    // gives the focus shortcuts first refusal; every key we don't handle returns
+    // false and propagates on to the view unchanged (typing, Ctrl+C/V/Z/A, etc.).
+    key->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
     key->signal_key_pressed().connect(
         [this](guint keyval, guint, Gdk::ModifierType mods) -> bool {
             const bool ctrl =
                 (mods & Gdk::ModifierType::CONTROL_MASK) == Gdk::ModifierType::CONTROL_MASK;
             if (keyval == GDK_KEY_Escape) {
-                if (m_link_picker && m_link_picker->get_visible()) {
+                if (m_fmt_bar && m_fmt_bar->get_visible()) {
+                    hide_format_bar();
+                } else if (m_link_picker && m_link_picker->get_visible()) {
                     m_link_picker->set_visible(false);
                     m_view.grab_focus();
                 } else if (m_switcher && m_switcher->get_visible()) {
@@ -977,6 +1134,26 @@ void FocusWindow::wire_keys() {
                 return true;
             }
             if (ctrl && (keyval == GDK_KEY_comma)) { toggle_drawer(); return true; }
+            // s93 — Ctrl+/ toggles the format bar (styles + inline). Ctrl+B/I/U
+            // apply inline directly on the live focus selection so the writer's
+            // muscle memory works without opening the bar (dead in focus before
+            // s93); the style dropdown + strike/clear live in the bar.
+            if (ctrl && (keyval == GDK_KEY_slash)) { toggle_format_bar(); return true; }
+            if (ctrl && (keyval == GDK_KEY_b || keyval == GDK_KEY_B)) {
+                auto [s, e] = fmt_caret_range();
+                if (s != e) m_editor.format_bold_range(s, e);
+                return true;
+            }
+            if (ctrl && (keyval == GDK_KEY_i || keyval == GDK_KEY_I)) {
+                auto [s, e] = fmt_caret_range();
+                if (s != e) m_editor.format_italic_range(s, e);
+                return true;
+            }
+            if (ctrl && (keyval == GDK_KEY_u || keyval == GDK_KEY_U)) {
+                auto [s, e] = fmt_caret_range();
+                if (s != e) m_editor.format_underline_range(s, e);
+                return true;
+            }
             if (ctrl && (keyval == GDK_KEY_p || keyval == GDK_KEY_P)) {
                 open_switcher();
                 return true;

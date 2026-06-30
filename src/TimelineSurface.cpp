@@ -22,6 +22,8 @@
 #include "DocumentModel.hpp"
 #include "FolioPrefs.hpp"
 #include "Iid.hpp"          // s86 — make_iid(IidKind::KeyPoint) for KP mint
+#include "TimelineClock.hpp"  // s93 — world-clock: gap_phrase / apply_relative_gap
+#include "TimelineChrono.hpp" // s93 — world-clock: chronological_order (the re-lay)
 #include "KpPalette.hpp"    // s86 — palette_remap / apply_palette_remap (delete reconcile)
 #include "StoryGraph.hpp"   // s80 step 3 — edges_from_backlinks (subject adapter)
 #include "TimelineRelief.hpp"  // compute_relief — the per-track renderer input
@@ -130,6 +132,15 @@ void set_src(const Cairo::RefPtr<Cairo::Context>& cr, const Gdk::RGBA& c, double
   cr->set_source_rgba(c.get_red(), c.get_green(), c.get_blue(), a);
 }
 
+// s92 — namespaced focus keys. A subject iid (chr_/plc_/ref_/ast_), a thread key
+// (a thr_ iid) and a KP id (a palette-swatch id) live in different worlds, but
+// they share ONE focus set, so each is kind-prefixed before it enters — the
+// s87/s91 specificity rule applied up front (a generic shared id would otherwise
+// silently collide). The pure layer treats the result as an opaque string.
+std::string fk_subject (const std::string& iid) { return "S:" + iid; }
+std::string fk_thread  (const std::string& key) { return "T:" + key; }
+std::string fk_keypoint(const std::string& id)  { return "K:" + id;  }
+
 }  // namespace
 
 // ── The model → DTO adapter (declared in TimelineSpine.hpp) ──────────────────
@@ -221,9 +232,10 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
   m_overlay.set_hexpand(true);
   m_overlay.set_vexpand(true);
 
-  // s84 — the right side of the split is a vertical box: the canvas (vexpand)
-  // above, the scene peek panel (a revealer) below. build_peek_panel() fills the
-  // revealer's child once; select_scene reveals + populates it on a single click.
+  // s84 — the right side of the split is a vertical box: the canvas (vexpand) above,
+  // the scene peek panel (a revealer) below. The lens toggle (Told Order / Chrono) is
+  // painted on the canvas in the SPINE gutter, not a widget here. build_peek_panel()
+  // fills the revealer's child once; select_scene reveals + populates it on a click.
   build_peek_panel();
   m_right_box.set_hexpand(true);
   m_right_box.set_vexpand(true);
@@ -275,9 +287,27 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
     // s91 — event coords are in SCALED content space; divide by m_zoom back into
     // the base geometry the hit-tests use.
     const double bx = x / m_zoom, by = y / m_zoom;
+    if (lens_toggle_click(bx, by)) return;   // s93 — Told Order / Chrono pills in the SPINE gutter
     if (alt) { toggle_cell(bx, by); return; }   // precise non-contiguous link edit
     const std::string iid = scene_at(bx, by);
-    if (iid.empty()) return;
+    if (iid.empty()) {
+      // s92 — a bare PLAIN/SHIFT click on a relief ROW toggles PERSISTENT focus
+      // on that row (vs the transient hover-isolate, which springs back). Plain
+      // click = single-focus the row (re-click clears); Shift+click = toggle it
+      // in the spotlighted set (§9.12.5). Skipped when this release ended a sweep
+      // DRAG (m_sweep_moved, set during drag_update before the release) so a
+      // sweep never doubles as a focus toggle; Ctrl/Alt already returned above.
+      if (!m_sweep_moved) {
+        const std::string key = focus_key_at(bx, by);
+        if (!key.empty()) {
+          m_focus = shift ? focus_toggle_spotlight(m_focus, key)
+                          : focus_toggle_primary(m_focus, key);
+          recompute_focus_positions();
+          m_area.queue_draw();
+        }
+      }
+      return;
+    }
     if (n_press >= 2) {                 // double-click → edit
       if (m_on_open) m_on_open(iid);
     } else {                            // single-click → peek
@@ -411,6 +441,12 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
           case GDK_KEY_KP_Subtract:   zoom_out();   return true;
           case GDK_KEY_0: case GDK_KEY_KP_0:
                                       reset_zoom(); return true;
+          // s92 — Esc unpins persistent focus (the deliberate "back to whole
+          // graph" key); a no-op when nothing is focused, so it doesn't swallow
+          // Esc from anything else that wants it in that case.
+          case GDK_KEY_Escape:
+            if (focus_active(m_focus)) { clear_focus(); return true; }
+            return false;
           default: return false;
         }
       }, false);
@@ -1642,6 +1678,73 @@ int TimelineSurface::kp_lane_at_col(int col) const {
   return -1;
 }
 
+// s92 — the relief row under a BASE-coord point → its kind-namespaced focus key,
+// or "" if the point is not over a focusable row. The three y-bands are disjoint
+// (subject tracks / thread band / KP strip), so the order of checks is immaterial
+// to correctness; a KP needs the column too (its row is partitioned by column).
+std::string TimelineSurface::focus_key_at(double x, double y) const {
+  if (const int trk = track_row_at(y);
+      trk >= 0 && trk < static_cast<int>(m_tracks.size()))
+    return fk_subject(m_tracks[static_cast<std::size_t>(trk)].iid);
+  if (const int tl = thread_lane_at(y);
+      tl >= 0 && tl < static_cast<int>(m_thread_lanes.size()))
+    return fk_thread(m_thread_lanes[static_cast<std::size_t>(tl)].thread_key);
+  if (over_kp_strip(y)) {
+    const int kl = kp_lane_at_col(column_at(x));
+    if (kl >= 0 && kl < static_cast<int>(m_kp_lanes.size()))
+      return fk_keypoint(m_kp_lanes[static_cast<std::size_t>(kl)].kp_id);
+  }
+  return {};
+}
+
+// s92 — the uniform (key, claimed) adapter over all three lane vectors, the input
+// to the pure focus_positions. Built fresh from the current lanes; keys are
+// namespaced to match what focus_key_at pins, so a focused key always resolves to
+// the right lane (or to nothing, when its row was pruned).
+std::vector<FocusLane> TimelineSurface::focus_lanes() const {
+  std::vector<FocusLane> lanes;
+  lanes.reserve(m_tracks.size() + m_thread_lanes.size() + m_kp_lanes.size());
+  for (const TimelineTrack& t : m_tracks)
+    lanes.push_back(FocusLane{fk_subject(t.iid), t.claimed});
+  for (const ThreadLane& l : m_thread_lanes)
+    lanes.push_back(FocusLane{fk_thread(l.thread_key), l.claimed});
+  for (const KpLane& l : m_kp_lanes)
+    lanes.push_back(FocusLane{fk_keypoint(l.kp_id), l.claimed});
+  return lanes;
+}
+
+// s92 — refresh the spine-walk cache from the live focus set + lanes. Cheap, but
+// only needs to run on a focus change or a rebuild (not per frame), so draw()
+// reads m_focus_positions instead of recomputing.
+void TimelineSurface::recompute_focus_positions() {
+  m_focus_positions = focus_positions(m_focus, focus_lanes(), m_spine_iids);
+}
+
+// s92 — drop any focused key whose row no longer exists (a rebuild may have
+// removed a subject / deleted a thread / cleared a KP). The mirror of the
+// m_selected_iid peek-sync: stale presentation state is reconciled to the model
+// on every rebuild rather than left dangling.
+void TimelineSurface::prune_focus() {
+  if (m_focus.empty()) return;
+  std::set<std::string> live;
+  for (const TimelineTrack& t : m_tracks)     live.insert(fk_subject(t.iid));
+  for (const ThreadLane& l : m_thread_lanes)  live.insert(fk_thread(l.thread_key));
+  for (const KpLane& l : m_kp_lanes)          live.insert(fk_keypoint(l.kp_id));
+  for (auto it = m_focus.begin(); it != m_focus.end();) {
+    if (live.find(*it) == live.end()) it = m_focus.erase(it);
+    else ++it;
+  }
+}
+
+// s92 — unpin everything (Esc / a future "clear focus" control). Redraws only
+// when something actually cleared.
+void TimelineSurface::clear_focus() {
+  if (m_focus.empty()) return;
+  m_focus.clear();
+  m_focus_positions.clear();
+  m_area.queue_draw();
+}
+
 int TimelineSurface::spine_top() const {
   return TOP_PAD + m_proj.band_rows * (BAND_H + BAND_GAP) + BAND_TO_SPINE;
 }
@@ -1657,6 +1760,67 @@ int TimelineSurface::staging_top() const {
   const int after_spine = spine_top() + CARD_H;
   const int after_kp = m_kp_lanes.empty() ? after_spine : kp_top() + KP_H;
   return after_kp + STAGE_PAD;
+}
+
+// s93 — the Told Order / Chrono lens toggle, two pills in the SPINE gutter just
+// under the row label. BASE coords (drawn under the same cr->scale(m_zoom) as the
+// rest; the click handler divides by m_zoom before calling lens_toggle_click). The
+// gutter is GUTTER (132) wide, so the pair fits left of column 0 at x0().
+TimelineSurface::LensToggleGeom TimelineSurface::lens_toggle_geom() const {
+  const double axis_y = spine_top() + CARD_H / 2.0;
+  LensToggleGeom g;
+  g.y        = axis_y + 7.0;
+  g.h        = 15.0;
+  g.told_x   = LEFT_PAD;
+  g.told_w   = 64.0;
+  g.chrono_x = LEFT_PAD + g.told_w + 4.0;   // 84
+  g.chrono_w = 46.0;                        // ends at 130, inside the 148px gutter
+  return g;
+}
+
+void TimelineSurface::draw_lens_toggle(const Cairo::RefPtr<Cairo::Context>& cr) {
+  const Gdk::RGBA accent = themed(m_area, "accent", "#89b4fa");
+  const Gdk::RGBA muted  = themed(m_area, "tx3", "#9196b4");
+  const LensToggleGeom g = lens_toggle_geom();
+  struct Pill { double x, w; const char* label; bool active; };
+  const Pill pills[2] = {
+    { g.told_x,   g.told_w,   "Told Order", !m_story_axis },
+    { g.chrono_x, g.chrono_w, "Chrono",      m_story_axis },
+  };
+  for (const Pill& p : pills) {
+    rounded_rect(cr, p.x, g.y, p.w, g.h, g.h / 2.0);
+    if (p.active) {
+      set_src(cr, accent, 0.20); cr->fill_preserve();
+      set_src(cr, accent, 0.95);
+    } else {
+      set_src(cr, muted, 0.35);
+    }
+    cr->set_line_width(1.0);
+    cr->stroke();
+    auto tl = m_area.create_pango_layout(p.label);
+    tl->set_font_description(Pango::FontDescription("sans 8"));
+    int tw = 0, th = 0; tl->get_pixel_size(tw, th);
+    set_src(cr, p.active ? accent : muted, p.active ? 1.0 : 0.85);
+    cr->move_to(p.x + (p.w - tw) / 2.0, g.y + (g.h - th) / 2.0);
+    tl->show_in_cairo_context(cr);
+  }
+}
+
+bool TimelineSurface::lens_toggle_click(double bx, double by) {
+  const LensToggleGeom g = lens_toggle_geom();
+  if (by < g.y || by > g.y + g.h) return false;
+  bool want_chrono;
+  if (bx >= g.told_x && bx <= g.told_x + g.told_w)             want_chrono = false;
+  else if (bx >= g.chrono_x && bx <= g.chrono_x + g.chrono_w)  want_chrono = true;
+  else return false;
+  if (want_chrono != m_story_axis) {   // a no-op re-click of the active pill just consumes
+    m_story_axis = want_chrono;
+    recompute_chrono();
+    m_selected_iid.clear();
+    m_peek_revealer.set_reveal_child(false);
+    m_area.queue_draw();
+  }
+  return true;
 }
 
 bool TimelineSurface::over_staging(double y) const {
@@ -1903,6 +2067,8 @@ void TimelineSurface::rebuild() {
   }
   m_thread_lanes = assemble_thread_lanes(m_spine_iids, scene_thread);
 
+  recompute_chrono();   // s93 — refresh the world-clock order caches off the new spine + coords
+
   // s82 — the resource rail roster: every linkable subject (Characters / Places
   // / References binder leaves + the live image pool), claimed or not, so the
   // author can arm one with no track yet and place it on the spine (§3). Claim
@@ -1955,6 +2121,11 @@ void TimelineSurface::rebuild() {
   }
 
   m_empty_hint.set_visible(m_proj.spine.empty());
+  // s92 — reconcile persistent focus to the rebuilt lanes: drop any pinned row
+  // that vanished, then refresh the spine-walk cache from what survives (the
+  // m_selected_iid peek-sync discipline, one row up).
+  prune_focus();
+  recompute_focus_positions();
   sync_content_size();
   m_area.queue_draw();
 }
@@ -2054,6 +2225,49 @@ void TimelineSurface::build_peek_panel() {
   meta_col->append(*links_cap);
   meta_col->append(m_peek_links);
 
+  // s93 — STORY-TIME (world-clock authoring; DESIGN_timeline.md §9.14.2). The
+  // readout is the DERIVED gap to the previous dated scene; the row authors a
+  // relative gap ("3 weeks later") that writes an ABSOLUTE coordinate via
+  // apply_relative_gap (Option B) — reorder-safe. The on-spine gap pills are the
+  // focused follow pass; this is the set/clear surface and the at-a-glance phrase.
+  auto* st_cap = Gtk::make_managed<Gtk::Label>("STORY-TIME");
+  st_cap->add_css_class("timeline-peek-cap");
+  st_cap->set_halign(Gtk::Align::START);
+  st_cap->set_margin_top(4);
+  m_peek_storytime.add_css_class("timeline-peek-meta");
+  m_peek_storytime.set_halign(Gtk::Align::START);
+  m_peek_storytime.set_xalign(0.0f);
+  m_peek_storytime.set_wrap(true);
+  m_peek_storytime.set_max_width_chars(40);
+
+  auto* st_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+  st_row->set_margin_top(2);
+  m_peek_st_count.set_adjustment(Gtk::Adjustment::create(1.0, 1.0, 9999.0, 1.0, 10.0));
+  m_peek_st_count.set_digits(0);
+  m_peek_st_count.set_numeric(true);
+  m_peek_st_count.set_width_chars(4);
+  m_peek_st_unit.set_model(Gtk::StringList::create(std::vector<Glib::ustring>{
+      "years", "months", "weeks", "days", "hours", "minutes", "seconds"}));
+  m_peek_st_unit.set_selected(2);   // weeks
+  m_peek_st_dir.set_model(Gtk::StringList::create(std::vector<Glib::ustring>{
+      "later", "earlier"}));
+  m_peek_st_dir.set_selected(0);    // later
+  auto* st_set = Gtk::make_managed<Gtk::Button>("Set");
+  st_set->add_css_class("flat");
+  st_set->signal_clicked().connect([this]() { apply_story_time(); });
+  auto* st_clear = Gtk::make_managed<Gtk::Button>("Clear");
+  st_clear->add_css_class("flat");
+  st_clear->signal_clicked().connect([this]() { clear_story_time(); });
+  st_row->append(m_peek_st_count);
+  st_row->append(m_peek_st_unit);
+  st_row->append(m_peek_st_dir);
+  st_row->append(*st_set);
+  st_row->append(*st_clear);
+
+  meta_col->append(*st_cap);
+  meta_col->append(m_peek_storytime);
+  meta_col->append(*st_row);
+
   body->append(*syn_col);
   body->append(*meta_col);
   outer->append(*body);
@@ -2127,6 +2341,726 @@ void TimelineSurface::populate_peek(const std::string& iid) {
              + (tk.label.empty() ? std::string("(untitled)") : tk.label);
   }
   m_peek_links.set_text(links.empty() ? "Nothing linked yet." : links);
+
+  // s93 — STORY-TIME readout: the derived gap to the previous dated told-order
+  // scene (recomputed live; never persisted — §9.14.2). Undated => ordinal only.
+  std::string st;
+  if (!n->has_story_time) {
+    st = "Undated \u2014 ordinal only.";
+  } else {
+    const BinderNode* prev = nullptr;
+    int prev_pos = 0;
+    for (int i = pos - 2; i >= 0; --i) {
+      const BinderNode* p =
+          m_model.find_node_by_iid(m_spine_iids[static_cast<std::size_t>(i)]);
+      if (p && p->has_story_time) { prev = p; prev_pos = i + 1; break; }
+    }
+    if (prev)
+      st = gap_phrase(n->story_time - prev->story_time)
+           + " than scene " + std::to_string(prev_pos) + ".";
+    else
+      st = "Sets the story-time start.";
+  }
+  m_peek_storytime.set_text(st);
+}
+
+// s93 — Set: write THIS scene's absolute story-time from the relative gap typed
+// against the nearest EARLIER dated told-order scene (the anchor). With no earlier
+// dated scene this scene anchors the clock at 0 (the start); the typed offset is
+// ignored in that one case. Absolute storage (Option B) keeps it reorder-safe.
+// NOTE (v1 limit, §9.14.4): anchoring is "previous dated in told order"; dating
+// scenes badly out of order, or anchoring to an arbitrary scene, is a follow-on.
+void TimelineSurface::apply_story_time() {
+  if (m_selected_iid.empty()) return;
+  BinderNode* n = m_model.find_node_by_iid(m_selected_iid);
+  if (!n) return;
+
+  int pos = 0;
+  for (std::size_t i = 0; i < m_spine_iids.size(); ++i)
+    if (m_spine_iids[i] == m_selected_iid) { pos = static_cast<int>(i) + 1; break; }
+
+  const BinderNode* prev = nullptr;
+  for (int i = pos - 2; i >= 0; --i) {
+    const BinderNode* p =
+        m_model.find_node_by_iid(m_spine_iids[static_cast<std::size_t>(i)]);
+    if (p && p->has_story_time) { prev = p; break; }
+  }
+
+  static const DurationUnit kUnits[] = {
+      DurationUnit::Year, DurationUnit::Month, DurationUnit::Week,
+      DurationUnit::Day,  DurationUnit::Hour,  DurationUnit::Minute,
+      DurationUnit::Second};
+  const guint ui = m_peek_st_unit.get_selected();
+  const DurationUnit unit = kUnits[ui < 7u ? ui : 2u];
+  const int dir = (m_peek_st_dir.get_selected() == 0u) ? +1 : -1;
+  const long long count = static_cast<long long>(m_peek_st_count.get_value_as_int());
+
+  if (prev)
+    n->story_time = apply_relative_gap(prev->story_time, count, unit, dir);
+  else
+    n->story_time = 0;   // no earlier dated scene → this anchors the clock start
+  n->has_story_time = true;
+
+  m_model.mark_modified();
+  populate_peek(m_selected_iid);   // refresh the readout
+  recompute_chrono();              // s93 — story order reflects the new coordinate
+  m_area.queue_draw();             // (on-spine gap pills land in the follow pass)
+}
+
+void TimelineSurface::clear_story_time() {
+  if (m_selected_iid.empty()) return;
+  BinderNode* n = m_model.find_node_by_iid(m_selected_iid);
+  if (!n) return;
+  n->has_story_time = false;
+  n->story_time = 0;
+  m_model.mark_modified();
+  populate_peek(m_selected_iid);
+  recompute_chrono();              // s93 — drop it from the story order / into the tray
+  m_area.queue_draw();
+}
+
+// s93 — rebuild the world-clock order caches (§9.14.3). Pure ordering lives in
+// chronological_order; this is the GTK adapter: read each told-order scene's
+// coordinate off the model, sort, split into the dated axis + the undated tray.
+void TimelineSurface::recompute_chrono() {
+  m_title_of.clear();
+  m_told_pos.clear();
+  for (const auto& s : m_proj.spine) {
+    m_title_of[s.iid] = s.title;
+    m_told_pos[s.iid] = s.position;   // stable told/binder number — the card badge in both lenses
+  }
+
+  std::vector<ChronoScene> told;
+  told.reserve(m_spine_iids.size());
+  for (const auto& iid : m_spine_iids) {
+    ChronoScene cs;
+    cs.iid = iid;
+    const BinderNode* n = m_model.find_node_by_iid(iid);
+    if (n && n->has_story_time) { cs.dated = true; cs.time = n->story_time; }
+    told.push_back(cs);
+  }
+  ChronoOrder o = chronological_order(told);
+  m_chrono_order   = o.chrono;
+  m_chrono_undated = o.undated;
+}
+
+// s93 — ONE scene-card painter shared by the Told Order and Chrono draws, so a scene
+// is visually identical in either lens: flipping the lens only re-slots cards and
+// reveals the ruler — it never restyles a card or changes its number. `badge` is the
+// stable told/binder position in both lenses. The caller owns the axis dot / stem.
+void TimelineSurface::draw_scene_card(const Cairo::RefPtr<Cairo::Context>& cr,
+                                      const std::string& iid, const std::string& title,
+                                      int order_badge, int told_badge, double cardx, int top) {
+  const Gdk::RGBA c_card     = themed(m_area, "adw_surface", "#242436");
+  const Gdk::RGBA c_card_tx  = themed(m_area, "tx3", "#9196b4");
+  const Gdk::RGBA c_badge    = themed(m_area, "adw_overlay2", "#3a3a54");
+  const Gdk::RGBA c_badge_tx = themed(m_area, "tx1", "#cdd6f4");
+  const Gdk::RGBA c_border   = themed(m_area, "border_subtle", "rgba(255,255,255,0.06)");
+
+  rounded_rect(cr, cardx, top, card_w(), CARD_H, 7);
+  set_src(cr, c_card, 0.98);
+  cr->fill_preserve();
+  set_src(cr, c_border);
+  cr->set_line_width(1.0);
+  cr->stroke();
+
+  if (!m_selected_iid.empty() && iid == m_selected_iid) {   // peeked scene reads as selected
+    Gdk::RGBA sel = themed(m_area, "accent", "#89b4fa");
+    rounded_rect(cr, cardx - 2.5, top - 2.5, card_w() + 5, CARD_H + 5, 9);
+    set_src(cr, sel, 0.95);
+    cr->set_line_width(2.0);
+    cr->stroke();
+  }
+
+  const double badge_cx = cardx + BADGE_R + 3;   // upper-left: order in the current view
+  const double badge_cy = top + BADGE_R + 3;
+  set_src(cr, c_badge);
+  cr->arc(badge_cx, badge_cy, BADGE_R, 0, 2 * M_PI);
+  cr->fill();
+  auto pn = m_area.create_pango_layout(std::to_string(order_badge));
+  pn->set_font_description(Pango::FontDescription("monospace 8"));
+  int pw = 0, ph = 0; pn->get_pixel_size(pw, ph);
+  set_src(cr, c_badge_tx);
+  cr->move_to(badge_cx - pw / 2.0, badge_cy - ph / 2.0);
+  pn->show_in_cairo_context(cr);
+
+  const double tr_cx = cardx + card_w() - BADGE_R - 3;   // upper-right: told/manuscript number
+  const double tr_cy = top + BADGE_R + 3;
+  set_src(cr, c_badge, 0.65);
+  cr->arc(tr_cx, tr_cy, BADGE_R - 1.0, 0, 2 * M_PI);
+  cr->fill();
+  auto tn = m_area.create_pango_layout(std::to_string(told_badge));
+  tn->set_font_description(Pango::FontDescription("monospace 7"));
+  int tnw = 0, tnh = 0; tn->get_pixel_size(tnw, tnh);
+  set_src(cr, c_badge_tx, 0.7);
+  cr->move_to(tr_cx - tnw / 2.0, tr_cy - tnh / 2.0);
+  tn->show_in_cairo_context(cr);
+
+  auto tl = m_area.create_pango_layout(title.empty() ? "(untitled)" : title);
+  tl->set_font_description(Pango::FontDescription("sans 8"));
+  tl->set_ellipsize(Pango::EllipsizeMode::END);
+  tl->set_width(static_cast<int>((card_w() - 8) * Pango::SCALE));
+  tl->set_alignment(Pango::Alignment::CENTER);
+  int tw = 0, th = 0; tl->get_pixel_size(tw, th);
+  set_src(cr, c_card_tx);
+  cr->move_to(cardx + 4, top + CARD_H - th - 6);
+  tl->show_in_cairo_context(cr);
+}
+
+// s93 — the world-clock chronological view (§9.14.3). Every scene stays on the spine
+// (undated ones carry forward, s93); cards are painted by the shared draw_scene_card
+// so they match Told Order exactly, and the broken-axis ruler is drawn beneath.
+// Relief (tracks/KP/threads) re-read under m_chrono_order is the follow pass — one
+// compute_relief(m_chrono_order, …) away (the §9.14.5 substrate reuse).
+void TimelineSurface::draw_story_axis(const Cairo::RefPtr<Cairo::Context>& cr) {
+  const Gdk::RGBA c_card     = themed(m_area, "adw_surface", "#242436");
+  const Gdk::RGBA c_card_tx  = themed(m_area, "tx3", "#9196b4");
+  const Gdk::RGBA c_axis     = themed(m_area, "tx4", "#5a5d75");
+  const Gdk::RGBA c_badge    = themed(m_area, "adw_overlay2", "#3a3a54");
+  const Gdk::RGBA c_border   = themed(m_area, "border_subtle", "rgba(255,255,255,0.06)");
+  const Gdk::RGBA c_gutter   = themed(m_area, "tx3", "#9196b4");
+
+  const int m = static_cast<int>(m_chrono_order.size());
+  const int top = spine_top();
+  const double axis_y = top + CARD_H / 2.0;
+  const double ruler_y = top + CARD_H + 20.0;   // the broken-axis ruler sits below the cards
+
+  {   // gutter caption (left, beside the spine row)
+    auto gl = m_area.create_pango_layout("STORY-TIME");
+    gl->set_font_description(Pango::FontDescription("sans bold 9"));
+    int tw = 0, th = 0; gl->get_pixel_size(tw, th);
+    set_src(cr, c_gutter, 0.9);
+    cr->move_to(LEFT_PAD, axis_y - th / 2.0);
+    gl->show_in_cairo_context(cr);
+  }
+  draw_lens_toggle(cr);   // s93 — Told Order / Chrono pills (Chrono active here)
+
+  for (int k = 0; k < m; ++k) {   // cards, chronological order — same painter as Told Order
+    const std::string& iid = m_chrono_order[static_cast<std::size_t>(k)];
+    const double cardx = col_cx(k) - card_w() / 2.0;
+    auto it  = m_title_of.find(iid);
+    auto pit = m_told_pos.find(iid);
+    const std::string title = (it != m_title_of.end()) ? it->second : std::string();
+    const int told = (pit != m_told_pos.end()) ? pit->second : (k + 1);
+    draw_scene_card(cr, iid, title, k + 1, told, cardx, top);   // left = chrono rank, right = told #
+  }
+
+  // ── Broken-axis ruler — ALWAYS drawn so Chrono reads as a timeline (§9.14.3) ──
+  // start square —— ticked line —— end square. With dated scenes it carries the
+  // worded gaps, per-unit ticks, card stems and collapse-blocks; with none dated yet
+  // it shows an empty ticked axis, so the surface still reads as a clock waiting for
+  // times rather than looking broken. Width scales to the scene count so the empty
+  // axis has a believable length.
+  {
+    Gdk::RGBA amber;    amber.set("#e8a13a");
+    const int total = m + static_cast<int>(m_chrono_undated.size());
+    const double end_x = (total >= 1) ? col_cx(total - 1) + 28.0
+                                      : x0() + 6.0 * COL;
+
+    // start handle + label at the origin
+    rounded_rect(cr, x0() - 16, ruler_y - 7, 12, 14, 3);
+    set_src(cr, c_badge, 0.95);
+    cr->fill();
+    {
+      auto sl = m_area.create_pango_layout("start");
+      sl->set_font_description(Pango::FontDescription("sans 8"));
+      int sw = 0, sh = 0; sl->get_pixel_size(sw, sh);
+      set_src(cr, c_gutter, 0.8);
+      cr->move_to(x0() - 22, ruler_y + 9);
+      sl->show_in_cairo_context(cr);
+    }
+
+    if (m >= 1) {
+      set_src(cr, c_axis, 0.8);   // stub from handle to the first card column
+      cr->set_line_width(2.0);
+      cr->move_to(x0() - 4, ruler_y);
+      cr->line_to(col_cx(0), ruler_y);
+      cr->stroke();
+
+      for (int k = 0; k + 1 < m; ++k) {   // one segment per gap
+        const BinderNode* a =
+            m_model.find_node_by_iid(m_chrono_order[static_cast<std::size_t>(k)]);
+        const BinderNode* b =
+            m_model.find_node_by_iid(m_chrono_order[static_cast<std::size_t>(k + 1)]);
+        const long long delta = (a && b && a->has_story_time && b->has_story_time)
+                                    ? (b->story_time - a->story_time) : 0;
+        const UnitCount uc = coarsest_unit(delta);
+        const double xL = col_cx(k), xR = col_cx(k + 1);
+        const double mx = (xL + xR) / 2.0;
+
+        if (delta != 0) {   // worded gap label above the cards
+          auto gl = m_area.create_pango_layout(duration_label(delta));
+          gl->set_font_description(Pango::FontDescription("sans 9"));
+          int gw = 0, gh = 0; gl->get_pixel_size(gw, gh);
+          set_src(cr, c_gutter, 0.75);
+          cr->move_to(mx - gw / 2.0, top - gh - 4);
+          gl->show_in_cairo_context(cr);
+        }
+
+        if (uc.count > 12) {   // COLLAPSE: a labelled amber block with broken ruler
+          auto bl = m_area.create_pango_layout(duration_label(delta));
+          bl->set_font_description(Pango::FontDescription("sans bold 8"));
+          int bw = 0, bh = 0; bl->get_pixel_size(bw, bh);
+          const double bwid = bw + 16.0;
+          const double bhei = bh + 8.0;
+          set_src(cr, c_axis, 0.8);   // stubs up to the break on each side
+          cr->set_line_width(2.0);
+          cr->move_to(xL, ruler_y); cr->line_to(mx - bwid / 2.0 - 8, ruler_y); cr->stroke();
+          cr->move_to(mx + bwid / 2.0 + 8, ruler_y); cr->line_to(xR, ruler_y); cr->stroke();
+          set_src(cr, amber, 0.9);   // // break slashes on each side
+          cr->set_line_width(1.5);
+          for (double sgn : {-1.0, 1.0}) {
+            const double bxr = mx + sgn * (bwid / 2.0 + 6.0);
+            cr->move_to(bxr - 2, ruler_y + 5); cr->line_to(bxr + 2, ruler_y - 5); cr->stroke();
+            cr->move_to(bxr + 1, ruler_y + 5); cr->line_to(bxr + 5, ruler_y - 5); cr->stroke();
+          }
+          rounded_rect(cr, mx - bwid / 2.0, ruler_y - bhei / 2.0, bwid, bhei, bhei / 2.0);
+          set_src(cr, amber, 0.18); cr->fill_preserve();
+          set_src(cr, amber, 0.95); cr->set_line_width(1.0); cr->stroke();
+          set_src(cr, amber, 1.0);
+          cr->move_to(mx - bw / 2.0, ruler_y - bh / 2.0);
+          bl->show_in_cairo_context(cr);
+        } else {   // normal: segment + one tick per unit in the gap
+          set_src(cr, c_axis, 0.8);
+          cr->set_line_width(2.0);
+          cr->move_to(xL, ruler_y); cr->line_to(xR, ruler_y); cr->stroke();
+          const int nt = static_cast<int>(uc.count);
+          if (nt >= 1) {
+            set_src(cr, c_axis, 0.65);
+            cr->set_line_width(1.0);
+            for (int t = 1; t <= nt; ++t) {
+              const double tx = xL + (xR - xL) * (static_cast<double>(t)
+                                                  / static_cast<double>(nt + 1));
+              cr->move_to(tx, ruler_y - 4); cr->line_to(tx, ruler_y + 4); cr->stroke();
+            }
+          }
+        }
+      }
+
+      for (int k = 0; k < m; ++k) {   // stem from each card down to its ruler dot
+        const double cx = col_cx(k);
+        set_src(cr, c_axis, 0.5);
+        cr->set_line_width(1.0);
+        cr->move_to(cx, top + CARD_H); cr->line_to(cx, ruler_y); cr->stroke();
+        set_src(cr, c_axis);
+        cr->arc(cx, ruler_y, 2.5, 0, 2 * M_PI);
+        cr->fill();
+      }
+
+      set_src(cr, c_axis, 0.8);   // extension from the last card out to the end square
+      cr->set_line_width(2.0);
+      cr->move_to(col_cx(m - 1), ruler_y);
+      cr->line_to(end_x, ruler_y);
+      cr->stroke();
+    } else {
+      // nothing dated yet — an empty ticked axis so it still reads as a clock
+      set_src(cr, c_axis, 0.8);
+      cr->set_line_width(2.0);
+      cr->move_to(x0() - 4, ruler_y);
+      cr->line_to(end_x, ruler_y);
+      cr->stroke();
+      const int ticks = std::clamp(total, 6, 16);
+      const double t0 = x0() - 4;
+      set_src(cr, c_axis, 0.55);
+      cr->set_line_width(1.0);
+      for (int t = 1; t < ticks; ++t) {
+        const double tx = t0 + (end_x - t0) * (static_cast<double>(t)
+                                               / static_cast<double>(ticks));
+        cr->move_to(tx, ruler_y - 4); cr->line_to(tx, ruler_y + 4); cr->stroke();
+      }
+    }
+
+    // end square + label (always — the far edge of the clock)
+    rounded_rect(cr, end_x, ruler_y - 7, 12, 14, 3);
+    set_src(cr, c_badge, 0.95);
+    cr->fill();
+    {
+      auto el = m_area.create_pango_layout("end");
+      el->set_font_description(Pango::FontDescription("sans 8"));
+      int ew = 0, eh = 0; el->get_pixel_size(ew, eh);
+      set_src(cr, c_gutter, 0.8);
+      cr->move_to(end_x + 6 - ew / 2.0, ruler_y + 9);
+      el->show_in_cairo_context(cr);
+    }
+  }
+
+  if (!m_chrono_undated.empty()) {   // the undated tray (off the axis)
+    const double ty = top + CARD_H + 44.0;
+    const double chipW = 72.0, gap = 8.0, chipH = 26.0;
+    auto cap = m_area.create_pango_layout("UNDATED");
+    cap->set_font_description(Pango::FontDescription("sans bold 9"));
+    int cpw = 0, cph = 0; cap->get_pixel_size(cpw, cph);
+    set_src(cr, c_gutter, 0.9);
+    cr->move_to(LEFT_PAD, ty - cph - 4);
+    cap->show_in_cairo_context(cr);
+
+    for (std::size_t i = 0; i < m_chrono_undated.size(); ++i) {
+      const std::string& iid = m_chrono_undated[i];
+      const double cxx = x0() + static_cast<double>(i) * (chipW + gap);
+      rounded_rect(cr, cxx, ty, chipW, chipH, 6);
+      set_src(cr, c_card, 0.98);
+      cr->fill_preserve();
+      set_src(cr, c_border);
+      cr->set_line_width(1.0);
+      cr->stroke();
+      if (!m_selected_iid.empty() && iid == m_selected_iid) {
+        Gdk::RGBA sel = themed(m_area, "accent", "#89b4fa");
+        rounded_rect(cr, cxx - 2.0, ty - 2.0, chipW + 4, chipH + 4, 8);
+        set_src(cr, sel, 0.95);
+        cr->set_line_width(2.0);
+        cr->stroke();
+      }
+      auto it = m_title_of.find(iid);
+      const std::string title = (it != m_title_of.end() && !it->second.empty())
+                                    ? it->second : std::string("(untitled)");
+      auto tl = m_area.create_pango_layout(title);
+      tl->set_font_description(Pango::FontDescription("sans 8"));
+      tl->set_ellipsize(Pango::EllipsizeMode::END);
+      tl->set_width(static_cast<int>((chipW - 8) * Pango::SCALE));
+      tl->set_alignment(Pango::Alignment::CENTER);
+      int tw = 0, th = 0; tl->get_pixel_size(tw, th);
+      set_src(cr, c_card_tx);
+      cr->move_to(cxx + 4, ty + (chipH - th) / 2.0);
+      tl->show_in_cairo_context(cr);
+    }
+  }
+
+  // s93 — relief under the chronological order (§9.14.5 substrate reuse): the SAME
+  // KP / subject / thread lanes, positions recomputed from m_chrono_order. Stacked
+  // below the spine and the undated tray; no focus dimming and no KP pins here.
+  double y = top + CARD_H + 44.0;                      // below the broken-axis ruler
+  if (!m_chrono_undated.empty()) y += 40.0;            // and below the undated tray
+  if (!m_kp_lanes.empty()) {
+    draw_kp_strip(cr, m_chrono_order, static_cast<int>(y), false, false);
+    y += KP_H + 14.0;
+  }
+  if (!m_tracks.empty()) {
+    draw_subject_tracks(cr, m_chrono_order, y, false);
+    y += static_cast<double>(m_tracks.size()) * (TRACK_H + TRACK_GAP) + 14.0;
+  }
+  if (!m_thread_lanes.empty()) {
+    const double hdr_y = y;
+    draw_thread_band(cr, m_chrono_order, static_cast<int>(hdr_y),
+                     static_cast<int>(hdr_y + THREAD_HEADER_H), false);
+  }
+}
+
+// s93 — hit-test the chronological layout: dated cards on the axis, then the
+// undated tray below. Geometry mirrors draw_story_axis exactly.
+std::string TimelineSurface::scene_at_story(double x, double y) const {
+  const int top = spine_top();
+  const int m = static_cast<int>(m_chrono_order.size());
+  if (y >= top && y <= top + CARD_H) {
+    for (int k = 0; k < m; ++k) {
+      const double cx = col_cx(k);
+      if (x >= cx - card_w() / 2.0 && x <= cx + card_w() / 2.0)
+        return m_chrono_order[static_cast<std::size_t>(k)];
+    }
+    return {};
+  }
+  if (!m_chrono_undated.empty()) {
+    const double ty = top + CARD_H + 44.0;
+    const double chipW = 72.0, gap = 8.0, chipH = 26.0;
+    if (y >= ty && y <= ty + chipH) {
+      for (std::size_t i = 0; i < m_chrono_undated.size(); ++i) {
+        const double cxx = x0() + static_cast<double>(i) * (chipW + gap);
+        if (x >= cxx && x <= cxx + chipW) return m_chrono_undated[i];
+      }
+    }
+  }
+  return {};
+}
+
+// s93 — subject-track relief, shared by the told-order draw and the story-time
+// view (§9.14.5 substrate reuse). Positions come from compute_relief(order, …),
+// so the SAME lanes re-lay under whichever order is handed in. apply_focus gates
+// the told-order focus/hover dimming — the story view passes false (no focus
+// there yet), so every row draws at full strength. ttop is the row-region top,
+// computed by each caller for its own vertical stack.
+void TimelineSurface::draw_subject_tracks(const Cairo::RefPtr<Cairo::Context>& cr,
+                                          const std::vector<std::string>& order,
+                                          double ttop, bool apply_focus) {
+  const bool fo = apply_focus && focus_active(m_focus);
+
+  // s93 — vertical card→track drop-lines. Formerly a told-only block in draw();
+  // now drawn here off the passed ORDER, so the Chrono lens shows the same
+  // associations (a scene's relationship lines re-aim to its chrono column). A thin
+  // hue-coded dashed line from each card down to the cell of every track that claims
+  // it; co-claimants in a column fan symmetrically. Drawn first so the bars sit over
+  // them. Dimming follows focus/hover only when apply_focus (told); off in Chrono.
+  if (!m_tracks.empty() && !order.empty()) {
+    const double y_top = spine_top() + CARD_H;   // bottom edge of the scene cards
+    constexpr double CONN_STEP = 4.0;             // per-claimant x stagger
+    std::vector<double> cdash{2.0, 3.0};
+    cr->set_line_width(2.2);
+    cr->set_dash(cdash, 0.0);
+    for (std::size_t col = 0; col < order.size(); ++col) {
+      const std::string& iid = order[col];
+      std::vector<std::size_t> claimers;
+      for (std::size_t t = 0; t < m_tracks.size(); ++t)
+        if (m_tracks[t].claimed.count(iid)) claimers.push_back(t);
+      const std::size_t mc = claimers.size();
+      for (std::size_t k = 0; k < mc; ++k) {
+        const std::size_t t = claimers[k];
+        const bool dimc = fo
+            ? !focus_contains(m_focus, fk_subject(m_tracks[t].iid))
+            : (apply_focus && m_hover_track >= 0 && static_cast<int>(t) != m_hover_track);
+        Gdk::RGBA chue; chue.set(subject_hex(m_tracks[t].color_idx, m_tracks[t].category));
+        const double dx = (static_cast<double>(k) - (static_cast<double>(mc) - 1.0) / 2.0)
+                          * CONN_STEP;
+        const double lx = col_cx(static_cast<int>(col)) + dx;
+        const double ly = ttop + static_cast<double>(t) * (TRACK_H + TRACK_GAP)
+                          + TRACK_H / 2.0;
+        set_src(cr, chue, dimc ? 0.10 : 0.42);
+        cr->move_to(lx, y_top);
+        cr->line_to(lx, ly);
+        cr->stroke();
+      }
+    }
+    cr->unset_dash();
+  }
+
+  for (std::size_t i = 0; i < m_tracks.size(); ++i) {
+    const TimelineTrack& tk = m_tracks[i];
+    const Relief rel = compute_relief(order, tk.claimed);
+    Gdk::RGBA hue; hue.set(subject_hex(tk.color_idx, tk.category));
+    const double row_y = ttop + static_cast<double>(i) * (TRACK_H + TRACK_GAP);
+    const double cy = row_y + TRACK_H / 2.0;
+
+    const bool focused = fo && focus_contains(m_focus, fk_subject(tk.iid));
+    const bool dim = fo
+        ? !focused
+        : (apply_focus && m_hover_track >= 0 && static_cast<int>(i) != m_hover_track);
+    const double a_bar = dim ? 0.16 : 0.90;
+    const double a_dot = dim ? 0.16 : 0.95;
+    const double a_gap = dim ? 0.08 : 0.22;
+    const double a_lab = dim ? 0.40 : 1.00;
+
+    rounded_rect(cr, LEFT_PAD, cy - 5, 10, 10, 2);
+    set_src(cr, hue, dim ? 0.30 : 1.0);
+    cr->fill();
+    if (focused) {
+      Gdk::RGBA ring = themed(m_area, "accent", "#89b4fa");
+      rounded_rect(cr, LEFT_PAD - 2, cy - 7, 14, 14, 3);
+      set_src(cr, ring, 0.95);
+      cr->set_line_width(1.5);
+      cr->stroke();
+    }
+    auto gl = m_area.create_pango_layout(tk.label.empty() ? "(untitled)" : tk.label);
+    gl->set_font_description(Pango::FontDescription("sans 10"));
+    gl->set_ellipsize(Pango::EllipsizeMode::END);
+    gl->set_width(static_cast<int>((GUTTER - 26) * Pango::SCALE));
+    int lw = 0, lh = 0; gl->get_pixel_size(lw, lh);
+    set_src(cr, themed(m_area, "tx2", "#b8bfdd"), a_lab);
+    cr->move_to(LEFT_PAD + 16, cy - lh / 2.0);
+    gl->show_in_cairo_context(cr);
+
+    std::vector<double> dashes{3.0, 3.0};
+    cr->set_dash(dashes, 0.0);
+    set_src(cr, hue, a_gap);
+    cr->set_line_width(1.0);
+    for (const auto& g : rel.gaps) {
+      cr->move_to(col_cx(g.start_pos - 1), cy);
+      cr->line_to(col_cx(g.end_pos), cy);
+      cr->stroke();
+    }
+    cr->unset_dash();
+
+    for (const auto& seg : rel.segments) {
+      if (seg.kind == ReliefSegment::Kind::Bar) {
+        const double bx = col_cx(seg.start_pos - 1) - card_w() / 2.0;
+        const double bw = (col_cx(seg.end_pos - 1) + card_w() / 2.0) - bx;
+        rounded_rect(cr, bx, cy - BAR_H / 2.0, bw, BAR_H, BAR_H / 2.0);
+        set_src(cr, hue, a_bar);
+        cr->fill();
+      } else {
+        const double sx = col_cx(seg.start_pos - 1) - card_w() / 2.0;
+        rounded_rect(cr, sx, cy - BAR_H / 2.0, card_w(), BAR_H, BAR_H / 2.0);
+        set_src(cr, hue, a_dot);
+        cr->fill();
+      }
+    }
+  }
+}
+
+// s93 — KP-strip relief, shared by both axes (§9.14.5). Positions from
+// compute_relief(order, …); apply_focus gates told-order focus dimming; draw_pins
+// draws the persistent card→strip connectors (told only — they assume the strip
+// sits directly under the spine row). kt is the strip-row top.
+void TimelineSurface::draw_kp_strip(const Cairo::RefPtr<Cairo::Context>& cr,
+                                    const std::vector<std::string>& order,
+                                    int kt, bool apply_focus, bool draw_pins) {
+  if (m_kp_lanes.empty()) return;
+  const bool fo = apply_focus && focus_active(m_focus);
+  const int top = spine_top();
+  const double kcy = kt + KP_H / 2.0;
+  const Gdk::RGBA c_gutter = themed(m_area, "tx3", "#9196b4");
+
+  auto gl = m_area.create_pango_layout("KEY POINTS");
+  gl->set_font_description(Pango::FontDescription("sans bold 9"));
+  int gw = 0, gh = 0; gl->get_pixel_size(gw, gh);
+  set_src(cr, c_gutter, 0.9);
+  cr->move_to(LEFT_PAD, kcy - gh / 2.0);
+  gl->show_in_cairo_context(cr);
+
+  Gdk::RGBA kp_dark; kp_dark.set("#11111b");
+
+  for (const auto& lane : m_kp_lanes) {
+    const Relief rel = compute_relief(order, lane.claimed);
+    Gdk::RGBA hue; hue.set(kp_hex(lane.color_idx));
+    const bool kp_focused = fo && focus_contains(m_focus, fk_keypoint(lane.kp_id));
+    const double km = (fo && !kp_focused) ? 0.18 : 1.0;
+
+    if (draw_pins) {
+      set_src(cr, hue, 0.85 * km);
+      cr->set_line_width(1.4);
+      for (const auto& seg : rel.segments)
+        for (int p = seg.start_pos; p <= seg.end_pos; ++p) {
+          const double px = col_cx(p - 1);
+          cr->move_to(px, top + CARD_H);
+          cr->line_to(px, kt);
+          cr->stroke();
+          cr->arc(px, top + CARD_H, 2.2, 0, 2 * M_PI);
+          cr->fill();
+        }
+    }
+
+    auto seg_is_target = [this](const ReliefSegment& s) {
+      for (const std::string& id : s.iids) {
+        const BinderNode* n = m_model.find_node_by_iid(id);
+        if (n && n->pin) return true;
+      }
+      return false;
+    };
+    Gdk::RGBA halo; halo.set("#ffffff");
+    for (const auto& seg : rel.segments) {
+      const bool target = seg_is_target(seg);
+      if (seg.kind == ReliefSegment::Kind::Bar) {
+        const double bx = col_cx(seg.start_pos - 1) - card_w() / 2.0;
+        const double bw = (col_cx(seg.end_pos - 1) + card_w() / 2.0) - bx;
+        rounded_rect(cr, bx, kcy - KP_BAR_H / 2.0, bw, KP_BAR_H, KP_BAR_H / 2.0);
+        set_src(cr, hue, 0.95 * km);
+        cr->fill_preserve();
+        if (target) {
+          set_src(cr, halo, 0.85 * km);
+          cr->set_line_width(1.5);
+          cr->stroke();
+        } else {
+          cr->begin_new_path();
+        }
+        if (!lane.label.empty()) {
+          auto bl = m_area.create_pango_layout(lane.label);
+          bl->set_font_description(Pango::FontDescription("sans 8"));
+          bl->set_ellipsize(Pango::EllipsizeMode::END);
+          bl->set_width(static_cast<int>((bw - 8) * Pango::SCALE));
+          bl->set_alignment(Pango::Alignment::CENTER);
+          int bw2 = 0, bh2 = 0; bl->get_pixel_size(bw2, bh2);
+          set_src(cr, kp_dark, 0.92 * km);
+          cr->move_to(bx + 4, kcy - bh2 / 2.0);
+          bl->show_in_cairo_context(cr);
+        }
+      } else {
+        const double dx = col_cx(seg.start_pos - 1);
+        const double r  = target ? KP_DIAMOND_R + 2.0 : KP_DIAMOND_R;
+        cr->begin_new_sub_path();
+        cr->move_to(dx, kcy - r);
+        cr->line_to(dx + r, kcy);
+        cr->line_to(dx, kcy + r);
+        cr->line_to(dx - r, kcy);
+        cr->close_path();
+        set_src(cr, hue, 0.95 * km);
+        cr->fill_preserve();
+        set_src(cr, target ? halo : kp_dark, (target ? 0.9 : 0.5) * km);
+        cr->set_line_width(target ? 1.5 : 0.75);
+        cr->stroke();
+        if (!lane.label.empty()) {
+          auto dl = m_area.create_pango_layout(lane.label);
+          dl->set_font_description(Pango::FontDescription("sans 8"));
+          int dw = 0, dh = 0; dl->get_pixel_size(dw, dh);
+          set_src(cr, themed(m_area, "tx2", "#b8bfdd"), 0.95 * km);
+          cr->move_to(dx - dw / 2.0, kcy - r - dh - 1);
+          dl->show_in_cairo_context(cr);
+        }
+      }
+    }
+  }
+}
+
+// s93 — thread-band relief, shared by both axes (§9.14.5). hdr_y = header row top,
+// rtop = first lane row top; apply_focus gates told-order focus dimming.
+void TimelineSurface::draw_thread_band(const Cairo::RefPtr<Cairo::Context>& cr,
+                                       const std::vector<std::string>& order,
+                                       int hdr_y, int rtop, bool apply_focus) {
+  if (m_thread_lanes.empty()) return;
+  const bool fo = apply_focus && focus_active(m_focus);
+  const Gdk::RGBA c_gutter = themed(m_area, "tx3", "#9196b4");
+
+  auto hl = m_area.create_pango_layout("STORY THREADS");
+  hl->set_font_description(Pango::FontDescription("sans bold 9"));
+  int hlw = 0, hlh = 0; hl->get_pixel_size(hlw, hlh);
+  set_src(cr, c_gutter, 0.9);
+  cr->move_to(LEFT_PAD, hdr_y + (THREAD_HEADER_H - hlh) / 2.0);
+  hl->show_in_cairo_context(cr);
+
+  for (std::size_t i = 0; i < m_thread_lanes.size(); ++i) {
+    const ThreadLane& ln = m_thread_lanes[i];
+    const Relief rel = compute_relief(order, ln.claimed);
+    Gdk::RGBA hue; hue.set(thread_hex(ln.color_idx));
+    const double row_y = rtop + static_cast<double>(i) * (TRACK_H + TRACK_GAP);
+    const double cy = row_y + TRACK_H / 2.0;
+
+    const bool focused = fo && focus_contains(m_focus, fk_thread(ln.thread_key));
+    const bool dim = fo && !focused;
+    const double a_bar = dim ? 0.16 : 0.90;
+    const double a_dot = dim ? 0.16 : 0.95;
+    const double a_gap = dim ? 0.08 : 0.22;
+    const double a_lab = dim ? 0.40 : 1.00;
+
+    rounded_rect(cr, LEFT_PAD, cy - 5, 10, 10, 2);
+    set_src(cr, hue, dim ? 0.30 : 1.0);
+    cr->fill();
+    if (focused) {
+      Gdk::RGBA ring = themed(m_area, "accent", "#89b4fa");
+      rounded_rect(cr, LEFT_PAD - 2, cy - 7, 14, 14, 3);
+      set_src(cr, ring, 0.95);
+      cr->set_line_width(1.5);
+      cr->stroke();
+    }
+    auto gl = m_area.create_pango_layout(ln.label.empty() ? std::string("(thread)") : ln.label);
+    gl->set_font_description(Pango::FontDescription("sans 10"));
+    gl->set_ellipsize(Pango::EllipsizeMode::END);
+    gl->set_width(static_cast<int>((GUTTER - 26) * Pango::SCALE));
+    int lw = 0, lh = 0; gl->get_pixel_size(lw, lh);
+    set_src(cr, themed(m_area, "tx2", "#b8bfdd"), a_lab);
+    cr->move_to(LEFT_PAD + 16, cy - lh / 2.0);
+    gl->show_in_cairo_context(cr);
+
+    std::vector<double> dashes{3.0, 3.0};
+    cr->set_dash(dashes, 0.0);
+    set_src(cr, hue, a_gap);
+    cr->set_line_width(1.0);
+    for (const auto& g : rel.gaps) {
+      cr->move_to(col_cx(g.start_pos - 1), cy);
+      cr->line_to(col_cx(g.end_pos), cy);
+      cr->stroke();
+    }
+    cr->unset_dash();
+
+    for (const auto& seg : rel.segments) {
+      if (seg.kind == ReliefSegment::Kind::Bar) {
+        const double bx = col_cx(seg.start_pos - 1) - card_w() / 2.0;
+        const double bw = (col_cx(seg.end_pos - 1) + card_w() / 2.0) - bx;
+        rounded_rect(cr, bx, cy - BAR_H / 2.0, bw, BAR_H, BAR_H / 2.0);
+        set_src(cr, hue, a_bar);
+        cr->fill();
+      } else {
+        const double sx = col_cx(seg.start_pos - 1) - card_w() / 2.0;
+        rounded_rect(cr, sx, cy - BAR_H / 2.0, card_w(), BAR_H, BAR_H / 2.0);
+        set_src(cr, hue, a_dot);
+        cr->fill();
+      }
+    }
+  }
 }
 
 
@@ -2705,6 +3639,7 @@ void TimelineSurface::disarm() {
 }
 
 std::string TimelineSurface::scene_at(double x, double y) const {
+  if (m_story_axis) return scene_at_story(x, y);   // s93 — chronological layout
   const int top = spine_top();
   if (y < top || y > top + CARD_H) return {};
   for (const auto& s : m_proj.spine) {
@@ -2723,6 +3658,18 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
   // are divided by m_zoom back into base space for hit-testing (the controllers).
   cr->scale(m_zoom, m_zoom);
 
+  // s93 — world-clock: the chronological view is a separate, self-contained draw
+  // (the told-order apparatus below stays untouched). Zoom transform applies to
+  // both; story view draws in the same base coords.
+  if (m_story_axis) { draw_story_axis(cr); return; }
+
+  // s92 — is persistent focus pinned? When true it OVERRIDES the transient
+  // hover-isolate (the pin wins): focused rows stay full, every other row dims,
+  // and the columns the focused set doesn't touch recede (the spine-walk scrim,
+  // drawn last). focus_contains(.., fk_*) per row decides; m_focus_positions is
+  // the precomputed "which columns are in focus" the scrim reads.
+  const bool focus_on = focus_active(m_focus);
+
   // s80 step 4 — scene-column light (§9.6): a faint full-height highlight under
   // the hovered card's column, so the subjects present in that scene read down
   // the bars/dots that cross it. Drawn first so everything sits on top.
@@ -2734,11 +3681,8 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
     cr->fill();
   }
 
-  const Gdk::RGBA c_border = themed(m_area, "border_subtle", "rgba(255,255,255,0.06)");
   const Gdk::RGBA c_band_brd = themed(m_area, "tx4", "#5a5d75");
   const Gdk::RGBA c_band_tx  = themed(m_area, "tx2", "#b8bfdd");
-  const Gdk::RGBA c_card     = themed(m_area, "adw_surface", "#242436");
-  const Gdk::RGBA c_card_tx  = themed(m_area, "tx3", "#9196b4");
   const Gdk::RGBA c_axis     = themed(m_area, "tx4", "#5a5d75");
   const Gdk::RGBA c_badge    = themed(m_area, "adw_overlay2", "#3a3a54");
   const Gdk::RGBA c_badge_tx = themed(m_area, "tx1", "#cdd6f4");
@@ -2765,6 +3709,7 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
     cr->move_to(LEFT_PAD, axis_y - th / 2.0);
     gl->show_in_cairo_context(cr);
   }
+  draw_lens_toggle(cr);   // s93 — Told Order / Chrono pills under the SPINE label
 
   // ── Structure bands ────────────────────────────────────────────────────────
   for (const auto& b : m_proj.bands) {
@@ -2797,56 +3742,52 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
   cr->line_to(col_cx(n - 1), axis_y);
   cr->stroke();
 
-  // ── Scene cards ────────────────────────────────────────────────────────────
+  // ── Scene cards (shared painter — told order: left badge == right == position) ──
   for (const auto& s : m_proj.spine) {
     const int k = s.position - 1;
     const double cx = col_cx(k);
     const double cardx = cx - card_w() / 2.0;
 
-    // axis dot under the card
-    set_src(cr, c_axis);
+    set_src(cr, c_axis);   // axis dot under the card
     cr->arc(cx, axis_y, 2.5, 0, 2 * M_PI);
     cr->fill();
 
-    rounded_rect(cr, cardx, top, card_w(), CARD_H, 7);
-    set_src(cr, c_card, 0.98);
-    cr->fill_preserve();
-    set_src(cr, c_border);
-    cr->set_line_width(1.0);
-    cr->stroke();
+    draw_scene_card(cr, s.iid, s.title, s.position, s.position, cardx, top);
+  }
 
-    // s84 — the peeked scene reads as selected: an accent ring around the card.
-    if (!m_selected_iid.empty() && s.iid == m_selected_iid) {
-      Gdk::RGBA sel = themed(m_area, "accent", "#89b4fa");
-      rounded_rect(cr, cardx - 2.5, top - 2.5, card_w() + 5, CARD_H + 5, 9);
-      set_src(cr, sel, 0.95);
-      cr->set_line_width(2.0);
-      cr->stroke();
+  // ── Story-time gap chips (s93, world-clock §9.14.2) ─────────────────────────
+  // Between two consecutive DATED told-order scenes, a compact chip on the axis
+  // names the elapsed gap (abbreviated — the peek panel carries the worded
+  // phrase). Forward = the neutral badge chip; backward (a flashback boundary) =
+  // amber. Undated on either side, or a zero gap, draws nothing. Per-frame model
+  // lookup mirrors the peek path; a rebuild-time cache is the optimisation if a
+  // large manuscript ever shows it.
+  {
+    Gdk::RGBA c_gap_back;     c_gap_back.set("#e8a13a");      // flashback amber
+    Gdk::RGBA c_gap_back_tx;  c_gap_back_tx.set("#241a08");   // dark text on amber
+    for (int k = 0; k + 1 < n; ++k) {
+      const BinderNode* a =
+          m_model.find_node_by_iid(m_spine_iids[static_cast<std::size_t>(k)]);
+      const BinderNode* b =
+          m_model.find_node_by_iid(m_spine_iids[static_cast<std::size_t>(k + 1)]);
+      if (!a || !b || !a->has_story_time || !b->has_story_time) continue;
+      const long long delta = b->story_time - a->story_time;
+      if (delta == 0) continue;
+      const bool back = delta < 0;
+
+      auto gl = m_area.create_pango_layout(duration_abbrev(delta));
+      gl->set_font_description(Pango::FontDescription("sans bold 7"));
+      int gw = 0, gh = 0; gl->get_pixel_size(gw, gh);
+      const double mx = (col_cx(k) + col_cx(k + 1)) / 2.0;
+      const double cw = gw + 7.0;
+      const double ch = gh + 3.0;
+      rounded_rect(cr, mx - cw / 2.0, axis_y - ch / 2.0, cw, ch, ch / 2.0);
+      set_src(cr, back ? c_gap_back : c_badge, 0.95);
+      cr->fill();
+      set_src(cr, back ? c_gap_back_tx : c_badge_tx);
+      cr->move_to(mx - gw / 2.0, axis_y - gh / 2.0);
+      gl->show_in_cairo_context(cr);
     }
-
-    // position badge
-    const double badge_cx = cardx + BADGE_R + 3;
-    const double badge_cy = top + BADGE_R + 3;
-    set_src(cr, c_badge);
-    cr->arc(badge_cx, badge_cy, BADGE_R, 0, 2 * M_PI);
-    cr->fill();
-    auto pn = m_area.create_pango_layout(std::to_string(s.position));
-    pn->set_font_description(Pango::FontDescription("monospace 8"));
-    int pw = 0, ph = 0; pn->get_pixel_size(pw, ph);
-    set_src(cr, c_badge_tx);
-    cr->move_to(badge_cx - pw / 2.0, badge_cy - ph / 2.0);
-    pn->show_in_cairo_context(cr);
-
-    // title (clipped to card width)
-    auto tl = m_area.create_pango_layout(s.title.empty() ? "(untitled)" : s.title);
-    tl->set_font_description(Pango::FontDescription("sans 8"));
-    tl->set_ellipsize(Pango::EllipsizeMode::END);
-    tl->set_width(static_cast<int>((card_w() - 8) * Pango::SCALE));
-    tl->set_alignment(Pango::Alignment::CENTER);
-    int tw = 0, th = 0; tl->get_pixel_size(tw, th);
-    set_src(cr, c_card_tx);
-    cr->move_to(cardx + 4, top + CARD_H - th - 6);
-    tl->show_in_cairo_context(cr);
   }
 
   // ── KP strip (s81 step 6) ──────────────────────────────────────────────────
@@ -2856,104 +3797,7 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
   // PERSISTENT (§9.5): a short tick pins each claimed scene down to its beat.
   // Singletons draw as DIAMONDS (vs. the subject Dot); colour is per-KP spectrum
   // with the orange fallback (kp_hex).
-  if (!m_kp_lanes.empty()) {
-    const int kt = kp_top();
-    const double kcy = kt + KP_H / 2.0;
-
-    auto gl = m_area.create_pango_layout("KEY POINTS");
-    gl->set_font_description(Pango::FontDescription("sans bold 9"));
-    int gw = 0, gh = 0; gl->get_pixel_size(gw, gh);
-    set_src(cr, c_gutter, 0.9);
-    cr->move_to(LEFT_PAD, kcy - gh / 2.0);
-    gl->show_in_cairo_context(cr);
-
-    Gdk::RGBA kp_dark; kp_dark.set("#11111b");   // dark on-bar / on-diamond text
-
-    for (const auto& lane : m_kp_lanes) {
-      const Relief rel = compute_relief(m_spine_iids, lane.claimed);
-      Gdk::RGBA hue; hue.set(kp_hex(lane.color_idx));
-
-      // persistent connectors: a short pin from each claimed card down to the
-      // strip, with a port dot at the card bottom (§9.5).
-      set_src(cr, hue, 0.85);
-      cr->set_line_width(1.4);
-      for (const auto& seg : rel.segments)
-        for (int p = seg.start_pos; p <= seg.end_pos; ++p) {
-          const double px = col_cx(p - 1);
-          cr->move_to(px, top + CARD_H);
-          cr->line_to(px, kt);
-          cr->stroke();
-          cr->arc(px, top + CARD_H, 2.2, 0, 2 * M_PI);
-          cr->fill();
-        }
-
-      // beats: bars for runs, diamonds for singletons. A KP TARGET (a pinned
-      // hinge, §s29) reads as a brighter "milestone" — a white outline halo and
-      // a larger gem — vs an ordinary pattern beat. Tier is per-scene (pin), so
-      // we look it up on the segment's claimed scenes via the model.
-      auto seg_is_target = [this](const ReliefSegment& s) {
-        for (const std::string& id : s.iids) {
-          const BinderNode* n = m_model.find_node_by_iid(id);
-          if (n && n->pin) return true;
-        }
-        return false;
-      };
-      Gdk::RGBA halo; halo.set("#ffffff");
-      for (const auto& seg : rel.segments) {
-        const bool target = seg_is_target(seg);
-        if (seg.kind == ReliefSegment::Kind::Bar) {
-          const double bx = col_cx(seg.start_pos - 1) - card_w() / 2.0;            // s87 edge-to-edge
-          const double bw = (col_cx(seg.end_pos - 1) + card_w() / 2.0) - bx;
-          rounded_rect(cr, bx, kcy - KP_BAR_H / 2.0, bw, KP_BAR_H, KP_BAR_H / 2.0);
-          set_src(cr, hue, 0.95);
-          cr->fill_preserve();
-          if (target) {                 // KP-target run → bright halo border
-            set_src(cr, halo, 0.85);
-            cr->set_line_width(1.5);
-            cr->stroke();
-          } else {
-            cr->begin_new_path();
-          }
-          // label rides on the bar (centred, dark for contrast).
-          if (!lane.label.empty()) {
-            auto bl = m_area.create_pango_layout(lane.label);
-            bl->set_font_description(Pango::FontDescription("sans 8"));
-            bl->set_ellipsize(Pango::EllipsizeMode::END);
-            bl->set_width(static_cast<int>((bw - 8) * Pango::SCALE));
-            bl->set_alignment(Pango::Alignment::CENTER);
-            int bw2 = 0, bh2 = 0; bl->get_pixel_size(bw2, bh2);
-            set_src(cr, kp_dark, 0.92);
-            cr->move_to(bx + 4, kcy - bh2 / 2.0);
-            bl->show_in_cairo_context(cr);
-          }
-        } else {
-          // singleton → diamond; a KP target draws as a larger haloed gem.
-          const double dx = col_cx(seg.start_pos - 1);
-          const double r  = target ? KP_DIAMOND_R + 2.0 : KP_DIAMOND_R;
-          cr->begin_new_sub_path();
-          cr->move_to(dx, kcy - r);
-          cr->line_to(dx + r, kcy);
-          cr->line_to(dx, kcy + r);
-          cr->line_to(dx - r, kcy);
-          cr->close_path();
-          set_src(cr, hue, 0.95);
-          cr->fill_preserve();
-          set_src(cr, target ? halo : kp_dark, target ? 0.9 : 0.5);
-          cr->set_line_width(target ? 1.5 : 0.75);
-          cr->stroke();
-          // caption above the diamond (subtle).
-          if (!lane.label.empty()) {
-            auto dl = m_area.create_pango_layout(lane.label);
-            dl->set_font_description(Pango::FontDescription("sans 8"));
-            int dw = 0, dh = 0; dl->get_pixel_size(dw, dh);
-            set_src(cr, themed(m_area, "tx2", "#b8bfdd"), 0.95);
-            cr->move_to(dx - dw / 2.0, kcy - r - dh - 1);
-            dl->show_in_cairo_context(cr);
-          }
-        }
-      }
-    }
-  }
+  draw_kp_strip(cr, m_spine_iids, kp_top(), true, true);   // s93 — shared KP relief, told order
 
   // ── Staging row (s82) ──────────────────────────────────────────────────────
   // When a rail subject is armed, a single dashed lane in its hue invites a
@@ -3021,101 +3865,11 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
   // ── Relief tracks (s80 step 3) ─────────────────────────────────────────────
   // One row per subject: its compute_relief drawn as bars (runs), dots
   // (singletons), and faint dashed connectors over interior gaps. Hue = category.
+  // The vertical card→track drop-lines (s82) now live inside draw_subject_tracks so
+  // both lenses draw them off their own order (s93).
   const int ttop = track_top();
 
-  // s82 (Scott review) — vertical connection drop-lines: a thin, hue-coded dashed
-  // line from each scene card down to the cell of every track that claims it.
-  // Staggered horizontally WITHIN a column so co-claimed scenes don't hide each
-  // other (a lone claimant stays centred on its dot; collisions fan symmetrically).
-  // Kept deliberately thin and faint so it reads as a guide, not chrome.
-  if (!m_tracks.empty() && !m_proj.spine.empty()) {
-    const double y_top = spine_top() + CARD_H;   // bottom edge of the scene cards
-    constexpr double CONN_STEP = 4.0;            // per-claimant x stagger
-    std::vector<double> cdash{2.0, 3.0};
-    cr->set_line_width(1.4);
-    cr->set_dash(cdash, 0.0);
-    for (const auto& s : m_proj.spine) {
-      // claimants of this column, in track order (top → bottom)
-      std::vector<std::size_t> claimers;
-      for (std::size_t t = 0; t < m_tracks.size(); ++t)
-        if (m_tracks[t].claimed.count(s.iid)) claimers.push_back(t);
-      const std::size_t m = claimers.size();
-      for (std::size_t k = 0; k < m; ++k) {
-        const std::size_t t = claimers[k];
-        const bool dimc = (m_hover_track >= 0 && static_cast<int>(t) != m_hover_track);
-        Gdk::RGBA chue; chue.set(subject_hex(m_tracks[t].color_idx, m_tracks[t].category));
-        const double dx = (static_cast<double>(k) - (static_cast<double>(m) - 1.0) / 2.0)
-                          * CONN_STEP;
-        const double lx = col_cx(s.position - 1) + dx;
-        const double ly = ttop + static_cast<double>(t) * (TRACK_H + TRACK_GAP)
-                          + TRACK_H / 2.0;
-        set_src(cr, chue, dimc ? 0.10 : 0.42);
-        cr->move_to(lx, y_top);
-        cr->line_to(lx, ly);
-        cr->stroke();
-      }
-    }
-    cr->unset_dash();
-  }
-
-  for (std::size_t i = 0; i < m_tracks.size(); ++i) {
-    const TimelineTrack& tk = m_tracks[i];
-    const Relief rel = compute_relief(m_spine_iids, tk.claimed);
-    Gdk::RGBA hue; hue.set(subject_hex(tk.color_idx, tk.category));
-    const double row_y = ttop + static_cast<double>(i) * (TRACK_H + TRACK_GAP);
-    const double cy = row_y + TRACK_H / 2.0;
-
-    // s80 step 4 — isolate: when a track is hovered, siblings dim to ~0.16
-    // (§9.6 focus→brightness). Structure (bands + spine) stays lit (§9.5).
-    const bool dim = (m_hover_track >= 0 && static_cast<int>(i) != m_hover_track);
-    const double a_bar = dim ? 0.16 : 0.90;
-    const double a_dot = dim ? 0.16 : 0.95;
-    const double a_gap = dim ? 0.08 : 0.22;
-    const double a_lab = dim ? 0.40 : 1.00;
-
-    // gutter: category swatch + subject label
-    rounded_rect(cr, LEFT_PAD, cy - 5, 10, 10, 2);
-    set_src(cr, hue, dim ? 0.30 : 1.0);
-    cr->fill();
-    auto gl = m_area.create_pango_layout(tk.label.empty() ? "(untitled)" : tk.label);
-    gl->set_font_description(Pango::FontDescription("sans 10"));
-    gl->set_ellipsize(Pango::EllipsizeMode::END);
-    gl->set_width(static_cast<int>((GUTTER - 26) * Pango::SCALE));
-    int lw = 0, lh = 0; gl->get_pixel_size(lw, lh);
-    set_src(cr, themed(m_area, "tx2", "#b8bfdd"), a_lab);
-    cr->move_to(LEFT_PAD + 16, cy - lh / 2.0);
-    gl->show_in_cairo_context(cr);
-
-    // faint dashed connectors over interior gaps ("where did they go", §9.2)
-    std::vector<double> dashes{3.0, 3.0};
-    cr->set_dash(dashes, 0.0);
-    set_src(cr, hue, a_gap);
-    cr->set_line_width(1.0);
-    for (const auto& g : rel.gaps) {
-      cr->move_to(col_cx(g.start_pos - 1), cy);
-      cr->line_to(col_cx(g.end_pos), cy);
-      cr->stroke();
-    }
-    cr->unset_dash();
-
-    // bars (contiguous runs) and dots (singletons)
-    for (const auto& seg : rel.segments) {
-      if (seg.kind == ReliefSegment::Kind::Bar) {
-        const double bx = col_cx(seg.start_pos - 1) - card_w() / 2.0;             // s87 edge-to-edge
-        const double bw = (col_cx(seg.end_pos - 1) + card_w() / 2.0) - bx;
-        rounded_rect(cr, bx, cy - BAR_H / 2.0, bw, BAR_H, BAR_H / 2.0);
-        set_src(cr, hue, a_bar);
-        cr->fill();
-      } else {
-        // single-scene link: a pill the WIDTH OF THE SCENE (not a dot), so one
-        // link reads as "this whole scene", consistent with a one-cell bar.
-        const double sx = col_cx(seg.start_pos - 1) - card_w() / 2.0;
-        rounded_rect(cr, sx, cy - BAR_H / 2.0, card_w(), BAR_H, BAR_H / 2.0);
-        set_src(cr, hue, a_dot);
-        cr->fill();
-      }
-    }
-  }
+  draw_subject_tracks(cr, m_spine_iids, ttop, true);   // s93 — shared relief, told order
 
   // ── Thread band (s84 step 7) ───────────────────────────────────────────────
   // The "assigned arc": one row per authored thread, the relief of
@@ -3123,66 +3877,7 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
   // assignment is the Inspector's Thread control. Drawn below the subject tracks
   // with its own header so "revealed" (subject tracks) vs "assigned" (threads)
   // reads at a glance. Hue = the thread's palette colour (lavender fallback).
-  if (!m_thread_lanes.empty()) {
-    const int hdr_y = thread_top();
-    auto hl = m_area.create_pango_layout("STORY THREADS");
-    hl->set_font_description(Pango::FontDescription("sans bold 9"));
-    int hlw = 0, hlh = 0; hl->get_pixel_size(hlw, hlh);
-    set_src(cr, c_gutter, 0.9);
-    cr->move_to(LEFT_PAD, hdr_y + (THREAD_HEADER_H - hlh) / 2.0);
-    hl->show_in_cairo_context(cr);
-
-    const int rtop = thread_rows_top();
-    for (std::size_t i = 0; i < m_thread_lanes.size(); ++i) {
-      const ThreadLane& ln = m_thread_lanes[i];
-      const Relief rel = compute_relief(m_spine_iids, ln.claimed);
-      Gdk::RGBA hue; hue.set(thread_hex(ln.color_idx));
-      const double row_y = rtop + static_cast<double>(i) * (TRACK_H + TRACK_GAP);
-      const double cy = row_y + TRACK_H / 2.0;
-
-      // gutter: thread swatch + label
-      rounded_rect(cr, LEFT_PAD, cy - 5, 10, 10, 2);
-      set_src(cr, hue, 1.0);
-      cr->fill();
-      auto gl = m_area.create_pango_layout(
-          ln.label.empty() ? std::string("(thread)") : ln.label);
-      gl->set_font_description(Pango::FontDescription("sans 10"));
-      gl->set_ellipsize(Pango::EllipsizeMode::END);
-      gl->set_width(static_cast<int>((GUTTER - 26) * Pango::SCALE));
-      int lw = 0, lh = 0; gl->get_pixel_size(lw, lh);
-      set_src(cr, themed(m_area, "tx2", "#b8bfdd"), 1.0);
-      cr->move_to(LEFT_PAD + 16, cy - lh / 2.0);
-      gl->show_in_cairo_context(cr);
-
-      // faint dashed connectors over interior gaps (the braid silence)
-      std::vector<double> dashes{3.0, 3.0};
-      cr->set_dash(dashes, 0.0);
-      set_src(cr, hue, 0.22);
-      cr->set_line_width(1.0);
-      for (const auto& g : rel.gaps) {
-        cr->move_to(col_cx(g.start_pos - 1), cy);
-        cr->line_to(col_cx(g.end_pos), cy);
-        cr->stroke();
-      }
-      cr->unset_dash();
-
-      // bars (contiguous blocks) and single-scene pills (a lone beat of a thread)
-      for (const auto& seg : rel.segments) {
-        if (seg.kind == ReliefSegment::Kind::Bar) {
-          const double bx = col_cx(seg.start_pos - 1) - card_w() / 2.0;           // s87 edge-to-edge
-          const double bw = (col_cx(seg.end_pos - 1) + card_w() / 2.0) - bx;
-          rounded_rect(cr, bx, cy - BAR_H / 2.0, bw, BAR_H, BAR_H / 2.0);
-          set_src(cr, hue, 0.90);
-          cr->fill();
-        } else {
-          const double sx = col_cx(seg.start_pos - 1) - card_w() / 2.0;
-          rounded_rect(cr, sx, cy - BAR_H / 2.0, card_w(), BAR_H, BAR_H / 2.0);
-          set_src(cr, hue, 0.95);
-          cr->fill();
-        }
-      }
-    }
-  }
+  draw_thread_band(cr, m_spine_iids, thread_top(), thread_rows_top(), true);   // s93 — shared thread relief, told order
 
   // s80 step 5c — live sweep preview: a ghost span on the armed track row across
   // the swept columns, in the subject's hue (drawn on top of the tracks).
@@ -3312,6 +4007,27 @@ void TimelineSurface::draw(const Cairo::RefPtr<Cairo::Context>& cr, int /*w*/, i
         set_src(cr, hue, 0.95); cr->set_line_width(1.5); cr->stroke(); cr->unset_dash();
       }
     }
+  }
+
+  // s92 — the spine-walk scrim (drawn LAST, on top, so it RECEDES content). When
+  // a focus is pinned, every told-order column the focused set does NOT touch is
+  // dimmed by a translucent window-bg veil: the spine itself then lights up where
+  // the focused thread is PRESENT and goes dark in its gaps — the §4 "walk the
+  // spine, see the gap, draw the link" affordance, made visible on the cards too
+  // (not only in the focused row's own dashed gaps). A focused column (in
+  // m_focus_positions) is left untouched. Gentle by design and one constant to
+  // tune or drop (kFocusScrimA) if it reads heavy in real use.
+  if (focus_on && !m_focus_positions.empty()) {
+    constexpr double kFocusScrimA = 0.45;
+    const Gdk::RGBA veil = themed(m_area, "adw_window_bg", "#1e1e2e");
+    const double y_scrim = TOP_PAD - 4;
+    const double h_scrim = content_height() - (TOP_PAD - 4) - BOT_PAD + 4;
+    set_src(cr, veil, kFocusScrimA);
+    for (const auto& s : m_proj.spine)
+      if (m_focus_positions.find(s.position) == m_focus_positions.end()) {
+        cr->rectangle(col_left(s.position - 1), y_scrim, COL, h_scrim);
+        cr->fill();
+      }
   }
 }
 
