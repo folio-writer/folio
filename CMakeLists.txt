@@ -240,6 +240,13 @@ set(SOURCES
     src/BarcodeDialog.cpp
 )
 
+# ── folioedit engine ──────────────────────────────────────────────────────────
+# The editorial-interchange engine: a pure STL static lib (libfolioedit.a) with
+# its own OpenSSL wiring and sandbox tests. Added after nlohmann is available
+# (the subdir reuses that target). Folio links it below; the engine never links
+# back — one-way dependency, enforced by the directory boundary.
+add_subdirectory(folioedit)
+
 add_executable(folio ${SOURCES})
 
 # Ensure the generated resource .c/.h exist before any TU compiles.
@@ -259,6 +266,7 @@ target_link_libraries(folio PRIVATE
     z
     nlohmann_json::nlohmann_json
     spdlog::spdlog
+    folioedit
 )
 
 # libhyphen — conditional. FOLIO_HAVE_HYPHEN gates the automatic-hyphenation

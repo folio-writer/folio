@@ -645,6 +645,13 @@ private:
   void grid_batch_set_pov(const std::string& pov);
   void grid_batch_set_label(int color_idx);
   void grid_batch_set_include(bool v);
+  // A grid edit to a binder-visible field (title / colour / status) must refresh
+  // the sidebar the way an Inspector edit does — the grid previously only marked
+  // the model modified, so the binder showed stale values until reopen. Fires the
+  // shared meta-changed callback, idle-deferred (the s24 rule) and re-resolved by
+  // iid so it is safe even if the grid rebuilt first. node == nullptr falls back to
+  // the active node (batch edits, where the full sidebar rebuild covers every row).
+  void grid_notify_binder(BinderNode* node);
 
   // ── Board view ────────────────────────────────────────────────────────────
   Gtk::Overlay m_board_overlay;

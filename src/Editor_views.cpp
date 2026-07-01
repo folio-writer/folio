@@ -150,11 +150,22 @@ void Editor::rebuild_outline() {
     return sel;
   };
 
-  // Attach focus-leave rebuild to any Entry — refreshes grid once editing done
-  auto attach_rebuild = [this](Gtk::Entry *e) {
+  // Attach focus-leave rebuild to any Entry — refreshes grid once editing done.
+  // binder_node non-null (the Title column, which the binder shows) also refreshes
+  // the sidebar on commit, so a grid rename lands in the binder without a reopen —
+  // the same meta-changed notify the Inspector fires. Passed nullptr for columns the
+  // binder doesn't show (Synopsis), which then trigger no sidebar rebuild. Title is
+  // edited per-keystroke, so the sidebar sync rides the focus-leave commit, not every
+  // change. Re-resolved by iid inside the idle tick so it is safe after the grid rebuilt.
+  auto attach_rebuild = [this](Gtk::Entry *e, BinderNode *binder_node) {
+    const std::string iid = binder_node ? binder_node->iid : std::string();
     auto fc = Gtk::EventControllerFocus::create();
-    fc->signal_leave().connect([this]() {
-      Glib::signal_idle().connect_once([this]() { rebuild_outline(); });
+    fc->signal_leave().connect([this, iid]() {
+      Glib::signal_idle().connect_once([this, iid]() {
+        rebuild_outline();
+        if (!iid.empty() && m_on_meta_changed)
+          m_on_meta_changed(m_model.find_node_by_iid(iid));
+      });
     });
     e->add_controller(fc);
   };
@@ -253,6 +264,7 @@ void Editor::rebuild_outline() {
                 for (auto *n : sel)
                   n->status = v;
                 m_model.mark_modified();
+                grid_notify_binder(sel.empty() ? nullptr : sel.front());
                 pop->popdown();
                 rebuild_outline();
               });
@@ -284,6 +296,7 @@ void Editor::rebuild_outline() {
               for (auto *n : sel)
                 n->color_idx = 0;
               m_model.mark_modified();
+              grid_notify_binder(sel.empty() ? nullptr : sel.front());
               pop->popdown();
               rebuild_outline();
             });
@@ -297,6 +310,7 @@ void Editor::rebuild_outline() {
                 for (auto *n : sel)
                   n->color_idx = idx;
                 m_model.mark_modified();
+                grid_notify_binder(sel.empty() ? nullptr : sel.front());
                 pop->popdown();
                 rebuild_outline();
               });
@@ -393,7 +407,7 @@ void Editor::rebuild_outline() {
       });
       gte->set_text(node->title);
       *gte_init = false;
-      attach_rebuild(gte);
+      attach_rebuild(gte, node);
       m_outline_grid.attach(*gte, C_TITLE, grid_row);
 
       // Status dropdown
@@ -435,6 +449,7 @@ void Editor::rebuild_outline() {
                     m_grid_selected[i] && m_grid_rows[i])
                   m_grid_rows[i]->status = sv[s2];
             m_model.mark_modified();
+            grid_notify_binder(node);
             Glib::signal_idle().connect_once([this]() { rebuild_outline(); });
           });
       m_outline_grid.attach(*gsdd, C_STATUS, grid_row);
@@ -458,6 +473,7 @@ void Editor::rebuild_outline() {
                       m_grid_selected[i] && m_grid_rows[i])
                     m_grid_rows[i]->color_idx = idx;
               m_model.mark_modified();
+              grid_notify_binder(node);
               Glib::signal_idle().connect_once([this]() { rebuild_outline(); });
             });
         m_outline_grid.attach(*gldd, C_LABEL, grid_row);
@@ -535,7 +551,7 @@ void Editor::rebuild_outline() {
       });
       gsyn->set_text(node->synopsis);
       *gsyn_init = false;
-      attach_rebuild(gsyn);
+      attach_rebuild(gsyn, nullptr);
       m_outline_grid.attach(*gsyn, C_SYNOPSIS, grid_row);
       continue;
     }
@@ -561,7 +577,7 @@ void Editor::rebuild_outline() {
     });
     te->set_text(node->title);
     *te_init = false;
-    attach_rebuild(te);
+    attach_rebuild(te, node);
     m_outline_grid.attach(*te, C_TITLE, grid_row);
 
     // ── C_STATUS ─────────────────────────────────────────────────────────
@@ -603,6 +619,7 @@ void Editor::rebuild_outline() {
             m_grid_rows[i]->status = sv[s2];
       }
       m_model.mark_modified();
+      grid_notify_binder(node);
       Glib::signal_idle().connect_once([this]() { rebuild_outline(); });
     });
     m_outline_grid.attach(*sdd, C_STATUS, grid_row);
@@ -658,6 +675,7 @@ void Editor::rebuild_outline() {
                     m_grid_selected[i] && m_grid_rows[i])
                   m_grid_rows[i]->color_idx = idx;
             m_model.mark_modified();
+            grid_notify_binder(node);
             Glib::signal_idle().connect_once([this]() { rebuild_outline(); });
           });
       m_outline_grid.attach(*ldd, C_LABEL, grid_row);
@@ -740,11 +758,32 @@ void Editor::rebuild_outline() {
     });
     sye->set_text(node->synopsis);
     *sye_init = false;
-    attach_rebuild(sye);
+    attach_rebuild(sye, nullptr);
     m_outline_grid.attach(*sye, C_SYNOPSIS, grid_row);
   }
 
   m_grid_row_count = (int)flat.size();
+}
+
+// A grid edit to a binder-visible field (title / colour / status) previously only
+// marked the model modified, so the binder kept showing stale values until the
+// project was reopened. Fire the shared meta-changed callback — the same one the
+// Inspector uses (MainWindow::on_meta_changed → sidebar rebuild) — so the change
+// lands in the binder live. Deferred to idle (the s24 rule: never rebuild a view
+// from inside the live cell handler) and re-resolved by iid on the tick so it is
+// safe even if the grid rebuilt in between. node == nullptr (batch edits) falls
+// back to the active node; the sidebar rebuild is full, so it covers every row.
+void Editor::grid_notify_binder(BinderNode *node) {
+  if (!m_on_meta_changed)
+    return;
+  const std::string iid = node ? node->iid : std::string();
+  Glib::signal_idle().connect_once([this, iid]() {
+    if (!m_on_meta_changed)
+      return;
+    BinderNode *n =
+        iid.empty() ? m_current_node : m_model.find_node_by_iid(iid);
+    m_on_meta_changed(n);
+  });
 }
 
 void Editor::grid_batch_set_status(NodeStatus s) {
@@ -752,6 +791,7 @@ void Editor::grid_batch_set_status(NodeStatus s) {
     if (i < m_grid_selected.size() && m_grid_selected[i] && m_grid_rows[i])
       m_grid_rows[i]->status = s;
   m_model.mark_modified();
+  grid_notify_binder(nullptr);
   rebuild_outline();
 }
 
@@ -768,6 +808,7 @@ void Editor::grid_batch_set_label(int idx) {
     if (i < m_grid_selected.size() && m_grid_selected[i] && m_grid_rows[i])
       m_grid_rows[i]->color_idx = idx;
   m_model.mark_modified();
+  grid_notify_binder(nullptr);
   rebuild_outline();
 }
 
