@@ -74,6 +74,9 @@ public:
     // Callbacks wired from MainWindow → Editor
     std::function<void(int)>  on_scroll_to_annotation;
     std::function<void(int)>  on_delete_annotation;
+    // s98 — launch the editor's side-by-side diff view for a snapshot of the
+    // current node (node, snapshot index). Replaces the old modal diff dialog.
+    std::function<void(BinderNode*, int)>  on_open_diff;
     std::function<void(int, const std::string&)> on_edit_annotation_text;
     // JV-aware variants — carry the owning node so Editor can route correctly
     std::function<void(BinderNode*, int)>  on_delete_annotation_from_node;

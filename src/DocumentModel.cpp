@@ -145,6 +145,10 @@ json BinderNode::to_json() const {
         j["collapsed"] = true;   // s89 — sparse: only groups the user folded
     if (has_story_time)
         j["story_time"] = story_time;   // s93 — world-clock coordinate (omit when undated)
+    if (!cluster_label.empty())
+        j["cluster_label"] = cluster_label;   // s95 — cluster name on an opener (omit when empty)
+    if (chrono_gap != 0.0)
+        j["chrono_gap"] = chrono_gap;   // s97 — chrono visual gap before this scene (omit when zero)
 
     json snap_arr = json::array();
     for (const auto& s : snapshots) snap_arr.push_back(s.to_json());
@@ -229,6 +233,8 @@ void BinderNode::from_json(const json& j) {
     collapsed     = j.value("collapsed",     false);   // s89 — legacy/new → expanded
     has_story_time = j.contains("story_time");          // s93 — presence = a dated scene
     story_time     = j.value("story_time", static_cast<long long>(0));
+    cluster_label  = j.value("cluster_label", "");      // s95 — optional cluster name on an opener
+    chrono_gap     = j.value("chrono_gap", 0.0);         // s97 — optional chrono visual gap before this scene
 
     snapshots.clear();
     if (j.contains("snapshots") && j["snapshots"].is_array())

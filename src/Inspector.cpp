@@ -2244,7 +2244,14 @@ void Inspector::refresh_history() {
 
     btn_review->signal_clicked().connect(
         [this, i]() { show_snapshot_review(i); });
-    btn_diff->signal_clicked().connect([this, i]() { show_snapshot_diff(i); });
+    btn_diff->signal_clicked().connect([this, i]() {
+        // s98 — prefer the integrated side-by-side editor view; fall back to the
+        // inline modal only if the host hasn't wired the callback.
+        if (on_open_diff && m_current_node)
+            on_open_diff(m_current_node, i);
+        else
+            show_snapshot_diff(i);
+    });
     btn_restore->signal_clicked().connect([this, i]() {
       if (!m_current_node)
         return;

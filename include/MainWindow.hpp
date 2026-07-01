@@ -15,6 +15,7 @@
 #include "SearchDialog.hpp"
 #include "EditorTabBar.hpp"
 #include "PomodoroDialog.hpp"
+#include "ShortcutsDialog.hpp"   // s98 — non-deprecated keyboard/mouse reference
 #include "FocusWindow.hpp"
 #include <giomm/settings.h>
 #include <gtkmm.h>
@@ -157,6 +158,7 @@ private:
   Gtk::Label  m_pomo_hdr_phase;     // "Focus" / "Break"
   Gtk::Label  m_pomo_hdr_time;      // "24:07"
   std::unique_ptr<PomodoroDialog>    m_pomodoro_dialog;
+  std::unique_ptr<ShortcutsDialog>   m_shortcuts_dialog;   // s98 — built once, reused
   void action_pomodoro();
   void ensure_pomodoro_timer();   // create timer + wire callbacks without presenting
   void send_phase_notification(PomodoroPhase finished, PomodoroPhase next);

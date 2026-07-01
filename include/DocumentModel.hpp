@@ -481,6 +481,26 @@ struct BinderNode {
     bool       has_story_time = false;
     long long  story_time     = 0;
 
+    // s95 — OPTIONAL cluster name (DESIGN_timeline.md §9.14.9, the cluster
+    // primitive). A temporal CLUSTER is a contiguous run of scenes cohesive in
+    // story-time, derived (not stored) by neighbour-subtraction over story_time;
+    // its NAME is the one new stored fact — an optional label authored on the
+    // scene that OPENS a cluster ("Flashback", "Far Past", "The Heist"), shown on
+    // the ⊓ bracket only while that scene is an opener. Stored on whatever scene is
+    // currently the opener; if a reorder moves the opener the label travels with
+    // the node, not the slot (the parked robustness fork). Serialised omit-when-
+    // empty so untouched nodes stay byte-clean — the story_time pattern above.
+    std::string cluster_label;
+
+    // s97 — OPTIONAL chrono visual gap (DESIGN_timeline.md §9.14.10, gap authoring).
+    // Extra visual room (in base px, pre-zoom) drawn BEFORE this scene on the Chrono
+    // time bar, set by dragging the gap bar at the seam. It pushes this scene and
+    // everything downstream over; it is purely VISUAL and independent of story_time
+    // (the duration label is authored separately in the peek). 0 = no extra room.
+    // Serialised omit-when-zero so untouched nodes stay byte-clean (the story_time /
+    // cluster_label pattern). Travels with the node on reorder, like cluster_label.
+    double chrono_gap = 0.0;
+
     // Word count
     int word_count() const { return count_words(content); }
     int total_words() const {

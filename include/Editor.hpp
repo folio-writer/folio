@@ -13,6 +13,7 @@
 #include "DocumentModel.hpp"
 #include "MindMapCanvas.hpp"   // s48 — the fourth lens, hosted in the view-stack as "map"
 #include "TimelineSurface.hpp" // s80 — the Relationship Timeline lens, hosted as "timeline-lens"
+#include "DiffView.hpp"        // s98 — the side-by-side snapshot diff, hosted as "diff"
 #include "CustomMindMapCanvas.hpp" // s51 — the OWNED mind-map document surface (a Reference form)
 #include "JournalSurface.hpp"      // s54 — the journal's owned writing surface (its own buffer + serializer)
 #include "GallerySurface.hpp"      // s61 — the gallery's owned surface (lens over the image pool)
@@ -164,6 +165,12 @@ public:
 
   void set_view_mode(ViewMode mode);
   ViewMode view_mode() const { return m_view_mode; }
+
+  // s98 — enter/leave the side-by-side snapshot diff view. open_diff shows the
+  // diff of snapshot[snap_idx] → the node's current content; close_diff returns to
+  // whatever view was active before.
+  void open_diff(const BinderNode* node, int snap_idx);
+  void close_diff();
   // s81 — re-project the active whole-graph lens (Map/Timeline) after a model
   // mutation that happened while it was already showing (e.g. pattern apply).
   void refresh_active_lens();
@@ -269,6 +276,12 @@ public:
                                const std::string& text,
                                const std::string& kind,
                                const std::string& color_hex);
+  // s98 — from the diff view: attach a bit of picked snapshot text as an
+  // annotation on the given Current paragraph (0-based, empty paragraphs
+  // excluded — matches SnapshotDiff::html_to_lines). We own the live buffer, so
+  // we resolve the paragraph's char range here. Non-destructive to the prose.
+  void add_snapshot_annotation(const BinderNode* node, int current_para_index,
+                               const std::string& text);
   void remove_annotation(int id);
   void remove_annotation_from_node(BinderNode* node, int id); // JV-aware variant
   void edit_annotation(int id, const std::string& text,
@@ -667,6 +680,13 @@ private:
   // A whole-manuscript projection like Map: structure bands above the told-order
   // spine, rebuilt on entry. A thin painter over the pure TimelineSpine layer.
   Folio::TimelineSurface m_relationship_timeline;
+
+  // s98 — the side-by-side snapshot diff (added to m_view_stack as "diff"). A
+  // transient view launched from the Inspector's Diff button: open_diff() swaps it
+  // in over the editor area and hides the write chrome; close_diff() restores the
+  // prior view. m_view_before_diff is where "back to writing" returns to.
+  Folio::DiffView m_diff_view;
+  ViewMode        m_view_before_diff = ViewMode::Write;
 
   // s51 — the OWNED mind-map document surface (added to m_view_stack as "cmm").
   // Shown in Write/Joined when the current node is a Mind Map Reference form,

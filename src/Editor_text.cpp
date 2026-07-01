@@ -943,10 +943,11 @@ void Editor::apply_annotation_tag(const Annotation &ann) {
   }
   // If annotations are hidden, suppress visuals immediately
   if (!m_prefs.show_annotations) {
-    Gdk::RGBA transparent;
-    transparent.set_rgba(0, 0, 0, 0);
-    tag->property_background_rgba() = transparent;
+    // GtkTextTag backgrounds ignore alpha, so a "transparent" colour paints
+    // solid black. Unset the background property entirely to truly hide it.
+    tag->property_background_set() = false;
     tag->property_underline() = Pango::Underline::NONE;
+    tag->property_underline_set() = false;
   }
   m_buffer->apply_tag(tag, s, e);
 }
@@ -1002,11 +1003,11 @@ void Editor::refresh_annotation_visibility() {
             }
           }
         } else {
-          // Make invisible: transparent background, no underline
-          Gdk::RGBA transparent;
-          transparent.set_rgba(0, 0, 0, 0);
-          tag->property_background_rgba() = transparent;
+          // Make invisible. GtkTextTag backgrounds ignore alpha (a "transparent"
+          // colour paints solid black), so unset the background entirely.
+          tag->property_background_set() = false;
           tag->property_underline() = Pango::Underline::NONE;
+          tag->property_underline_set() = false;
         }
       });
 }
@@ -1058,6 +1059,54 @@ void Editor::add_annotation(int range_start, int range_end,
   m_model.mark_modified();
   if (on_annotations_changed)
     on_annotations_changed();
+}
+
+// s98 — anchor picked snapshot text as an annotation on a Current paragraph.
+void Editor::add_snapshot_annotation(const BinderNode *node,
+                                     int current_para_index,
+                                     const std::string &text) {
+  // The diff is always launched for the node we're currently editing, so its
+  // live buffer is the one to anchor into. Guard rather than assume.
+  if (!node || node != m_current_node || !m_buffer || text.empty())
+    return;
+
+  // Map the Current paragraph index (empty paragraphs excluded, matching
+  // SnapshotDiff::html_to_lines) to a buffer line. Paragraphs are buffer lines;
+  // skip whitespace-only lines when counting so the indices line up.
+  const int nlines = m_buffer->get_line_count();
+  int seen = 0, target_line = -1, last_nonblank = -1;
+  for (int ln = 0; ln < nlines; ++ln) {
+    auto ls = m_buffer->get_iter_at_line(ln);
+    auto le = ls;
+    if (!le.ends_line())
+      le.forward_to_line_end();
+    Glib::ustring lt = m_buffer->get_text(ls, le, false);
+    if (lt.find_first_not_of(" \t\r\n") == Glib::ustring::npos)
+      continue; // blank line — not a paragraph
+    last_nonblank = ln;
+    if (seen == current_para_index) {
+      target_line = ln;
+      break;
+    }
+    ++seen;
+  }
+  // If the index ran past the end (or was negative), fall back to the last real
+  // paragraph so the note still lands somewhere sensible.
+  if (target_line < 0)
+    target_line = last_nonblank;
+
+  int range_start = 0, range_end = 0;
+  if (target_line >= 0) {
+    auto ls = m_buffer->get_iter_at_line(target_line);
+    auto le = ls;
+    if (!le.ends_line())
+      le.forward_to_line_end();
+    range_start = ls.get_offset();
+    range_end = le.get_offset();
+  }
+  // Distinct colour/kind so snapshot-sourced notes stand out from your own
+  // comments; the text is left exactly as picked so it's clean to copy in.
+  add_annotation(range_start, range_end, text, "Editor", "#fab387");
 }
 
 // JV-aware: stores node-relative offsets, applies tag at buffer-absolute offsets

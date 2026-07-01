@@ -125,6 +125,16 @@ private:
     void queue_chrome_draw();   // s46 — redraw the visible view-chrome overlays
     void build_toast();         // s46 — transient bottom-centre confirmation pill
     void flash_toast(const std::string& msg);  // s46 — show + auto-hide the toast
+    // s98 — discoverability. The selection hint is a bottom-centre pill that
+    // appears whenever there is a live selection and the format bar is closed,
+    // pointing the writer at Ctrl+/ (styles) and Ctrl+? (the cheat sheet) — the
+    // door to a feature that is otherwise keyboard-only and unsignposted in the
+    // chromeless focus view. The shortcuts card is the full Ctrl+? reference,
+    // built on the same centred-card look as the switcher.
+    void build_sel_hint();      // s98 — build the bottom-centre selection hint pill
+    void update_sel_hint();     // s98 — show/hide it from selection + bar + active state
+    void build_shortcuts();     // s98 — centred keyboard-shortcut cheat sheet (Ctrl+?)
+    void toggle_shortcuts();    // s98 — show/hide the cheat sheet
     void build_drawer();        // s45 — left settings drawer (replaces the hover pill)
     void build_switcher();      // type-to-filter scene overlay
     // s93 — focus format bar. Focus owns no toolbar, so this is a small toggleable
@@ -254,6 +264,8 @@ private:
     // s46 — focus-local transient confirmation (the editor's own toast sits on the
     // hidden surface behind focus). A bottom-centre pill that fades in then out.
     Gtk::Label*          m_toast = nullptr;
+    Gtk::Label*          m_sel_hint  = nullptr;  // s98 — selection-driven styles hint
+    Gtk::Box*            m_shortcuts = nullptr;  // s98 — Ctrl+? cheat-sheet overlay
     sigc::connection     m_toast_conn;
 
     // s46 — link picker. Focus owns its own node picker (the switcher precedent)
@@ -295,6 +307,12 @@ private:
     Gtk::Scale*          m_rail_scale = nullptr;
     bool m_tw_guard    = false;   // re-entrancy guard while syncing the switch in code
     bool m_rail_queued = false;   // an idle scroll_to_rail is already pending
+    // s98 — true while the primary mouse button is held in m_view. The typewriter
+    // re-rail (scroll_to_rail) is suppressed while it is held: scrolling mid-drag
+    // shifts the viewport, GTK reads a press/release at different positions, and
+    // the selection lurches across big arbitrary spans. Mirrors the editor's
+    // m_mouse_btn_held guard (the same bug, the same fix).
+    bool m_mouse_btn_held = false;
 
     // s45 — slider smoothness: debounced save / size, coalesced spacing relayout.
     sigc::connection m_save_conn;     // pending debounced prefs.save()

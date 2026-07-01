@@ -289,9 +289,10 @@ ReplaceResult SearchEngine::replace_html(
         return r;
     }
 
-    // Helper: HTML-escape plain text
+    // Escape plain text back into HTML text content.
     auto html_esc = [](const std::string& s) {
         std::string out;
+        out.reserve(s.size());
         for (unsigned char c : s) {
             if      (c == '&') out += "&amp;";
             else if (c == '<') out += "&lt;";
@@ -300,59 +301,76 @@ ReplaceResult SearchEngine::replace_html(
         }
         return out;
     };
-
-    // Split HTML into paragraph blocks
-    std::string new_html;
-    new_html.reserve(html.size());
-    size_t pos = 0;
-
-    while (pos < html.size()) {
-        size_t open  = html.find("<p>",  pos);
-        if (open == std::string::npos) {
-            new_html += html.substr(pos);
-            break;
+    // Decode the entities we re-emit, so matching runs against real characters.
+    auto decode_basic = [](const std::string& s) {
+        std::string out;
+        out.reserve(s.size());
+        for (std::size_t k = 0; k < s.size();) {
+            if (s[k] == '&') {
+                if      (s.compare(k, 5, "&amp;")  == 0) { out += '&';  k += 5; continue; }
+                else if (s.compare(k, 4, "&lt;")   == 0) { out += '<';  k += 4; continue; }
+                else if (s.compare(k, 4, "&gt;")   == 0) { out += '>';  k += 4; continue; }
+                else if (s.compare(k, 6, "&quot;") == 0) { out += '"';  k += 6; continue; }
+                else if (s.compare(k, 5, "&#39;")  == 0) { out += '\''; k += 5; continue; }
+            }
+            out += s[k++];
         }
-        // Preserve any content before the <p>
-        if (open > pos) new_html += html.substr(pos, open - pos);
+        return out;
+    };
 
-        size_t close = html.find("</p>", open + 3);
-        if (close == std::string::npos) {
-            new_html += html.substr(open);
-            break;
-        }
+    // Walk the HTML, replacing ONLY the text between tags. Every tag (paragraph
+    // wrappers with their attributes, headings, outline/screenplay markers, and
+    // inline bold/italic/etc.) is copied through verbatim, so formatting and
+    // paragraph structure are preserved and no stray newline is ever introduced.
+    // A match that straddles an inline-tag boundary won't be caught — an accepted
+    // limitation, far better than flattening the paragraph to plain text.
+    std::string out;
+    out.reserve(html.size());
+    std::string run;   // the current text run between tags
 
-        // Extract the inner HTML of this paragraph
-        std::string inner = html.substr(open + 3, close - open - 3);
-
-        // Convert inner HTML to plain text for matching
-        std::string plain = html_to_plain("<p>" + inner + "</p>");
-
-        // Try replacement on the plain text
-        std::string replaced;
-        int para_reps = 0;
+    auto flush_run = [&]() {
+        if (run.empty()) return;
+        const std::string decoded = decode_basic(run);
+        int reps = 0;
         try {
-            auto begin = std::sregex_iterator(plain.begin(), plain.end(), re);
-            auto end   = std::sregex_iterator();
-            para_reps  = (int)std::distance(begin, end);
-            replaced   = std::regex_replace(plain, re, replacement);
+            reps = static_cast<int>(std::distance(
+                std::sregex_iterator(decoded.begin(), decoded.end(), re),
+                std::sregex_iterator()));
         } catch (...) {
-            replaced = plain;
+            reps = 0;
         }
-
-        if (para_reps > 0) {
-            r.replacements += para_reps;
-            // Rebuild paragraph with escaped replaced text (drops inline tags)
-            new_html += "<p>" + html_esc(replaced) + "</p>";
+        if (reps > 0) {
+            std::string replaced;
+            try {
+                replaced = std::regex_replace(decoded, re, replacement);
+            } catch (...) {
+                out += run;          // regex_replace failed — leave the run as-is
+                run.clear();
+                return;
+            }
+            out += html_esc(replaced);
+            r.replacements += reps;
         } else {
-            // No match — keep original paragraph with all inline tags intact
-            new_html += "<p>" + inner + "</p>";
+            out += run;              // unchanged — keep original escaping intact
         }
+        run.clear();
+    };
 
-        pos = close + 4;
+    for (std::size_t i = 0; i < html.size();) {
+        if (html[i] == '<') {
+            flush_run();
+            const std::size_t et = html.find('>', i);
+            if (et == std::string::npos) { out += html.substr(i); break; }
+            out += html.substr(i, et - i + 1);   // copy the tag verbatim
+            i = et + 1;
+        } else {
+            run += html[i++];
+        }
     }
+    flush_run();
 
     if (r.replacements > 0)
-        r.new_html = new_html;
+        r.new_html = out;
 
     return r;
 }

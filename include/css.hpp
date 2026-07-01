@@ -634,6 +634,29 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
     }
     .focus-toast.show { opacity: 1; }
 
+    /* s98 — selection hint: same bottom-centre pill as the toast, but persistent
+       while a selection is live (no timed fade). Muted so it never competes with
+       the text; the <b> chords read a touch brighter. */
+    .focus-sel-hint {
+        background-color: alpha(@adw_surface, 0.92);
+        border: 1px solid @border_subtle;
+        border-radius: 9999px;
+        color: @tx3; font-size: 12px; padding: 6px 16px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.40);
+        opacity: 0; transition: opacity 200ms ease;
+    }
+    .focus-sel-hint b { color: @tx1; font-weight: 700; }
+    .focus-sel-hint.show { opacity: 1; }
+
+    /* s98 — keyboard cheat sheet: rides the .focus-switcher card look; a tidy
+       key/action grid. The key column is mono + brighter, the action muted. */
+    .focus-shortcuts { padding: 18px 22px; }
+    .focus-sc-key {
+        font-family: "DejaVu Sans Mono", monospace;
+        font-size: 12px; color: @tx1;
+    }
+    .focus-sc-action { font-size: 12px; color: @tx3; }
+
     /* s46 — centred overlay panels: the scene switcher and the link picker share
        this card look (the switcher had none before). Dark, lifted, rounded. */
     .focus-switcher {

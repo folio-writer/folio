@@ -605,10 +605,10 @@ void Editor::build_toolbar() {
       "Show / hide invisible characters (·spaces ¶newlines →tabs)\n"
       "Ctrl+Space = word joiner (zero-width no-break)\n"
       "Ctrl+Shift+Space = non-breaking space\n"
-      "Ctrl+Shift+\xe2\x88\x92 = non-breaking hyphen\n"
+      "Ctrl+Alt+Space = thin space\n"
+      "Ctrl+Alt+Shift+Space = zero-width space\n"
       "Ctrl+\xe2\x88\x92 = soft hyphen\n"
-      "Ctrl+Shift+Z = zero-width space\n"
-      "Ctrl+Shift+T = thin space");
+      "Ctrl+Shift+\xe2\x88\x92 = non-breaking hyphen");
   m_btn_show_invisibles.set_active(m_prefs.show_invisibles);
   m_btn_show_invisibles.signal_toggled().connect([this]() {
     m_prefs.show_invisibles = m_btn_show_invisibles.get_active();
@@ -1557,21 +1557,36 @@ void Editor::build_editor_area() {
           return true;
         }
         // ── Special character insertion ──────────────────────────────────────
-        // Ctrl+Space             → word joiner           (U+2060)  zero-width
-        // no-break Ctrl+Shift+Space       → non-breaking space    (U+00A0) like
-        // LibreOffice Ctrl+Shift+Minus       → non-breaking hyphen   (U+2011)
-        // like LibreOffice Ctrl+Minus             → soft hyphen (U+00AD)  like
-        // LibreOffice Ctrl+Shift+W           → word joiner (alternate)(U+2060)
-        // Ctrl+Shift+Z           → zero-width space       (U+200B)
-        // Ctrl+Shift+T           → thin space             (U+2009)
-        if (ctrl && !shift && keyval == GDK_KEY_space) {
+        // The invisible-space + hyphen family. s98: the three chords that shadowed
+        // global actions were moved off them — Ctrl+Shift+W (a redundant word-joiner
+        // duplicate) dropped so it reaches close-all-tabs; zwsp and thin space moved
+        // into the Space family so Ctrl+Shift+Z is free for Redo and Ctrl+Shift+T for
+        // batch-snapshot. The Space chords now qualify on !alt/alt so the four are
+        // distinct:
+        //   Ctrl+Space                 → word joiner        (U+2060) zero-width no-break
+        //   Ctrl+Shift+Space           → non-breaking space (U+00A0)
+        //   Ctrl+Alt+Space             → thin space         (U+2009)
+        //   Ctrl+Alt+Shift+Space       → zero-width space   (U+200B)
+        //   Ctrl+Minus                 → soft hyphen        (U+00AD)
+        //   Ctrl+Shift+Minus           → non-breaking hyphen(U+2011)
+        if (ctrl && !alt && !shift && keyval == GDK_KEY_space) {
           m_buffer->insert_at_cursor(
               Glib::ustring(1, (gunichar)0x2060)); // word joiner
           return true;
         }
-        if (ctrl && shift && keyval == GDK_KEY_space) {
+        if (ctrl && !alt && shift && keyval == GDK_KEY_space) {
           m_buffer->insert_at_cursor(
               Glib::ustring(1, (gunichar)0x00A0)); // nbsp
+          return true;
+        }
+        if (ctrl && alt && !shift && keyval == GDK_KEY_space) {
+          m_buffer->insert_at_cursor(
+              Glib::ustring(1, (gunichar)0x2009)); // thin space
+          return true;
+        }
+        if (ctrl && alt && shift && keyval == GDK_KEY_space) {
+          m_buffer->insert_at_cursor(
+              Glib::ustring(1, (gunichar)0x200B)); // zwsp
           return true;
         }
         if (ctrl && shift &&
@@ -1584,21 +1599,6 @@ void Editor::build_editor_area() {
             (keyval == GDK_KEY_minus || keyval == GDK_KEY_KP_Subtract)) {
           m_buffer->insert_at_cursor(
               Glib::ustring(1, (gunichar)0x00AD)); // soft hyphen
-          return true;
-        }
-        if (ctrl && shift && (keyval == GDK_KEY_w || keyval == GDK_KEY_W)) {
-          m_buffer->insert_at_cursor(
-              Glib::ustring(1, (gunichar)0x2060)); // word joiner
-          return true;
-        }
-        if (ctrl && shift && (keyval == GDK_KEY_z || keyval == GDK_KEY_Z)) {
-          m_buffer->insert_at_cursor(
-              Glib::ustring(1, (gunichar)0x200B)); // zwsp
-          return true;
-        }
-        if (ctrl && shift && (keyval == GDK_KEY_t || keyval == GDK_KEY_T)) {
-          m_buffer->insert_at_cursor(
-              Glib::ustring(1, (gunichar)0x2009)); // thin space
           return true;
         }
         Gtk::TextBuffer::iterator s, e;
@@ -2845,6 +2845,16 @@ void Editor::build_editor_area() {
   });
   m_view_stack.add(m_relationship_timeline, "timeline-lens");
 
+  // s98 — the side-by-side snapshot diff surface (transient; launched from the
+  // Inspector's Diff button via Editor::open_diff). Close returns to the prior view.
+  m_view_stack.add(m_diff_view, "diff");
+  m_diff_view.set_close_callback([this]() { close_diff(); });
+  // s98 — picked snapshot text → annotation on the matching Current paragraph.
+  m_diff_view.on_add_annotation =
+      [this](const BinderNode *n, int idx, const std::string &t) {
+        add_snapshot_annotation(n, idx, t);
+      };
+
   // ── s51 — the owned Mind Map document surface ───────────────────────────────
   // A Reference whose form is "Mind Map" shows THIS in place of the ObjectForm
   // (routed in set_editor_mode / set_view_mode). The canvas reads/writes a CMMDoc;
@@ -3137,6 +3147,9 @@ void Editor::build_footer() {
     m_prefs.save();
     apply_base_font_tag();
     apply_zoom_to_font_tags();
+    // s98 — keep the side-by-side diff's body text in step with the editor zoom.
+    if (m_view_stack.get_visible_child() == &m_diff_view)
+      m_diff_view.set_text_scale(m_zoom_factor);
   });
 
   // Double-click resets to 100%

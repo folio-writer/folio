@@ -1035,7 +1035,29 @@ void Editor::set_view_mode(ViewMode mode) {
   }
 }
 
-// s81 — re-project the whole-graph lenses when the model changed UNDERNEATH a
+// s98 — enter the side-by-side snapshot diff. It's a transient view: we remember
+// the current mode, hide the write chrome (toolbar/grid-toolbar/ruler), point the
+// diff surface at snapshot[snap_idx] → the node's current content, and swap the
+// stack to it. m_view_mode is intentionally left unchanged so close_diff can
+// restore it (there is no ViewMode::Diff — the diff isn't a dropdown lens).
+void Editor::open_diff(const BinderNode* node, int snap_idx) {
+  if (!node) return;
+  m_view_before_diff = m_view_mode;
+  m_diff_view.set_target(node, snap_idx);
+  m_diff_view.set_text_scale(m_zoom_factor);   // s98 — open at the editor's zoom
+  m_toolbar.set_visible(false);
+  m_grid_toolbar.set_visible(false);
+  m_ruler.set_visible(false);
+  m_view_stack.set_visible_child(m_diff_view);
+}
+
+// s98 — leave the diff, restoring whatever view was active before (set_view_mode
+// re-shows the correct stack child and the write chrome).
+void Editor::close_diff() {
+  set_view_mode(m_view_before_diff);
+}
+
+
 // live view. Map and Timeline cache a projection that is only rebuilt on entry
 // (truth → projection, never cached across a mutation); a bulk mutation while one
 // is showing — e.g. a pattern materialize stamping kp_id — therefore leaves it

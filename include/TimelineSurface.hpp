@@ -43,6 +43,8 @@
 #include "TimelineThreads.hpp"  // s84 step 7 — the thread lane (relief of BinderNode.thread)
 #include "TimelineResources.hpp"  // s82 — the resource-rail roster (the §3 armer)
 #include "TimelineFocus.hpp"    // s92 — persistent focus (FocusSet + the pure toggles)
+#include "TimelineChrono.hpp"   // s93/s94 — world-clock re-lay + the drag-reorder write path
+#include "TimelineCluster.hpp"  // s95 — temporal clusters (ClusterLayout) derived from the chrono chain
 
 namespace Folio {
 
@@ -113,6 +115,10 @@ private:
   LensToggleGeom lens_toggle_geom() const;
   void           draw_lens_toggle(const Cairo::RefPtr<Cairo::Context>& cr);
   bool           lens_toggle_click(double bx, double by);  // true if the click hit a pill
+  // s97 — set / toggle the lens from the pill click OR the keyboard (the 't' hotkey).
+  // set_lens recomputes the order and drops the per-lens selections; toggle_lens flips.
+  void           set_lens(bool chrono);
+  void           toggle_lens();
 
   // s84 — the scene PEEK panel. The right side of the split is a vertical box:
   // [ canvas (vexpand) | peek revealer (bottom) ]. A single-click on a scene card
@@ -137,7 +143,25 @@ private:
   Gtk::SpinButton     m_peek_st_count;   // relative gap count
   Gtk::DropDown       m_peek_st_unit;    // unit (years … seconds)
   Gtk::DropDown       m_peek_st_dir;     // later / earlier
-  std::string         m_selected_iid;    // the peeked scene ("" = none)
+  // s97 — gap-mode peek (§9.14.10). The revealer body switches between the SCENE box
+  // (all of the above) and the GAP box on whether a scene or a gap seam is selected.
+  // The gap box authors the seam's DURATION (count + unit, written via cascade_shift
+  // so the broken-axis ruler relabels) and offers Remove (clears the visual room).
+  // The duration row is disabled unless both ends of the seam are dated.
+  Gtk::Box            m_peek_scene_box{Gtk::Orientation::VERTICAL, 8};
+  Gtk::Box            m_peek_gap_box{Gtk::Orientation::VERTICAL, 8};
+  Gtk::Label          m_peek_gap_desc;   // "Between 'A' and 'B'"
+  Gtk::Label          m_peek_gap_readout; // current duration / visual-room readout
+  Gtk::SpinButton     m_peek_gap_count;  // duration count
+  Gtk::DropDown       m_peek_gap_unit;   // unit (years … seconds)
+  Gtk::Button         m_peek_gap_set{"Set"};
+  Gtk::Button         m_peek_gap_remove{"Remove gap"};
+  std::string         m_selected_iid;    // the peeked scene ("" = none) — the multi-sel anchor
+  // s96 — multi-selection on the Chrono lens. Shift+click toggles a scene card into
+  // this set (plain click selects one, clearing it); every member draws the selection
+  // ring, and a drag that begins on a member drags the WHOLE set onto a cluster bar /
+  // row. m_selected_iid is the peek anchor and is always present here when non-empty.
+  std::unordered_set<std::string> m_multi_sel;
   bool                m_peek_loading = false;  // guard: populate must not write back
 
   // ── Lens state (presentation only; the model stays the truth) ──────────────
@@ -172,6 +196,61 @@ private:
   std::vector<std::string> m_chrono_undated;
   std::unordered_map<std::string, std::string> m_title_of;
   std::unordered_map<std::string, int>         m_told_pos;   // iid -> told/binder position (1-based)
+
+  // s95 — temporal CLUSTERS over the dated chrono prefix (DESIGN_timeline.md
+  // §9.14.9). Derived in recompute_chrono: the dated scenes of m_chrono_order are
+  // exactly its first D columns (chronological_order lays dated first, ascending),
+  // so the chain is neighbour-subtraction over their coordinates and cluster.first/
+  // .last index straight into those columns. cluster_chain emits the ⊓ brackets
+  // (contiguous runs cohesive in story-time) and the signed seam gaps; the renderer
+  // draws a named bar above each cluster's cards, peach for a flashback (its
+  // incoming gap is negative), and words each SEAM gap's magnitude on the bracket
+  // band. Presentation cache only — never serialised; recomputed with the order.
+  ClusterLayout m_chrono_clusters;
+
+  // s94 — drag-to-reorder a DATED card within the Chrono lens (DESIGN §9.14.8,
+  // build slice 1). A primary drag that BEGINS on a dated scene card in the Chrono
+  // lens LIFTS it and lets the author slide it to a new chronological slot; on drop
+  // the moved card's coordinate is rewritten from its new neighbours (chrono_reorder
+  // → the model), so the re-laid order is AUTHORED by drag rather than only derived
+  // from a numeric setter. Presentation-only during the drag; the commit is the one
+  // model write. Slice 1 reorders only the SET (dated) cards — the unset row +
+  // drag-to-place is slice 2, the right-click-a-gap duration is slice 3. The numeric
+  // peek setter (apply_story_time) is kept alongside this slice so dated scenes can
+  // still be created to reorder; it is removed once slice 2 lands.
+  std::string m_card_drag_iid;             // "" = no card drag in progress
+  int         m_card_drag_from   = -1;     // grabbed card's dated rank (0-based); -1 if undated
+  int         m_card_drag_to     = -1;     // current target rank/column; -1 when aiming at a cluster bar
+  double      m_card_drag_press_x = 0.0;   // BASE-coord press x (the drag origin)
+  double      m_card_drag_cur_x   = 0.0;   // BASE-coord current cursor x (ghost follows)
+  double      m_card_drag_press_y = 0.0;   // s96 — BASE-coord press y
+  double      m_card_drag_cur_y   = 0.0;   // s96 — BASE-coord current cursor y (for the bracket-band hit)
+  bool        m_card_drag_moved   = false; // a real drag occurred (vs a bare press)
+  // s96 — DnD assign: a card (dated OR undated) can be dragged onto a ⊓ cluster bar to
+  // be ADDED to that cluster; an undated card dropped on the dated row is placed there
+  // directly (drag-to-place). m_card_drag_is_dated records whether the grabbed card was
+  // already dated (reorder) vs undated (place/append); m_card_drag_cluster is the
+  // cluster bracket under the cursor mid-drag (-1 = over the row, the column target).
+  bool        m_card_drag_is_dated = false;
+  int         m_card_drag_cluster  = -1;
+  bool        m_card_drag_unschedule = false;   // s96 — cursor over the "out of cluster" strip
+  // s96 — the iids being dragged, in chrono order. {anchor} for a single-card drag;
+  // the whole multi-selection when the press lands on a selected card. Routes the drop
+  // to the batch assign / place when size > 1.
+  std::vector<std::string> m_card_drag_set;
+
+  // s97 — gap authoring (DESIGN_timeline.md §9.14.10). m_chrono_leads is the per-rank
+  // extra visual room before each m_chrono_order column (BinderNode.chrono_gap of the
+  // node at that rank), rebuilt in recompute_chrono; col_cx_view / the lens-aware
+  // column_at read it so a kept-open gap pushes its downstream cards over and the draw
+  // and hit-tests stay in lockstep. m_gap_sel is the selected seam (1..N-1, the gap
+  // before that rank) or -1; dragging the gap bar adjusts the right-hand scene's
+  // chrono_gap live. The peek's gap-mode time editor (the duration label via
+  // cascade_shift) is the close-out slice.
+  std::vector<double> m_chrono_leads;
+  int    m_gap_sel            = -1;      // selected seam (right-rank index 1..N-1), -1 none
+  bool   m_gap_drag_active    = false;   // a gap-bar drag is in progress
+  double m_gap_drag_base_lead = 0.0;     // the seam's chrono_gap at drag start
   std::vector<TimelineTrack> m_tracks;     // s80 step 3 — subject relief rows
   // s81 step 6 — the KP lane: on-spine scenes grouped by kp_id (relief of kp_id,
   // §9.4). A SINGLE strip up against the spine — KPs partition the spine (a scene
@@ -194,6 +273,17 @@ private:
   // so it does not commit the still-open §9.8 #1 persistent focus-key model.
   int m_hover_track = -1;   // index into m_tracks, or -1
   int m_hover_col   = -1;   // 1-based lit told-order column, or -1
+  // s98 — the hovered SCENE and the hovered resource lane (thread / kp), so a
+  // hover can cross-highlight the scenes a resource touches in its own colour. At
+  // most one of {card, subject, thread, kp} is active at a time (set in the motion
+  // handler). The cache below is recomputed per frame from whichever is live.
+  std::string m_hover_iid;              // the hovered scene card iid, or empty
+  int m_hover_thread = -1;              // index into m_thread_lanes, or -1
+  int m_hover_kp     = -1;              // index into m_kp_lanes, or -1
+  std::unordered_set<std::string> m_hi_iids;  // scenes to outline this frame
+  Gdk::RGBA                       m_hi_color; // the outline colour (resource / accent)
+  bool                            m_hi_on = false;
+  void compute_hover_hi();              // fill the cache from the live hover
 
   // s92 — PERSISTENT focus (§4 / §9.8 #1 / §9.12.5). Unlike the transient hover
   // above, a focused set STICKS until the author unpins it: pick a relief row
@@ -273,8 +363,21 @@ private:
   // story-time re-lay (isolated so the told-order draw is untouched); scene_at_story
   // hit-tests its cards + undated tray; recompute_chrono rebuilds the order caches.
   void draw_story_axis(const Cairo::RefPtr<Cairo::Context>& cr);
+  // s95 — the ⊓ cluster brackets band above the Chrono cards (§9.14.9). Reads
+  // m_chrono_clusters; draws a bar+legs over each cluster's column span with the
+  // opener's cluster_label on a tab, peach-tinted for flashback clusters. `top` is
+  // the card row top (spine_top()); the band lives in the headroom above it.
+  void draw_cluster_brackets(const Cairo::RefPtr<Cairo::Context>& cr, int top);
   std::string scene_at_story(double x, double y) const;
   void recompute_chrono();
+  // s94 — drag-to-reorder helpers (DESIGN §9.14.8 slice 1). dated_scenes() pulls the
+  // dated prefix of m_chrono_order as (iid, coordinate) pairs in ascending order (the
+  // input chrono_reorder expects); dated_rank_of resolves an iid to its 0-based rank
+  // among the dated cards (-1 if undated/absent); commit_card_reorder applies the
+  // pure chrono_reorder writes for the in-flight drag back onto the model.
+  std::vector<ChronoDated> dated_scenes() const;
+  int  dated_rank_of(const std::string& iid) const;
+  void commit_card_reorder();
   // s93 — subject-track relief shared by both axes (positions from compute_relief
   // over the passed order); apply_focus gates told-order focus/hover dimming.
   void draw_subject_tracks(const Cairo::RefPtr<Cairo::Context>& cr,
@@ -286,6 +389,23 @@ private:
   void draw_thread_band(const Cairo::RefPtr<Cairo::Context>& cr,
                         const std::vector<std::string>& order,
                         int hdr_y, int rtop, bool apply_focus);
+  // s97 — the reusable "active drag extent": one dashed-bordered rounded ghost span
+  // over columns lo..hi at row-centre cy, in `hue` (or the error red when `remove`).
+  // Factored from the four s80/s82/s86 sweep-preview blocks so the relationship sweep
+  // can draw it in BOTH lenses, and so the gap drag (slice 2) wears the same border.
+  // Columns map through col_cx, so it lands right under whichever order is laid out.
+  void draw_sweep_extent(const Cairo::RefPtr<Cairo::Context>& cr,
+                         int lo, int hi, double cy,
+                         bool remove, const Gdk::RGBA& hue, double fill_a = 0.30);
+  // s97 — draw whichever live sweep preview is active (track row / staging / thread
+  // band / KP strip) using the current lens's relief tops. Called from the told draw
+  // AND draw_story_axis, so a relationship edit shows its extent box in Chrono too.
+  void draw_active_sweep_preview(const Cairo::RefPtr<Cairo::Context>& cr);
+  // s97 — the armed staging row (the add-a-resource-line lane). Factored from the told
+  // draw so the Chrono draw can show it too; positions through col_cx_view + the passed
+  // order so it lands under the chrono columns. Drawn only while a rail subject is armed.
+  void draw_staging_row(const Cairo::RefPtr<Cairo::Context>& cr,
+                        const std::vector<std::string>& order);
   // s93 — ONE scene-card painter (square, border, selection ring, position badges,
   // title) shared by the Told Order and Chrono draws, so a scene looks identical in
   // either lens. `order_badge` is the position in the CURRENT view (upper-left);
@@ -306,6 +426,30 @@ private:
   void clear_story_time();
   int column_at(double x) const;        // 1-based told-order column under x, or 0
   int clamped_col(double x) const;      // column under x, clamped into [1, n] for sweep
+  // s97 — lens-aware horizontal geometry. col_cx_view is the card centre for view
+  // column k: ordinal col_cx in Told, variable-spaced (col_cx + accumulated chrono
+  // leads) in Chrono so an open gap pushes downstream cards over. lead_through is the
+  // cumulative lead up to and including rank k (0 in Told). The relief / ruler / card
+  // draws and the inverse column_at all read these so an open gap can't desync them.
+  double col_cx_view(int k) const;
+  double lead_through(int k) const;
+  // s97 — gap authoring on the Chrono time bar. ruler_y_band: is base-coord y on the
+  // ruler row (the seam-click band, Chrono only). gap_seam_at: the seam (1..N-1)
+  // nearest base-coord x on that band, or -1. select_gap reveals the gap editor;
+  // clear_gap_selection drops it. set_gap_lead writes the right-rank scene's
+  // chrono_gap (mark_modified only on change) and rebuilds the leads.
+  bool ruler_y_band(double y) const;
+  int  gap_seam_at(double x) const;
+  void select_gap(int seam);
+  void clear_gap_selection();
+  void set_gap_lead(int seam, double lead_px);
+  // s97 — gap-mode peek. populate_gap fills the gap editor for the selected seam (and
+  // gates the duration row on both ends being dated); apply_gap_time writes the typed
+  // duration via cascade_shift (the ruler relabels); remove_gap clears the seam's
+  // visual room (chrono_gap -> 0) and deselects.
+  void populate_gap(int seam);
+  void apply_gap_time();
+  void remove_gap();
   int track_row_at(double y) const;     // m_tracks index under y, or -1
   // s86 — band/strip hit-tests for direct sweep (parity with track_row_at).
   // thread_lane_at: m_thread_lanes index under y (the band rows), or -1.
@@ -367,6 +511,35 @@ private:
   // inside a live widget's focus/click handler).
   Gtk::Popover* m_thread_popover = nullptr;   // managed; unparented on close
   Gtk::Popover* m_kp_popover     = nullptr;   // s86 — KP manage popover (same idiom)
+
+  // s96 — CLUSTER AUTHORING (DESIGN_timeline.md §9.14.9). Two gestures on the Chrono
+  // lens: (1) click a ⊓ bracket to NAME its cluster — writes cluster_label on the
+  // cluster's opener via a small entry popover; (2) right-click a scene card to ADD
+  // it to a cluster — since clusters are DERIVED from story-time, "assign" means
+  // place the scene's coordinate INSIDE that cluster's span (one step at the
+  // cluster's own pace, which by construction can't reach the next seam), so the
+  // next recompute_chrono folds it into that run. cluster_bracket_at hit-tests the
+  // bracket band; show_cluster_name_editor / show_cluster_assign_menu raise the
+  // popovers; assign_scene_to_cluster / start_new_cluster_with do the model write.
+  Gtk::Popover* m_cluster_name_popover = nullptr;   // managed; unparented on close
+  int  cluster_bracket_at(double bx, double by) const;   // cluster index under a bracket-band point, or -1
+  void show_cluster_name_editor(std::size_t cluster_index, double x, double y);
+  void show_cluster_assign_menu(const std::string& scene_iid, double x, double y);
+  void assign_scene_to_cluster(const std::string& scene_iid, std::size_t cluster_index);
+  void start_new_cluster_with(const std::string& scene_iid);
+  // s96 — drag-to-place: drop an undated card on the dated row at chronological rank
+  // `to` (0..N) → date it there (chrono_insert_coord midpoint). The "added directly" path.
+  void place_undated_at(const std::string& scene_iid, std::size_t to);
+  // s96 — multi-select + batch DnD. toggle_multi_select flips a card's membership
+  // (Shift+click); assign_scenes_to_cluster / place_scenes_at are the group writes
+  // (append the set into a cluster, or place it contiguously on the row at rank `to`).
+  void toggle_multi_select(const std::string& iid);
+  void assign_scenes_to_cluster(const std::vector<std::string>& scene_iids, std::size_t cluster_index);
+  void place_scenes_at(const std::vector<std::string>& scene_iids, std::size_t to);
+  // s96 — drag a card out of its cluster: clears story_time on each, so they leave
+  // the dated run and return to the undated tray (the inverse of a cluster assign).
+  void unschedule_scenes(const std::vector<std::string>& scene_iids);
+
   void show_thread_menu(const std::string& thread_iid, double x, double y);
   // s86 — the teaching popover for the Story Threads section (the feature is
   // not self-evident): what a thread is, the braided-book example, that it is a
@@ -463,11 +636,23 @@ private:
   void   reset_zoom();
   void   sync_content_size();
   int spine_top() const;       // y of the card row's top, given band_rows
+  // s96 — the y just below the card row where the relief stack (KP / tracks /
+  // thread) begins. Told order stacks directly under the cards; the Chrono lens
+  // inserts the broken-axis ruler (the "time row") and the undated tray between
+  // the cards and the relief, so the origin drops by their height. EVERY relief
+  // geometry helper anchors here, so the draw and the row hit-tests agree in both
+  // lenses (a told-order origin in Chrono put every row one off — s96 fix).
+  int relief_origin() const;
   int kp_top() const;          // y of the KP strip's top (0 height when no KPs)
   bool staging_active() const { return !m_armed_iid.empty(); }
   int staging_top() const;     // y of the staging row top (valid when armed)
   bool over_staging(double y) const;  // is y within the staging row band
-  int track_top() const;       // y of the first relief track row (below staging/KP)
+  int track_top() const;       // y of the first relief track row (staging-independent now)
+  // s97 — bottom of the KP + subject-track stack, NOT counting the staging row or the
+  // thread band. The staging lane sits just BELOW this (so a newly-armed line previews
+  // where the committed track will land — below the last resource, both lenses), and
+  // relief_floor adds the staging height when armed.
+  int tracks_floor() const;
   // s84 — the bottom of the spine/KP/staging/subject-track region (before the
   // thread band + bottom pad). Factored so content_height and the thread band
   // share one floor computation.

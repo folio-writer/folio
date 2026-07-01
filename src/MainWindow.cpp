@@ -2,6 +2,7 @@
 // Folio — MainWindow.cpp
 // ─────────────────────────────────────────────────────────────────────────────
 #include "MainWindow.hpp"
+#include "Shortcuts.hpp"   // s98 — shortcut_registry() drives accel wiring
 #include "color_utils.hpp"
 #include "Editor.hpp"
 #include "KpPalette.hpp"   // s81 — palette_remap / apply_palette_remap (reconcile)
@@ -1335,6 +1336,11 @@ void MainWindow::wire_callbacks() {
     if (m_editor)
       m_editor->scroll_to_annotation(id);
   };
+  // s98 — Inspector Diff button → integrated side-by-side diff view in the editor.
+  m_inspector->on_open_diff = [this](BinderNode *node, int snap_idx) {
+    if (m_editor)
+      m_editor->open_diff(node, snap_idx);
+  };
   // Inspector → Editor: delete annotation from card
   m_inspector->on_delete_annotation = [this](int id) {
     if (m_editor)
@@ -2104,46 +2110,21 @@ void MainWindow::setup_actions() {
   // set_accels_for_action needs get_application() to be non-null, which it
   // isn't during construction (add_window hasn't been called yet).
   // Defer until realize when the window is fully attached to the application.
+  //
+  // s98 — accelerators are wired from the pure shortcut_registry() (Shortcuts.hpp),
+  // the same source the ShortcutsDialog documents from. Register a shortcut once
+  // there and both the binding and its dialog row follow; a pure test asserts the
+  // registry stays collision-free.
   signal_realize().connect([this]() {
     auto app = get_application();
     if (!app)
       return;
-    app->set_accels_for_action("win.new", {"<Ctrl>n"});
-    app->set_accels_for_action("win.open", {"<Ctrl>o"});
-    app->set_accels_for_action("win.open-sample", {"<Ctrl><Shift>d"});
-    app->set_accels_for_action("win.save", {"<Ctrl>s"});
-    app->set_accels_for_action("win.save-as", {"<Ctrl><Shift>s"});
-    app->set_accels_for_action("win.export", {"<Ctrl>e"});
-    app->set_accels_for_action("win.print", {"<Ctrl>p"});
-    app->set_accels_for_action("win.search", {"<Ctrl><Shift>g"});
-    app->set_accels_for_action("win.preferences", {"<Ctrl>comma"});
-    app->set_accels_for_action("win.pomodoro", {"<Ctrl><Shift>p"});
-    app->set_accels_for_action("win.batch-snapshot", {"<Ctrl><Shift>t"});
-    app->set_accels_for_action("win.quit", {"<Ctrl>q"});
-    app->set_accels_for_action("win.close-project", {"<Ctrl>w"});  // s89
-    app->set_accels_for_action("win.focus-mode", {"<Ctrl><Shift>f"});
-    app->set_accels_for_action("win.toggle-binder", {"<Ctrl><Shift>b"});
-    app->set_accels_for_action("win.toggle-inspector", {"<Ctrl><Shift>i"});
-    app->set_accels_for_action("win.close-all-tabs", {"<Ctrl><Shift>w"});
-    app->set_accels_for_action("win.timeline-prev",
-                               {"<Alt>Left", "<Ctrl><Shift>Tab"});
-    app->set_accels_for_action("win.timeline-next",
-                               {"<Alt>Right", "<Ctrl>Tab"});
-    app->set_accels_for_action("win.inspector-project", {"<Alt>p"});
-    app->set_accels_for_action("win.inspector-metadata", {"<Alt>m"});
-    app->set_accels_for_action("win.inspector-notes", {"<Alt>n"});
-    app->set_accels_for_action("win.inspector-snapshots", {"<Alt>s"});
-    app->set_accels_for_action("win.add-scene", {"<Ctrl><Alt>s"});
-    app->set_accels_for_action("win.add-character", {"<Ctrl><Alt>c"});
-    app->set_accels_for_action("win.add-place", {"<Ctrl><Alt>p"});
-    app->set_accels_for_action("win.add-reference", {"<Ctrl><Alt>r"});
-    app->set_accels_for_action("win.add-template", {"<Ctrl><Alt>t"});
-    app->set_accels_for_action("win.add-group-manuscript",
-                               {"<Ctrl><Alt><Shift>s"});
-    app->set_accels_for_action("win.add-group-characters",
-                               {"<Ctrl><Alt><Shift>c"});
-    app->set_accels_for_action("win.add-group-places", {"<Ctrl><Alt><Shift>p"});
-    app->set_accels_for_action("win.shortcuts", {"<Ctrl>question"});
+    for (const auto& s : shortcut_registry()) {
+      if (s.action.empty() || s.accels.empty())
+        continue;  // doc-only rows (editor/binder/timeline/focus handlers)
+      std::vector<Glib::ustring> accels(s.accels.begin(), s.accels.end());
+      app->set_accels_for_action(s.action, accels);
+    }
   });
 
   // Open Recent slots
@@ -2761,214 +2742,14 @@ void MainWindow::action_preferences() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Keyboard shortcuts window
 // ─────────────────────────────────────────────────────────────────────────────
+// s98 — replaced the deprecated GtkShortcutsWindow (deprecated GTK 4.18) with a
+// hand-rolled ShortcutsDialog (a plain Gtk::Window). Built lazily and reused; the
+// content lives in ShortcutsDialog.cpp, cross-checked against the accel table set
+// in this file's setup_action_accels().
 void MainWindow::show_shortcuts_window() {
-  static const char *UI = R"XML(
-<?xml version="1.0" encoding="UTF-8"?>
-<interface>
-  <object class="GtkShortcutsWindow" id="shortcuts_window">
-    <property name="modal">true</property>
-    <child>
-      <object class="GtkShortcutsSection">
-        <property name="title">Project</property>
-        <property name="section-name">project</property>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">File</property>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">New Project</property>
-              <property name="accelerator">&lt;Ctrl&gt;n</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Open…</property>
-              <property name="accelerator">&lt;Ctrl&gt;o</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Close Project</property>
-              <property name="accelerator">&lt;Ctrl&gt;w</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Save</property>
-              <property name="accelerator">&lt;Ctrl&gt;s</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Save As…</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Shift&gt;s</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Export…</property>
-              <property name="accelerator">&lt;Ctrl&gt;e</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Preferences…</property>
-              <property name="accelerator">&lt;Ctrl&gt;comma</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Keyboard Shortcuts</property>
-              <property name="accelerator">&lt;Ctrl&gt;question</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Quit</property>
-              <property name="accelerator">&lt;Ctrl&gt;q</property>
-            </object></child>
-          </object>
-        </child>
-      </object>
-    </child>
-    <child>
-      <object class="GtkShortcutsSection">
-        <property name="title">Writing</property>
-        <property name="section-name">writing</property>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Formatting</property>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Bold</property>
-              <property name="accelerator">&lt;Ctrl&gt;b</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Italic</property>
-              <property name="accelerator">&lt;Ctrl&gt;i</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Underline</property>
-              <property name="accelerator">&lt;Ctrl&gt;u</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Strikethrough</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Shift&gt;s</property>
-            </object></child>
-          </object>
-        </child>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">View</property>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Focus Mode</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Shift&gt;f</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Toggle Binder</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Shift&gt;b</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Toggle Inspector</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Shift&gt;i</property>
-            </object></child>
-          </object>
-        </child>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Timeline</property>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Close All Tabs</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Shift&gt;w</property>
-            </object></child>
-          </object>
-        </child>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Special Characters</property>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Word Joiner (zero-width no-break)</property>
-              <property name="accelerator">&lt;Ctrl&gt;space</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Non-breaking Space</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Shift&gt;space</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Non-breaking Hyphen</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Shift&gt;minus</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Soft Hyphen</property>
-              <property name="accelerator">&lt;Ctrl&gt;minus</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Zero-width Space</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Shift&gt;z</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Thin Space</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Shift&gt;t</property>
-            </object></child>
-          </object>
-        </child>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Screenplay</property>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Format Reference</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Shift&gt;h</property>
-            </object></child>
-          </object>
-        </child>
-      </object>
-    </child>
-    <child>
-      <object class="GtkShortcutsSection">
-        <property name="title">Binder</property>
-        <property name="section-name">binder</property>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Add Items</property>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Add Scene</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Alt&gt;s</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Add Character</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Alt&gt;c</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Add Place</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Alt&gt;p</property>
-            </object></child>
-          </object>
-        </child>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Add Groups</property>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Add Group (Manuscript)</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Alt&gt;&lt;Shift&gt;s</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Add Group (Characters)</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Alt&gt;&lt;Shift&gt;c</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Add Group (Places)</property>
-              <property name="accelerator">&lt;Ctrl&gt;&lt;Alt&gt;&lt;Shift&gt;p</property>
-            </object></child>
-          </object>
-        </child>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Navigation</property>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Move Up / Down</property>
-              <property name="accelerator">Up Down</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Enter Group</property>
-              <property name="accelerator">&lt;Shift&gt;Right</property>
-            </object></child>
-            <child><object class="GtkShortcutsShortcut">
-              <property name="title">Exit / Collapse Group</property>
-              <property name="accelerator">&lt;Shift&gt;Left</property>
-            </object></child>
-          </object>
-        </child>
-      </object>
-    </child>
-  </object>
-</interface>
-)XML";
-  auto builder = Gtk::Builder::create_from_string(UI);
-  auto *sw = builder->get_widget<Gtk::ShortcutsWindow>("shortcuts_window");
-  sw->set_transient_for(*this);
-  sw->present();
+  if (!m_shortcuts_dialog)
+    m_shortcuts_dialog = std::make_unique<ShortcutsDialog>();
+  m_shortcuts_dialog->show(*this);
 }
 
 void MainWindow::show_about_dialog() {

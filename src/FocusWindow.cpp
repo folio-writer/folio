@@ -42,6 +42,8 @@ FocusWindow::FocusWindow(DocumentModel& model, FolioPrefs& prefs, Editor& editor
     build_link_picker();   // s46 — focus-owned link picker overlay (top of the overlay stack)
     build_format_bar();    // s93 — toggleable formatting strip (styles + inline)
     build_toast();         // s46 — transient confirmation pill (topmost; snapshot/link feedback)
+    build_sel_hint();      // s98 — selection hint pill (styles discoverability)
+    build_shortcuts();     // s98 — Ctrl+? keyboard cheat sheet (centred card)
     wire_keys();
 
     set_child(m_overlay);
@@ -57,12 +59,18 @@ FocusWindow::FocusWindow(DocumentModel& model, FolioPrefs& prefs, Editor& editor
                    const Glib::RefPtr<Gtk::TextBuffer::Mark>& mark) {
                 if (!mark) return;
                 if (mark->get_name() == "insert" &&
-                    m_prefs.focus_typewriter_mode && is_active())
+                    m_prefs.focus_typewriter_mode && is_active() &&
+                    !m_mouse_btn_held)
                     queue_scroll_to_rail();
+                // s98 — selection edges move the "insert"/"selection_bound" marks;
+                // re-evaluate the styles hint on either.
+                const auto mn = mark->get_name();
+                if (mn == "insert" || mn == "selection_bound") update_sel_hint();
             });
         buf->signal_changed().connect([this]() {
             if (m_prefs.focus_typewriter_mode && is_active())
                 queue_scroll_to_rail();
+            update_sel_hint();   // s98 — typing collapses a selection → drop the hint
         });
     }
 
@@ -75,6 +83,14 @@ FocusWindow::FocusWindow(DocumentModel& model, FolioPrefs& prefs, Editor& editor
         apply_typewriter_padding();
         m_view.grab_focus();
         if (m_prefs.focus_typewriter_mode) queue_scroll_to_rail();
+    });
+    // s98 — when focus is no longer the active window (the editor came forward),
+    // the selection hint must step aside even without a buffer event; re-evaluate
+    // on every active-state change, and drop the cheat sheet if it was open.
+    property_is_active().signal_changed().connect([this]() {
+        if (!is_active() && m_shortcuts && m_shortcuts->get_visible())
+            m_shortcuts->set_visible(false);
+        update_sel_hint();
     });
     signal_close_request().connect([this]() -> bool {
         m_editor.save_current();
@@ -111,6 +127,22 @@ void FocusWindow::build_view() {
     // Bind to the editor's live buffer — created once, reused per node, so this
     // binding holds across every load_node without rebinding.
     m_view.set_buffer(m_editor.shared_buffer());
+
+    // s98 — track the primary mouse button so the typewriter re-rail can stand
+    // down while a drag-select is live (see m_mouse_btn_held / scroll_to_rail).
+    // CAPTURE phase so the flag flips before GTK's own selection handling runs;
+    // any rail already queued for idle still fires but no-ops on the held guard.
+    // Cleared on release AND cancel (a grab-break must not strand it on).
+    auto mouse = Gtk::GestureClick::create();
+    mouse->set_button(GDK_BUTTON_PRIMARY);
+    mouse->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
+    mouse->signal_pressed().connect(
+        [this](int, double, double) { m_mouse_btn_held = true; });
+    mouse->signal_released().connect(
+        [this](int, double, double) { m_mouse_btn_held = false; });
+    mouse->signal_cancel().connect(
+        [this](Gdk::EventSequence*) { m_mouse_btn_held = false; });
+    m_view.add_controller(mouse);
 
     m_scroll.set_name("focus-scroll");
     m_scroll.set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
@@ -304,10 +336,13 @@ void FocusWindow::build_view_chrome() {
         cr->translate(vb.origin.x, vb.origin.y);
         cr->set_source_rgba(0.80, 0.84, 0.96, 0.42);
 
-        int base = std::clamp(m_editor.body_font_size(), 6, 72);
-        int num_pt = std::max(8, (int)std::round(base * 0.62));
+        // s98 — line numbers must NOT scale with the body font. The editor's own
+        // gutter is a fixed `monospace 9`; focus matches it so the numbers stay a
+        // quiet constant-size rail no matter how large the focus body text is. The
+        // per-line vertical centring below still uses each line's own height, so
+        // the numbers track the (scaled) text lines while keeping a fixed glyph.
         auto layout = m_view.create_pango_layout("");
-        Pango::FontDescription fd("monospace " + std::to_string(num_pt));
+        Pango::FontDescription fd("monospace 9");
         layout->set_font_description(fd);
 
         // The text column starts at m_view's left margin (authoritative — buffer
@@ -399,6 +434,118 @@ void FocusWindow::flash_toast(const std::string& msg) {
         if (m_toast) m_toast->remove_css_class("show");
         return false;   // one-shot
     }, 1600);
+}
+
+// ── s98 — selection hint (styles discoverability) ────────────────────────────
+// Focus is chromeless: there is no visible toolbar, so the named-style dropdown
+// (the gap Scott hit) and the inline ops are reachable only through Ctrl+/, which
+// nothing signposts. This pill is the signpost. It rides the same bottom-centre
+// vocabulary as the toast but is PERSISTENT-while-relevant (not a timed flash):
+// it shows the instant there is a selection and the format bar is closed, and
+// steps aside the moment the selection collapses, the bar opens, or focus leaves.
+void FocusWindow::build_sel_hint() {
+    m_sel_hint = Gtk::make_managed<Gtk::Label>("");
+    m_sel_hint->set_name("focus-sel-hint");
+    m_sel_hint->add_css_class("focus-sel-hint");
+    m_sel_hint->set_use_markup(true);
+    m_sel_hint->set_markup(
+        "<b>Ctrl + /</b>  styles &amp; formatting"
+        "   \u00b7   <b>Ctrl + ?</b>  all shortcuts");
+    m_sel_hint->set_halign(Gtk::Align::CENTER);
+    m_sel_hint->set_valign(Gtk::Align::END);
+    m_sel_hint->set_margin_bottom(48);
+    m_sel_hint->set_can_target(false);   // never eats clicks; pure signpost
+    m_overlay.add_overlay(*m_sel_hint);
+
+    // Any overlay (switcher, link picker, drawer, format bar, cheat sheet) grabs
+    // focus away from the page when it opens and hands it back on close — so the
+    // view's own focus enter/leave is the single re-evaluation hook that keeps the
+    // hint correct across all of them without touching each open/close path.
+    auto foc = Gtk::EventControllerFocus::create();
+    foc->signal_enter().connect([this]() { update_sel_hint(); });
+    foc->signal_leave().connect([this]() { update_sel_hint(); });
+    m_view.add_controller(foc);
+}
+
+// Show iff: focus is the live surface, there is a non-empty selection, and the
+// format bar is not already open (if it is, the writer has plainly found styles).
+void FocusWindow::update_sel_hint() {
+    if (!m_sel_hint) return;
+    const bool other_overlay =
+        (m_fmt_bar    && m_fmt_bar->get_visible())    ||
+        (m_switcher   && m_switcher->get_visible())   ||
+        (m_link_picker&& m_link_picker->get_visible())||
+        (m_shortcuts  && m_shortcuts->get_visible())  ||
+        (m_drawer     && m_drawer->get_reveal_child());
+    bool show = false;
+    if (is_active() && !other_overlay) {
+        if (auto buf = m_editor.shared_buffer()) {
+            Gtk::TextBuffer::iterator s, e;
+            show = buf->get_selection_bounds(s, e);   // false ⇒ bare caret
+        }
+    }
+    if (show) m_sel_hint->add_css_class("show");
+    else      m_sel_hint->remove_css_class("show");
+}
+
+// ── s98 — keyboard cheat sheet (Ctrl+?) ──────────────────────────────────────
+// A centred card on the same lifted-card look as the switcher/link picker (a
+// Gtk::ShortcutsWindow would arrive in the system theme and break the dark focus
+// aesthetic). One title + a two-column key/action grid. Dismissed through the
+// existing Esc ladder or by Ctrl+? / F1 again.
+void FocusWindow::build_shortcuts() {
+    auto* card = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 10);
+    card->set_name("focus-shortcuts");
+    card->add_css_class("focus-switcher");   // reuse the dark lifted card
+    card->add_css_class("focus-shortcuts");
+    card->set_halign(Gtk::Align::CENTER);
+    card->set_valign(Gtk::Align::CENTER);
+    card->set_size_request(420, -1);
+
+    auto* title = Gtk::make_managed<Gtk::Label>("Keyboard shortcuts");
+    title->add_css_class("focus-link-title");
+    title->set_halign(Gtk::Align::START);
+    card->append(*title);
+
+    auto* grid = Gtk::make_managed<Gtk::Grid>();
+    grid->set_row_spacing(7);
+    grid->set_column_spacing(20);
+    int row = 0;
+    auto add_row = [&](const char* keys, const char* action) {
+        auto* k = Gtk::make_managed<Gtk::Label>("");
+        k->set_markup(std::string("<b>") + keys + "</b>");
+        k->add_css_class("focus-sc-key");
+        k->set_halign(Gtk::Align::START);
+        k->set_xalign(0.0f);
+        auto* a = Gtk::make_managed<Gtk::Label>(action);
+        a->add_css_class("focus-sc-action");
+        a->set_halign(Gtk::Align::START);
+        a->set_xalign(0.0f);
+        a->set_hexpand(true);
+        grid->attach(*k, 0, row, 1, 1);
+        grid->attach(*a, 1, row, 1, 1);
+        ++row;
+    };
+    add_row("Ctrl + /",      "Styles & formatting bar");
+    add_row("Ctrl + B/I/U",  "Bold / italic / underline selection");
+    add_row("Ctrl + P",      "Jump to scene\u2026");
+    add_row("Ctrl + K",      "Insert / edit link");
+    add_row("Ctrl + ]  /  [","Next / previous scene");
+    add_row("Ctrl + ,",      "Focus settings");
+    add_row("Ctrl + ?",      "This shortcut list");
+    add_row("Esc",           "Step back / leave focus");
+    card->append(*grid);
+
+    m_shortcuts = card;
+    m_overlay.add_overlay(*card);
+    card->set_visible(false);
+}
+
+void FocusWindow::toggle_shortcuts() {
+    if (!m_shortcuts) return;
+    const bool to_show = !m_shortcuts->get_visible();
+    m_shortcuts->set_visible(to_show);
+    if (!to_show) m_view.grab_focus();
 }
 
 void FocusWindow::build_drawer() {
@@ -764,6 +911,18 @@ void FocusWindow::build_drawer() {
     m_bg_slider_grp->append(*m_bg_clear);
     body->append(*m_bg_slider_grp);
 
+    // s98 — a permanent door to the cheat sheet at the foot of the drawer, so the
+    // Ctrl+? reference is discoverable without already knowing the chord.
+    auto* sc_btn = Gtk::make_managed<Gtk::Button>("Keyboard shortcuts  (Ctrl + ?)");
+    sc_btn->set_name("focus-shortcuts-door");
+    sc_btn->add_css_class("flat");
+    sc_btn->add_css_class("focus-drawer-action");
+    sc_btn->signal_clicked().connect([this]() {
+        close_drawer();
+        if (m_shortcuts && !m_shortcuts->get_visible()) toggle_shortcuts();
+    });
+    body->append(*sc_btn);
+
     // ── Revealer (the slide animation) ────────────────────────────────────────
     m_drawer = Gtk::make_managed<Gtk::Revealer>();
     m_drawer->set_transition_type(Gtk::RevealerTransitionType::SLIDE_RIGHT);
@@ -1070,6 +1229,7 @@ void FocusWindow::toggle_format_bar() {
     rebuild_fmt_styles();                 // pick up any style edits since last open
     m_fmt_bar->set_visible(true);
     if (m_fmt_style_dd) m_fmt_style_dd->grab_focus();  // dropdown, not the view
+    update_sel_hint();                    // s98 — bar open ⇒ drop the styles hint
 }
 
 void FocusWindow::hide_format_bar() {
@@ -1077,6 +1237,7 @@ void FocusWindow::hide_format_bar() {
         m_fmt_bar->set_visible(false);
         m_view.grab_focus();
     }
+    update_sel_hint();                    // s98 — bar closed ⇒ re-evaluate the hint
 }
 
 // The shared-buffer caret/selection as character offsets, ordered low→high. A
@@ -1118,7 +1279,9 @@ void FocusWindow::wire_keys() {
             const bool ctrl =
                 (mods & Gdk::ModifierType::CONTROL_MASK) == Gdk::ModifierType::CONTROL_MASK;
             if (keyval == GDK_KEY_Escape) {
-                if (m_fmt_bar && m_fmt_bar->get_visible()) {
+                if (m_shortcuts && m_shortcuts->get_visible()) {
+                    toggle_shortcuts();
+                } else if (m_fmt_bar && m_fmt_bar->get_visible()) {
                     hide_format_bar();
                 } else if (m_link_picker && m_link_picker->get_visible()) {
                     m_link_picker->set_visible(false);
@@ -1134,6 +1297,18 @@ void FocusWindow::wire_keys() {
                 return true;
             }
             if (ctrl && (keyval == GDK_KEY_comma)) { toggle_drawer(); return true; }
+            // s98 — Ctrl+? (Ctrl+Shift+/ → '?' on most layouts) and F1 open the
+            // keyboard cheat sheet. Matches the GNOME shortcuts-window convention
+            // and pairs with Ctrl+/ (the format bar). Both spellings of the chord
+            // are accepted so layout/keymap variance doesn't lose it.
+            const bool shift =
+                (mods & Gdk::ModifierType::SHIFT_MASK) == Gdk::ModifierType::SHIFT_MASK;
+            if (keyval == GDK_KEY_F1 ||
+                (ctrl && (keyval == GDK_KEY_question ||
+                          (shift && keyval == GDK_KEY_slash)))) {
+                toggle_shortcuts();
+                return true;
+            }
             // s93 — Ctrl+/ toggles the format bar (styles + inline). Ctrl+B/I/U
             // apply inline directly on the live focus selection so the writer's
             // muscle memory works without opening the bar (dead in focus before
@@ -1240,6 +1415,10 @@ double FocusWindow::focus_typewriter_pos() const {
 // caret (top_margin + iter_y) is its absolute Y within the scrollable content — no
 // paper-card nesting to unwind like the editor has.
 void FocusWindow::scroll_to_rail() {
+    // s98 — never re-rail while a drag-select is in progress. This is the single
+    // authoritative gate covering every caller (mark_set, signal_changed, map,
+    // toggle); scrolling mid-drag is exactly what makes the selection bounce.
+    if (m_mouse_btn_held) return;
     auto vadj = m_scroll.get_vadjustment();
     if (!vadj) return;
     double vp = vadj->get_page_size();

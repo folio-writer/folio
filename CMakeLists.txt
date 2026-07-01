@@ -151,6 +151,8 @@ set(SOURCES
     src/Application.cpp
     src/BackupManager.cpp
     src/MainWindow.cpp
+    src/Shortcuts.cpp             # s98 — pure shortcut registry (accels + dialog, one source)
+    src/ShortcutsDialog.cpp       # s98 — keyboard/mouse reference (replaces deprecated GtkShortcutsWindow)
     src/FocusWindow.cpp           # s21 — distraction-free window on the shared editor buffer
     src/color/Color.cpp           # s45 — color model (sRGB/OKLCH/hex), ported from Curvz
     src/ColorPickerRecents.cpp    # s45 — recent-colour history (~/.config/folio)
@@ -175,6 +177,7 @@ set(SOURCES
     src/ObjectForm.cpp            # s31 — template-driven object form widget (renders a FormPlan)
     src/TemplateBuilderDialog.cpp # s33 — schema editor dialog (thin GTK over TemplateEdit)
     src/SnapshotDiff.cpp          # extracted from Inspector.cpp
+    src/DiffView.cpp              # s98 — side-by-side snapshot diff, editor view
     src/DocumentModel.cpp
     src/Iid.cpp                   # s19 — pure cross-layer part identity (GTK-free, tested)
     src/MindMap.cpp               # s47 — pure mind-map lens: glyph derivation (GTK-free, tested)
