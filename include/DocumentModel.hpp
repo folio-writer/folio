@@ -293,6 +293,11 @@ struct Annotation {
     std::string color_hex   = "#fef08a";  // default: yellow
     std::string kind        = "Writer";
     std::string created_at;               // ISO-8601 timestamp
+    // s99/s102 — the editorial "who". "" = self/legacy (in-app annotations);
+    // "claude" | "<editor-id>" for annotations imported via a .folioedit pass.
+    // Makes the annotation layer multi-author (DESIGN_editorialization §3);
+    // import stamps it from pass.source, the report can filter by it.
+    std::string source;                   // "" = self/legacy
     json to_json() const;
     void from_json(const json& j);
 };

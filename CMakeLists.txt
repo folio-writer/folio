@@ -169,6 +169,7 @@ set(SOURCES
     src/EditorRuler.cpp           # horizontal ruler above text view
     src/RulerManagerDialog.cpp    # fine-tune ruler values numerically
     src/AnnotationReportDialog.cpp # project-wide annotation report
+    src/InterchangeLedger.cpp     # s102 — author-side editorial-pass ledger (pure, in the .folio bundle)
     src/TextSubstitution.cpp      # smart quotes, em dash, ellipsis, autocorrect
     src/SpellChecker.cpp          # enchant-2 spell check wrapper
     src/SpellCheckHighlighter.cpp # buffer tag management + squiggle rendering

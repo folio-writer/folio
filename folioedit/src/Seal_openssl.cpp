@@ -16,6 +16,7 @@
 // offset of a possibly-empty ciphertext/plaintext buffer.
 //
 #include "folioedit/Seal.hpp"
+#include "folioedit/Passphrase.hpp"   // canonicalize_passphrase -- the phrase->key seam
 
 #include <climits>
 #include <cstring>
@@ -190,7 +191,9 @@ Envelope seal_with_passphrase(const bytes& plaintext, const std::string& passphr
     if (RAND_bytes(salt.data(), SALT_LEN) != 1)
         throw std::runtime_error("folioedit: RAND_bytes (salt) failed");
 
-    const bytes key = derive_key(passphrase, salt, iters);
+    // Canonicalize at the seam: the SAME fold runs on open, so spacing/case/
+    // quoting of the phrase can never change the derived key (Passphrase.hpp).
+    const bytes key = derive_key(canonicalize_passphrase(passphrase), salt, iters);
     Envelope env    = seal(plaintext, key);   // fills nonce / ciphertext / tag
     env.kdf_id      = KdfId::Pbkdf2HmacSha256;
     env.kdf_iters   = iters;
@@ -201,7 +204,7 @@ Envelope seal_with_passphrase(const bytes& plaintext, const std::string& passphr
 bytes unseal_with_passphrase(const Envelope& env, const std::string& passphrase) {
     if (env.kdf_id != KdfId::Pbkdf2HmacSha256)
         throw std::runtime_error("folioedit: envelope carries no PBKDF2 KDF params");
-    const bytes key = derive_key(passphrase, env.salt, env.kdf_iters);
+    const bytes key = derive_key(canonicalize_passphrase(passphrase), env.salt, env.kdf_iters);
     return unseal(env, key);   // wrong passphrase -> wrong key -> tag fails -> throw
 }
 

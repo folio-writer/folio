@@ -12,6 +12,8 @@ add_library(folioedit STATIC
     src/Format.cpp
     src/Custody.cpp
     src/KeyHex.cpp         # pure key<->hex codec (no crypto, no json)
+    src/Passphrase.cpp     # pure phrase generator + canonicalizer (no crypto, no json)
+    src/Anchor.cpp         # pure re-anchor ladder: offset -> quote -> floating (no crypto, no json)
     src/Vocabulary.cpp     # the shared command/kind vocabulary (pure data)
     src/Archive.cpp        # whole-file open/save orchestration + binds hashes
     src/Seal_openssl.cpp   # AES-256-GCM seal + PBKDF2 KDF (includes <openssl/*>)
@@ -122,6 +124,12 @@ if(FOLIOEDIT_BUILD_TESTS)
 
     add_executable(test_folioedit_vocab tests/TEST_vocab.cpp)
     target_link_libraries(test_folioedit_vocab PRIVATE folioedit)
+
+    add_executable(test_folioedit_passphrase tests/TEST_passphrase.cpp)
+    target_link_libraries(test_folioedit_passphrase PRIVATE folioedit)
+
+    add_executable(test_folioedit_anchor tests/TEST_anchor.cpp)
+    target_link_libraries(test_folioedit_anchor PRIVATE folioedit)
 endif()
 
 # ── CLI (opt-in) ─────────────────────────────────────────────────────────────

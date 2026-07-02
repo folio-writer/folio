@@ -63,7 +63,7 @@ void Note::from_json(const json& j) {
 }
 
 json Annotation::to_json() const {
-    return {
+    json j = {
         {"id",          id},
         {"range_start", range_start},
         {"range_end",   range_end},
@@ -72,6 +72,10 @@ json Annotation::to_json() const {
         {"kind",        kind},
         {"created_at",  created_at}
     };
+    // Omit-when-empty: legacy/self annotations stay byte-identical on disk, so
+    // adding this field diffs cleanly and old projects re-save unchanged.
+    if (!source.empty()) j["source"] = source;
+    return j;
 }
 void Annotation::from_json(const json& j) {
     id          = j.value("id",          0);
@@ -81,6 +85,7 @@ void Annotation::from_json(const json& j) {
     color_hex   = j.value("color_hex",   "#fef08a");
     kind        = j.value("kind",        "Writer");
     created_at  = j.value("created_at",  "");
+    source      = j.value("source",      "");   // absent -> self/legacy
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
