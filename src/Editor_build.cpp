@@ -2849,6 +2849,12 @@ void Editor::build_editor_area() {
   // Inspector's Diff button via Editor::open_diff). Close returns to the prior view.
   m_view_stack.add(m_diff_view, "diff");
   m_diff_view.set_close_callback([this]() { close_diff(); });
+
+  // s104 — the editorial ledger, an owned read-only surface (launched from
+  // Share ▸ Editorial Ledger… via Editor::open_ledger). Close returns to the
+  // prior view, like the diff surface.
+  m_view_stack.add(m_ledger_view, "ledger");
+  m_ledger_view.set_close_callback([this]() { close_ledger(); });
   // s98 — picked snapshot text → annotation on the matching Current paragraph.
   m_diff_view.on_add_annotation =
       [this](const BinderNode *n, int idx, const std::string &t) {

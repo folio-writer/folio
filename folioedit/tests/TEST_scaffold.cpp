@@ -6,8 +6,8 @@
 //
 // Build+run (bare, copy-paste as a block):
 /*
-g++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I /home/claude/sbox -I ../include TEST_scaffold.cpp ../src/Format.cpp ../src/Custody.cpp ../src/Seal_openssl.cpp -lcrypto -o test_scaffold && ./test_scaffold
-clang++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include TEST_scaffold.cpp ../src/Format.cpp ../src/Custody.cpp ../src/Seal_openssl.cpp -I "$OSSL/include" "$OSSL/libcrypto.a" -ldl -lpthread -o test_scaffold && ./test_scaffold
+g++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I /home/claude/sbox -I ../include TEST_scaffold.cpp ../src/Format.cpp ../src/Custody.cpp ../src/Sha256.cpp ../src/Seal_openssl.cpp -lcrypto -o test_scaffold && ./test_scaffold
+clang++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include TEST_scaffold.cpp ../src/Format.cpp ../src/Custody.cpp ../src/Sha256.cpp ../src/Seal_openssl.cpp -I "$OSSL/include" "$OSSL/libcrypto.a" -ldl -lpthread -o test_scaffold && ./test_scaffold
 */
 
 #include "folioedit/Envelope.hpp"

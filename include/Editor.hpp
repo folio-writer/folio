@@ -14,6 +14,7 @@
 #include "MindMapCanvas.hpp"   // s48 — the fourth lens, hosted in the view-stack as "map"
 #include "TimelineSurface.hpp" // s80 — the Relationship Timeline lens, hosted as "timeline-lens"
 #include "DiffView.hpp"        // s98 — the side-by-side snapshot diff, hosted as "diff"
+#include "LedgerSurface.hpp"   // s104 — the editorial ledger, hosted as "ledger"
 #include "CustomMindMapCanvas.hpp" // s51 — the OWNED mind-map document surface (a Reference form)
 #include "JournalSurface.hpp"      // s54 — the journal's owned writing surface (its own buffer + serializer)
 #include "GallerySurface.hpp"      // s61 — the gallery's owned surface (lens over the image pool)
@@ -171,6 +172,11 @@ public:
   // whatever view was active before.
   void open_diff(const BinderNode* node, int snap_idx);
   void close_diff();
+  // s104 — enter/leave the editorial ledger view (an owned surface like diff,
+  // launched from Share ▸ Editorial Ledger…). Read-only; returns to the prior
+  // view. The caller hands in the project's ledger snapshot.
+  void open_ledger(const InterchangeLedger& ledger);
+  void close_ledger();
   // s81 — re-project the active whole-graph lens (Map/Timeline) after a model
   // mutation that happened while it was already showing (e.g. pattern apply).
   void refresh_active_lens();
@@ -694,6 +700,12 @@ private:
   // prior view. m_view_before_diff is where "back to writing" returns to.
   Folio::DiffView m_diff_view;
   ViewMode        m_view_before_diff = ViewMode::Write;
+
+  // s104 — the editorial ledger surface (added to m_view_stack as "ledger"). An
+  // owned read-only surface launched from Share ▸ Editorial Ledger… via
+  // Editor::open_ledger(); close returns to the view active before it.
+  Folio::LedgerSurface m_ledger_view;
+  ViewMode             m_view_before_ledger = ViewMode::Write;
 
   // s51 — the OWNED mind-map document surface (added to m_view_stack as "cmm").
   // Shown in Write/Joined when the current node is a Mind Map Reference form,

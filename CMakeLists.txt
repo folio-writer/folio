@@ -170,6 +170,7 @@ set(SOURCES
     src/RulerManagerDialog.cpp    # fine-tune ruler values numerically
     src/AnnotationReportDialog.cpp # project-wide annotation report
     src/InterchangeLedger.cpp     # s102 — author-side editorial-pass ledger (pure, in the .folio bundle)
+    src/Interchange.cpp           # s103 — export glue: DocumentModel scenes -> sealed .folioedit + ledger entry
     src/TextSubstitution.cpp      # smart quotes, em dash, ellipsis, autocorrect
     src/SpellChecker.cpp          # enchant-2 spell check wrapper
     src/SpellCheckHighlighter.cpp # buffer tag management + squiggle rendering
@@ -179,6 +180,7 @@ set(SOURCES
     src/TemplateBuilderDialog.cpp # s33 — schema editor dialog (thin GTK over TemplateEdit)
     src/SnapshotDiff.cpp          # extracted from Inspector.cpp
     src/DiffView.cpp              # s98 — side-by-side snapshot diff, editor view
+    src/LedgerSurface.cpp         # s104 — editorial ledger, editor view (read-only card list)
     src/DocumentModel.cpp
     src/Iid.cpp                   # s19 — pure cross-layer part identity (GTK-free, tested)
     src/MindMap.cpp               # s47 — pure mind-map lens: glyph derivation (GTK-free, tested)
@@ -247,6 +249,17 @@ set(SOURCES
 # (the subdir reuses that target). Folio links it below; the engine never links
 # back — one-way dependency, enforced by the directory boundary.
 add_subdirectory(folioedit)
+
+# The GUI app is SEALED-only: it links the full folioedit (Interchange seals real
+# passes) and cannot be backed by a plain, crypto-less engine. So a plain-engine
+# tree (-DFOLIOEDIT_NO_CRYPTO=ON) configures folioedit + its CLI + tests ONLY and
+# stops here, before the folio executable -- `cmake --build` in such a tree builds
+# the engine face without ever trying (and failing) to link the app. (s18.7.)
+if(FOLIOEDIT_NO_CRYPTO)
+    message(STATUS "Folio: FOLIOEDIT_NO_CRYPTO=ON -- plain engine/CLI/tests only; "
+                   "the sealed GUI app is not built in this tree.")
+    return()
+endif()
 
 add_executable(folio ${SOURCES})
 

@@ -7,8 +7,8 @@
 //
 // Build+run (bare, copy-paste as a block):
 /*
-g++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I /home/claude/sbox -I ../include TEST_kdf.cpp ../src/Seal_openssl.cpp ../src/Format.cpp ../src/Custody.cpp -lcrypto -o test_kdf && ./test_kdf
-clang++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include -I "$OSSL/include" TEST_kdf.cpp ../src/Seal_openssl.cpp ../src/Format.cpp ../src/Custody.cpp "$OSSL/libcrypto.a" -ldl -lpthread -o test_kdf && ./test_kdf
+g++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I /home/claude/sbox -I ../include TEST_kdf.cpp ../src/Seal_openssl.cpp ../src/Format.cpp ../src/Custody.cpp ../src/Sha256.cpp -lcrypto -o test_kdf && ./test_kdf
+clang++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include -I "$OSSL/include" TEST_kdf.cpp ../src/Seal_openssl.cpp ../src/Format.cpp ../src/Custody.cpp ../src/Sha256.cpp "$OSSL/libcrypto.a" -ldl -lpthread -o test_kdf && ./test_kdf
 */
 
 #include "folioedit/Seal.hpp"

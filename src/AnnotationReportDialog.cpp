@@ -7,6 +7,7 @@
 #include <gtkmm/gestureclick.h>
 #include <gtkmm/cssprovider.h>
 #include <algorithm>
+#include <set>
 #include <sstream>
 
 namespace Folio {
@@ -43,6 +44,18 @@ void AnnotationReportDialog::build() {
     m_filter_kind->property_selected().signal_changed().connect(
         [this]() { rebuild_list(); });
     m_toolbar.append(*m_filter_kind);
+
+    // s103 — source filter (multi-author annotations from editorial passes). The
+    // model is filled by rebuild_source_filter(): item 0 = All, 1 = Mine (self /
+    // legacy), 2..N = each distinct imported source. Built before the first
+    // rebuild_list() so a selection is valid.
+    auto src_items = Gtk::StringList::create({"All sources", "Mine"});
+    m_filter_source = Gtk::make_managed<Gtk::DropDown>(src_items);
+    m_filter_source->set_selected(0);
+    m_filter_source->set_tooltip_text("Filter by who made the comment");
+    m_filter_source->property_selected().signal_changed().connect(
+        [this]() { rebuild_list(); });
+    m_toolbar.append(*m_filter_source);
 
     auto* sort_lbl = Gtk::make_managed<Gtk::Label>("Sort:");
     sort_lbl->add_css_class("stat-label");
@@ -113,6 +126,7 @@ void AnnotationReportDialog::build() {
     m_vbox.append(m_scroll);
     set_child(m_vbox);
 
+    rebuild_source_filter();   // s103 — populate the source dropdown, then list
     rebuild_list();
 }
 
@@ -180,6 +194,10 @@ void AnnotationReportDialog::rebuild_list() {
     }
     std::string search_text = m_search.get_text().lowercase();
 
+    // s103 — source filter selection: 0 = All, 1 = Mine (self/legacy, empty
+    // source), 2..N = m_sources[sel-2].
+    int src_sel = m_filter_source ? static_cast<int>(m_filter_source->get_selected()) : 0;
+
     // Sort mode: 0=Binder order, 1=Date newest, 2=Kind
     guint sort_sel = m_sort_dd ? m_sort_dd->get_selected() : 0;
 
@@ -198,6 +216,14 @@ void AnnotationReportDialog::rebuild_list() {
             for (auto& node : nodes) {
                 for (const auto& ann : node.annotations) {
                     if (!filter_kind.empty() && ann.kind != filter_kind) continue;
+                    if (src_sel == 1) {
+                        if (!ann.source.empty()) continue;          // Mine = self/legacy only
+                    } else if (src_sel >= 2) {
+                        int idx = src_sel - 2;
+                        if (idx >= static_cast<int>(m_sources.size()) ||
+                            ann.source != m_sources[static_cast<std::size_t>(idx)])
+                            continue;
+                    }
                     if (!search_text.empty()) {
                         std::string h = ann.text;
                         for (auto& c : h) c = std::tolower((unsigned char)c);
@@ -342,7 +368,44 @@ void AnnotationReportDialog::rebuild_list() {
     }
 }
 
+void AnnotationReportDialog::rebuild_source_filter() {
+    if (!m_filter_source) return;
+
+    // Remember the current selection by value so a rebuild keeps the user's pick.
+    std::string keep;                          // "" = All, "\x01" = Mine, else a source
+    guint cur = m_filter_source->get_selected();
+    if (cur == 1) keep = "\x01";
+    else if (cur >= 2 && (cur - 2) < m_sources.size())
+        keep = m_sources[cur - 2];
+
+    // Collect the distinct non-empty sources present across manuscript annotations.
+    std::set<std::string> found;
+    std::function<void(std::vector<BinderNode>&)> walk =
+        [&](std::vector<BinderNode>& nodes) {
+            for (auto& n : nodes) {
+                for (const auto& a : n.annotations)
+                    if (!a.source.empty()) found.insert(a.source);
+                if (!n.children.empty()) walk(n.children);
+            }
+        };
+    walk(m_model.root(Section::Manuscript));
+    m_sources.assign(found.begin(), found.end());
+
+    std::vector<Glib::ustring> items = {"All sources", "Mine"};
+    for (const auto& s : m_sources) items.push_back(s);
+    m_filter_source->set_model(Gtk::StringList::create(items));
+
+    guint want = 0;
+    if (keep == "\x01") want = 1;
+    else if (!keep.empty()) {
+        for (std::size_t i = 0; i < m_sources.size(); ++i)
+            if (m_sources[i] == keep) { want = static_cast<guint>(i + 2); break; }
+    }
+    m_filter_source->set_selected(want);
+}
+
 void AnnotationReportDialog::refresh() {
+    rebuild_source_filter();
     rebuild_list();
 }
 

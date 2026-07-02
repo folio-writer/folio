@@ -1057,6 +1057,20 @@ void Editor::close_diff() {
   set_view_mode(m_view_before_diff);
 }
 
+// s104 — editorial ledger view (owned surface, mirrors open_diff/close_diff).
+void Editor::open_ledger(const InterchangeLedger& ledger) {
+  m_view_before_ledger = m_view_mode;
+  m_ledger_view.refresh(ledger);
+  m_toolbar.set_visible(false);
+  m_grid_toolbar.set_visible(false);
+  m_ruler.set_visible(false);
+  m_view_stack.set_visible_child(m_ledger_view);
+}
+
+void Editor::close_ledger() {
+  set_view_mode(m_view_before_ledger);
+}
+
 
 // live view. Map and Timeline cache a projection that is only rebuilt on entry
 // (truth → projection, never cached across a mutation); a bulk mutation while one

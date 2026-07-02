@@ -13,9 +13,10 @@
 // to the local clock when offline (the file records which it got).
 // (DESIGN_editorialization s16.3 / s16.4.)
 //
-// SHA-256 / Ed25519 come from libcrypto -- so Custody.cpp links OpenSSL, but this
-// HEADER stays crypto-type-free (the rule is: no EVP/openssl types in public
-// headers; only the .cpp sees <openssl/*>).
+// SHA-256 is now pure STL (Sha256.cpp, s18.4), so Custody.cpp links NO OpenSSL;
+// libcrypto is confined to the three *_openssl.cpp files (AES-GCM / Ed25519 /
+// RFC-3161). Ed25519 signatures over the event hash are added by Identity, not
+// here. This header was always crypto-type-free and stays that way.
 //
 #include <string>
 #include <vector>
@@ -53,7 +54,8 @@ CustodyEvent_Kind kind_from_str(const std::string& s);
 std::string time_to_str(TimeSource t);
 TimeSource time_from_str(const std::string& s);
 
-// SHA-256 as lowercase hex (via libcrypto; defined in Custody.cpp).
+// SHA-256 as lowercase hex. Pure STL, FIPS 180-4, defined in Sha256.cpp (s18.4);
+// equivalence-gated against libcrypto so on-disk custody hashes are unchanged.
 std::string sha256_hex(const std::string& data);
 
 // hash = SHA256(prev_hash + contents).

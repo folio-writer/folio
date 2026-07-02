@@ -26,6 +26,7 @@ public:
 private:
     void build();
     void rebuild_list();
+    void rebuild_source_filter();   // s103 — repopulate the source dropdown from current annotations
     std::string excerpt_from(BinderNode* node, int start, int end) const;
 
     DocumentModel& m_model;
@@ -34,6 +35,8 @@ private:
     Gtk::Box            m_toolbar;
     Gtk::SearchEntry    m_search;
     Gtk::DropDown*      m_filter_kind  = nullptr;
+    Gtk::DropDown*      m_filter_source = nullptr;   // s103 — "All / Mine / <editor>"
+    std::vector<std::string> m_sources;              // s103 — distinct sources, parallel to dropdown items 2..N
     Gtk::DropDown*      m_sort_dd      = nullptr;
     Gtk::Button*        m_export_btn   = nullptr;
     Gtk::ScrolledWindow m_scroll;

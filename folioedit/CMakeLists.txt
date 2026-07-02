@@ -8,18 +8,38 @@
 # never links DocumentModel and never sees GTK. (DESIGN_editorialization s16.8.)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# folioedit-plain: the s18 two-faces flag. ON omits the three OpenSSL TUs and
+# the seal/sign/timestamp verbs (compiled out via FOLIOEDIT_NO_CRYPTO), leaving
+# the pure core (Format, Custody, Sha256, KeyHex, Passphrase, Anchor, Vocabulary,
+# Archive's plain read/write + hashes) + the CLI's info/annotate/del. Links NO
+# OpenSSL, builds anywhere/any arch in seconds. A build FLAG on one codebase (not
+# a separate target), so the two faces cannot drift. (s18.7.)
+#   cmake -B build-plain -DFOLIOEDIT_NO_CRYPTO=ON -DFOLIOEDIT_BUILD_CLI=ON
+option(FOLIOEDIT_NO_CRYPTO "Build the plain face: omit the OpenSSL TUs + seal/sign/timestamp verbs" OFF)
+
 add_library(folioedit STATIC
     src/Format.cpp
     src/Custody.cpp
+    src/Sha256.cpp         # pure-STL FIPS 180-4 SHA-256 (s18.4; replaces libcrypto's)
     src/KeyHex.cpp         # pure key<->hex codec (no crypto, no json)
     src/Passphrase.cpp     # pure phrase generator + canonicalizer (no crypto, no json)
     src/Anchor.cpp         # pure re-anchor ladder: offset -> quote -> floating (no crypto, no json)
     src/Vocabulary.cpp     # the shared command/kind vocabulary (pure data)
     src/Archive.cpp        # whole-file open/save orchestration + binds hashes
-    src/Seal_openssl.cpp   # AES-256-GCM seal + PBKDF2 KDF (includes <openssl/*>)
-    src/Identity_openssl.cpp   # Ed25519 keypairs + event signing (includes <openssl/*>)
-    src/Timestamp_openssl.cpp  # RFC-3161 trusted timestamps (includes <openssl/*>)
 )
+
+if(NOT FOLIOEDIT_NO_CRYPTO)
+    target_sources(folioedit PRIVATE
+        src/Seal_openssl.cpp       # AES-256-GCM seal + PBKDF2 KDF (includes <openssl/*>)
+        src/Identity_openssl.cpp   # Ed25519 keypairs + event signing (includes <openssl/*>)
+        src/Timestamp_openssl.cpp  # RFC-3161 trusted timestamps (includes <openssl/*>)
+    )
+else()
+    # PUBLIC so the library, the CLI, and any consumer all compile out the sealed
+    # API together -- the header guards key off this exact define.
+    target_compile_definitions(folioedit PUBLIC FOLIOEDIT_NO_CRYPTO)
+    message(STATUS "folioedit: PLAIN face (FOLIOEDIT_NO_CRYPTO) -- no OpenSSL, no seal/sign/timestamp")
+endif()
 
 target_include_directories(folioedit PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_features(folioedit PUBLIC cxx_std_20)
@@ -36,15 +56,19 @@ endif()
 find_package(Threads REQUIRED)
 
 # ── OpenSSL (libcrypto, static) ──────────────────────────────────────────────
-# Default: fetch + build a pinned OpenSSL 3.5.7 from source. OpenSSL is NOT a
-# CMake project (it drives its own Configure/make), so this is ExternalProject,
-# not FetchContent_MakeAvailable. Nothing is committed to the repo; a fresh
-# clone builds it once (~1 min with -j), cached in the build dir thereafter.
+# Skipped entirely for the plain face (FOLIOEDIT_NO_CRYPTO) -- the whole reason
+# folioedit-plain builds anywhere in seconds is that this block does not run.
+#
+# Default (sealed): fetch + build a pinned OpenSSL 3.5.7 from source. OpenSSL is
+# NOT a CMake project (it drives its own Configure/make), so this is
+# ExternalProject, not FetchContent_MakeAvailable. Nothing is committed to the
+# repo; a fresh clone builds it once (~1 min with -j), cached thereafter.
 # libcrypto only -- no libssl (TLS, unused), no zlib.
 #
 # Override for local dev / an existing static build:
 #   cmake -B build -DFOLIOEDIT_OPENSSL_ROOT=~/Develop/openssl
 # links that build's libcrypto.a directly and skips the fetch entirely (instant).
+if(NOT FOLIOEDIT_NO_CRYPTO)
 set(FOLIOEDIT_OPENSSL_ROOT "" CACHE PATH
     "Existing static OpenSSL build (contains libcrypto.a + include/). Empty = fetch+build 3.5.7.")
 
@@ -86,41 +110,32 @@ else()
     target_link_libraries(folioedit PRIVATE
         "${INSTALL_DIR}/lib/libcrypto.a" ${CMAKE_DL_LIBS} Threads::Threads)
 endif()
+endif()  # NOT FOLIOEDIT_NO_CRYPTO
 
 # ── Sandbox tests (opt-in) ───────────────────────────────────────────────────
 # Off by default so the normal Folio build doesn't compile them. Enable with
 #   cmake -B build -DFOLIOEDIT_BUILD_TESTS=ON
 option(FOLIOEDIT_BUILD_TESTS "Build folioedit sandbox tests" OFF)
 if(FOLIOEDIT_BUILD_TESTS)
-    add_executable(test_folioedit_scaffold tests/TEST_scaffold.cpp)
-    target_link_libraries(test_folioedit_scaffold PRIVATE folioedit)
-
+    # ── pure tests (build in BOTH faces; link no libcrypto) ──────────────────
     add_executable(test_folioedit_format tests/TEST_format.cpp)
     target_link_libraries(test_folioedit_format PRIVATE folioedit)
 
     add_executable(test_folioedit_custody tests/TEST_custody.cpp)
     target_link_libraries(test_folioedit_custody PRIVATE folioedit)
 
-    add_executable(test_folioedit_seal tests/TEST_seal.cpp)
-    target_link_libraries(test_folioedit_seal PRIVATE folioedit)
+    # The s18.4 equivalence gate: pure SHA-256 == libcrypto, FIPS vectors +
+    # pinned s102 fixture/chain hashes. Links only the pure TUs.
+    add_executable(test_folioedit_sha256 tests/TEST_sha256.cpp)
+    target_link_libraries(test_folioedit_sha256 PRIVATE folioedit)
 
-    add_executable(test_folioedit_kdf tests/TEST_kdf.cpp)
-    target_link_libraries(test_folioedit_kdf PRIVATE folioedit)
+    # The s18 plain face: readable JSON round-trip, content sniff, body_hash
+    # integrity (only-appended proof) -- all pure, builds under NO_CRYPTO.
+    add_executable(test_folioedit_archive_plain tests/TEST_archive_plain.cpp)
+    target_link_libraries(test_folioedit_archive_plain PRIVATE folioedit)
 
     add_executable(test_folioedit_keyhex tests/TEST_keyhex.cpp)
     target_link_libraries(test_folioedit_keyhex PRIVATE folioedit)
-
-    add_executable(test_folioedit_identity tests/TEST_identity.cpp)
-    target_link_libraries(test_folioedit_identity PRIVATE folioedit)
-
-    add_executable(test_folioedit_timestamp tests/TEST_timestamp.cpp)
-    target_link_libraries(test_folioedit_timestamp PRIVATE folioedit)
-    # This test alone includes <openssl/*> directly (it stands up a local TSA),
-    # so it needs the OpenSSL headers the library keeps PRIVATE.
-    target_include_directories(test_folioedit_timestamp PRIVATE "${_FE_OSSL_INCLUDE}")
-
-    add_executable(test_folioedit_archive tests/TEST_archive.cpp)
-    target_link_libraries(test_folioedit_archive PRIVATE folioedit)
 
     add_executable(test_folioedit_vocab tests/TEST_vocab.cpp)
     target_link_libraries(test_folioedit_vocab PRIVATE folioedit)
@@ -130,6 +145,30 @@ if(FOLIOEDIT_BUILD_TESTS)
 
     add_executable(test_folioedit_anchor tests/TEST_anchor.cpp)
     target_link_libraries(test_folioedit_anchor PRIVATE folioedit)
+
+    # ── sealed-face tests (need libcrypto; skipped under FOLIOEDIT_NO_CRYPTO) ─
+    if(NOT FOLIOEDIT_NO_CRYPTO)
+        add_executable(test_folioedit_scaffold tests/TEST_scaffold.cpp)
+        target_link_libraries(test_folioedit_scaffold PRIVATE folioedit)
+
+        add_executable(test_folioedit_seal tests/TEST_seal.cpp)
+        target_link_libraries(test_folioedit_seal PRIVATE folioedit)
+
+        add_executable(test_folioedit_kdf tests/TEST_kdf.cpp)
+        target_link_libraries(test_folioedit_kdf PRIVATE folioedit)
+
+        add_executable(test_folioedit_identity tests/TEST_identity.cpp)
+        target_link_libraries(test_folioedit_identity PRIVATE folioedit)
+
+        add_executable(test_folioedit_timestamp tests/TEST_timestamp.cpp)
+        target_link_libraries(test_folioedit_timestamp PRIVATE folioedit)
+        # This test alone includes <openssl/*> directly (it stands up a local TSA),
+        # so it needs the OpenSSL headers the library keeps PRIVATE.
+        target_include_directories(test_folioedit_timestamp PRIVATE "${_FE_OSSL_INCLUDE}")
+
+        add_executable(test_folioedit_archive tests/TEST_archive.cpp)
+        target_link_libraries(test_folioedit_archive PRIVATE folioedit)
+    endif()
 endif()
 
 # ── CLI (opt-in) ─────────────────────────────────────────────────────────────

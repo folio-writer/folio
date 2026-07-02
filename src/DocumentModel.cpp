@@ -987,6 +987,15 @@ void DocumentModel::save_to(const std::string& path) {
     // keeping structure + refs + drift hash in project.json, written last and
     // swapped into place atomically.
     explode(j, path);
+
+    // s103: persist the interchange ledger as an author-private sidecar
+    // (interchange.json in the bundle root). It is NOT part of the manifest, so
+    // it must be written AFTER explode — the bundle swap discards the prior copy
+    // and we rewrite it from memory each save. Only when non-empty, so a project
+    // that never uses interchange gets no sidecar.
+    if (!m_interchange_ledger.empty())
+        write_interchange(path, m_interchange_ledger.dump());
+
     current_path = path;
     is_modified  = false;
 }
@@ -1019,6 +1028,44 @@ void DocumentModel::load_from(const std::string& path) {
 
     parse_blob(j);
     current_path = path;
+
+    // s103: load the interchange ledger sidecar if this bundle carries one
+    // (absent for legacy single-file projects, or projects that never used
+    // interchange). A corrupt sidecar is tolerated — the ledger loads empty
+    // rather than failing the whole project open.
+    m_interchange_ledger = InterchangeLedger{};
+    try {
+        m_interchange_ledger = InterchangeLedger::parse(read_interchange(path));
+    } catch (...) {
+        m_interchange_ledger = InterchangeLedger{};
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// s103 — file an imported editorial annotation as a proposal (never splices)
+// ─────────────────────────────────────────────────────────────────────────────
+bool DocumentModel::file_imported_annotation(const std::string& scene_iid,
+                                             int range_start, int range_end,
+                                             const std::string& text,
+                                             const std::string& kind,
+                                             const std::string& source,
+                                             const std::string& color_hex) {
+    BinderNode* node = find_node_by_iid(scene_iid);
+    if (!node) return false;
+
+    Annotation ann;
+    ann.id          = node->next_annotation_id++;
+    ann.range_start = range_start;
+    ann.range_end   = range_end;
+    ann.text        = text;
+    ann.kind        = kind.empty() ? "Editor" : kind;
+    ann.color_hex   = color_hex;
+    ann.source      = source;                 // the editor's identity (multi-author)
+    ann.created_at  = now_iso8601();          // the import moment
+    node->annotations.push_back(std::move(ann));
+
+    mark_modified();
+    return true;
 }
 
 void DocumentModel::parse_blob(const json& j) {

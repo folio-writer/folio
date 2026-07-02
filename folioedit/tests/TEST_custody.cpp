@@ -1,11 +1,11 @@
 // folioedit :: Custody tests -- SHA-256 known-answer vectors, a real
 // issued->sealed->imported chain, and tamper detection on every bound field.
-// Needs libcrypto (SHA-256).
+// Pure now (SHA-256 is the STL Sha256.cpp, s18.4) -- links no libcrypto.
 //
 // Build+run (bare, copy-paste as a block):
 /*
-g++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include TEST_custody.cpp ../src/Custody.cpp -lcrypto -o test_custody && ./test_custody
-clang++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include TEST_custody.cpp ../src/Custody.cpp -I "$OSSL/include" "$OSSL/libcrypto.a" -ldl -lpthread -o test_custody && ./test_custody
+g++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include TEST_custody.cpp ../src/Custody.cpp ../src/Sha256.cpp -o test_custody && ./test_custody
+clang++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include TEST_custody.cpp ../src/Custody.cpp ../src/Sha256.cpp -o test_custody && ./test_custody
 */
 
 #include "folioedit/Custody.hpp"

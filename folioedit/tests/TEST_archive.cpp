@@ -6,8 +6,8 @@
 //
 // Build+run (bare, copy-paste as a block):
 /*
-g++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I /home/claude/sbox -I ../include TEST_archive.cpp ../src/Archive.cpp ../src/Format.cpp ../src/Custody.cpp ../src/Seal_openssl.cpp ../src/KeyHex.cpp ../src/Identity_openssl.cpp -lcrypto -o test_archive && ./test_archive
-clang++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include -I "$OSSL/include" TEST_archive.cpp ../src/Archive.cpp ../src/Format.cpp ../src/Custody.cpp ../src/Seal_openssl.cpp ../src/KeyHex.cpp ../src/Identity_openssl.cpp "$OSSL/libcrypto.a" -ldl -lpthread -o test_archive && ./test_archive
+g++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I /home/claude/sbox -I ../include TEST_archive.cpp ../src/Archive.cpp ../src/Format.cpp ../src/Custody.cpp ../src/Sha256.cpp ../src/Seal_openssl.cpp ../src/KeyHex.cpp ../src/Identity_openssl.cpp -lcrypto -o test_archive && ./test_archive
+clang++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include -I "$OSSL/include" TEST_archive.cpp ../src/Archive.cpp ../src/Format.cpp ../src/Custody.cpp ../src/Sha256.cpp ../src/Seal_openssl.cpp ../src/KeyHex.cpp ../src/Identity_openssl.cpp "$OSSL/libcrypto.a" -ldl -lpthread -o test_archive && ./test_archive
 */
 
 #include "folioedit/Archive.hpp"

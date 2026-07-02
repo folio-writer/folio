@@ -5,8 +5,8 @@
 // Build+run (bare, copy-paste as a block). Format now shares Custody's enum
 // helpers, so link Custody.cpp + libcrypto too:
 /*
-g++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I /home/claude/sbox -I ../include TEST_format.cpp ../src/Format.cpp ../src/Custody.cpp -lcrypto -o test_format && ./test_format
-clang++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include TEST_format.cpp ../src/Format.cpp ../src/Custody.cpp -I "$OSSL/include" "$OSSL/libcrypto.a" -ldl -lpthread -o test_format && ./test_format
+g++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I /home/claude/sbox -I ../include TEST_format.cpp ../src/Format.cpp ../src/Custody.cpp ../src/Sha256.cpp -o test_format && ./test_format
+clang++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include TEST_format.cpp ../src/Format.cpp ../src/Custody.cpp ../src/Sha256.cpp -o test_format && ./test_format
 */
 
 #include "folioedit/Format.hpp"

@@ -77,6 +77,29 @@ private:
     void rebuild_pdf_formats(const std::string& select_name = "");
     void open_format_editor();
 
+    // ── Interchange property set (s103) ───────────────────────────────────────
+    // Shown only when format == "Folio Interchange" (index 8). Like the PDF set,
+    // it shares none of the standard ExportOptions controls — it seals the
+    // selected scenes into a .folioedit briefing and records the pass in the
+    // project's InterchangeLedger. (DESIGN_editorialization §4.1 / §16.5.)
+    Gtk::Box         m_interchange_settings{Gtk::Orientation::VERTICAL, 16};
+    // Carrier (s105): "a chat or AI — unsealed" (plain, the default) vs "a person
+    // — sealed & signed". The AI carrier is plain-only; sealing is the person path.
+    Gtk::DropDown*   m_ic_carrier = nullptr;
+    Gtk::Entry       m_ic_recipient;      // editor/source label — stamped on annotations
+    Gtk::CheckButton m_ic_kind_proof;     // allowed hats
+    Gtk::CheckButton m_ic_kind_editor;
+    Gtk::CheckButton m_ic_kind_writer;
+    // Seal-only controls, wrapped so the whole section hides for the plain carrier.
+    Gtk::Box         m_ic_seal_box{Gtk::Orientation::VERTICAL, 16};
+    Gtk::Entry       m_ic_phrase;         // generated passphrase (read-only, selectable)
+    Gtk::Button*     m_ic_regen = nullptr;
+    Gtk::Label*      m_ic_plain_note = nullptr;   // shown only for the plain carrier
+    bool ic_is_sealed() const;            // reads m_ic_carrier (index 1 == sealed)
+    void update_interchange_carrier();    // show/hide the seal section
+    void build_interchange_settings();
+    void on_export_interchange();
+
     // Output mode
     Gtk::CheckButton m_radio_combined;
     Gtk::CheckButton m_radio_zip;

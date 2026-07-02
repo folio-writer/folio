@@ -436,4 +436,26 @@ json migrate_v4(json blob) {
     return blob;
 }
 
+// ── author-private sidecars ──────────────────────────────────────────────────
+// interchange.json lives in the bundle root beside project.json. It is written
+// only for v5 bundles (a directory); a legacy single-file project has no root
+// dir to hang it on, so write is a no-op there and read returns "".
+static constexpr const char* kInterchangeFile = "interchange.json";
+
+void write_interchange(const fs::path& root, const std::string& json_text) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return;   // v5 bundle only
+    write_file_atomic(root / kInterchangeFile, json_text);
+}
+
+std::string read_interchange(const fs::path& root) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return {};
+    std::ifstream f(root / kInterchangeFile, std::ios::binary);
+    if (!f) return {};
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
 }  // namespace Folio

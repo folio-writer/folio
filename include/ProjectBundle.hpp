@@ -127,6 +127,15 @@ enum class ProjectFormat {
 };
 ProjectFormat detect_format(const fs::path& path);
 
+// ── author-private sidecars (beside project.json, NOT in the manifest) ───────
+// Small JSON files that live in the bundle ROOT but are neither structure nor
+// content, so explode()/implode() and the (C)-hybrid reconcile ignore them
+// entirely. The interchange ledger (s103) is the first: DocumentModel writes it
+// AFTER explode (the bundle swap discards the prior copy; it is rewritten from
+// memory each save) and reads it back on load. Path is the bundle ROOT.
+void        write_interchange(const fs::path& root, const std::string& json_text);
+std::string read_interchange (const fs::path& root);  // "" if absent / not a bundle dir
+
 // ── The seam ─────────────────────────────────────────────────────────────────
 
 // EXPLODE: write `blob` (a full in-memory project JSON, every node carrying an

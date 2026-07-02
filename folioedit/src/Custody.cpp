@@ -1,20 +1,19 @@
 //
 // folioedit :: Custody -- the hash-chained, tamper-evident trail.
 //
-// Self-contained: the enums and their string forms, the canonical bytes that get
-// hashed, SHA-256 (via libcrypto EVP), the chain linkage, and verification all
-// live here. No nlohmann -- the forensic hash is defined by our own explicit
-// canonical form, not any library's serialization. (DESIGN_editorialization
-// s16.3 / s16.4.)
+// Self-contained and PURE: the enums and their string forms, the canonical bytes
+// that get hashed, the chain linkage, and verification all live here. No nlohmann
+// -- the forensic hash is defined by our own explicit canonical form, not any
+// library's serialization. (DESIGN_editorialization s16.3 / s16.4.)
 //
-// SHA-256 uses EVP_Digest (the non-deprecated one-shot) rather than the legacy
-// SHA256() call, which OpenSSL 3 deprecates -- important under -Werror.
+// SHA-256 itself now lives in the pure-STL Sha256.cpp (s18.4): sha256_hex is
+// declared in Custody.hpp and implemented there, so this TU -- and the whole
+// custody + anchor + format + hash layer -- links NO OpenSSL. libcrypto is now
+// confined to the three *_openssl.cpp files (AES-GCM, Ed25519, RFC-3161).
 //
 #include "folioedit/Custody.hpp"
 
 #include <stdexcept>
-
-#include <openssl/evp.h>
 
 namespace folioedit {
 
@@ -47,22 +46,8 @@ TimeSource time_from_str(const std::string& s) {
 }
 
 // ── SHA-256 ──────────────────────────────────────────────────────────────────
-std::string sha256_hex(const std::string& data) {
-    unsigned char md[EVP_MAX_MD_SIZE];
-    unsigned int  md_len = 0;
-    if (EVP_Digest(data.data(), data.size(), md, &md_len, EVP_sha256(), nullptr) != 1)
-        throw std::runtime_error("folioedit: SHA-256 failed");
-
-    static const char* hexd = "0123456789abcdef";
-    std::string out;
-    out.reserve(static_cast<std::size_t>(md_len) * 2);
-    for (unsigned int i = 0; i < md_len; ++i) {
-        out.push_back(hexd[(md[i] >> 4) & 0x0F]);
-        out.push_back(hexd[md[i] & 0x0F]);
-    }
-    return out;
-}
-
+// sha256_hex now lives in the pure-STL Sha256.cpp (s18.4). chain_hash just
+// composes it with the length-prefixed canonical form below.
 std::string chain_hash(const std::string& prev_hash, const std::string& contents) {
     return sha256_hex(prev_hash + contents);
 }

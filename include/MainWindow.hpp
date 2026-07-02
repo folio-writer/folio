@@ -136,6 +136,14 @@ private:
   void action_preferences();
   void action_export();
   void action_import();
+  // s103 — editorial interchange (import half). action_absorb_pass() opens a
+  // chooser; absorb_pass_file() opens by ledger phrase (or a prompted one),
+  // re-anchors, files the returned comments as proposals, and marks the pass
+  // Returned; prompt_for_passphrase() is the miss fallback (foreign / other-
+  // project file).
+  void action_absorb_pass();
+  void absorb_pass_file(const std::string& path, const std::string& extra_phrase);
+  void prompt_for_passphrase(const std::string& path);
   void action_search();
   void action_print();
   void action_save_report();
@@ -150,6 +158,7 @@ private:
   std::unique_ptr<PatternDialog>     m_pattern_dialog;   // s24 — Layer 3
   std::unique_ptr<SearchDialog>      m_search_dialog;
   std::unique_ptr<PrintDialog>       m_print_dialog;
+  std::unique_ptr<Gtk::Window>       m_absorb_prompt;      // s103 — passphrase prompt (miss fallback)
   Glib::RefPtr<Gtk::FileDialog>      m_report_file_dialog; // kept alive across async save
 
   // ── Pomodoro ──────────────────────────────────────────────────────────────

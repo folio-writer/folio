@@ -6,8 +6,8 @@
 //
 // Build+run (bare, copy-paste as a block):
 /*
-g++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I /home/claude/sbox -I ../include TEST_identity.cpp ../src/Identity_openssl.cpp ../src/Custody.cpp ../src/KeyHex.cpp ../src/Format.cpp -lcrypto -o test_identity && ./test_identity
-clang++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include -I "$OSSL/include" TEST_identity.cpp ../src/Identity_openssl.cpp ../src/Custody.cpp ../src/KeyHex.cpp ../src/Format.cpp "$OSSL/libcrypto.a" -ldl -lpthread -o test_identity && ./test_identity
+g++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I /home/claude/sbox -I ../include TEST_identity.cpp ../src/Identity_openssl.cpp ../src/Custody.cpp ../src/Sha256.cpp ../src/KeyHex.cpp ../src/Format.cpp -lcrypto -o test_identity && ./test_identity
+clang++ -std=c++20 -Wall -Wextra -Werror -Wconversion -Wshadow -I ../include -I "$OSSL/include" TEST_identity.cpp ../src/Identity_openssl.cpp ../src/Custody.cpp ../src/Sha256.cpp ../src/KeyHex.cpp ../src/Format.cpp "$OSSL/libcrypto.a" -ldl -lpthread -o test_identity && ./test_identity
 */
 
 #include "folioedit/Identity.hpp"

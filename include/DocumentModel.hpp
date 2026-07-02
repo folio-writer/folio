@@ -18,6 +18,7 @@
 #include "Iid.hpp"          // IidKind + iid_kind_for (BinderKind → IidKind)
 #include "ObjectStore.hpp"   // s31 — objects & templates registry + instances
 #include "ImagePool.hpp"     // s58 — the shared image pool (gallery data layer)
+#include "InterchangeLedger.hpp"  // s103 — author-side editorial-pass ledger (in the .folio bundle)
 #include "TimelineSpine.hpp" // s91 — kZoom* + next_timeline_zoom (timeline zoom unit; pure)
 #include <chrono>
 #include <ctime>
@@ -816,6 +817,25 @@ public:
     // lane's display label and hue. Empty in single-thread books.
     const std::vector<ThreadDef>& threads() const { return m_threads; }
     std::vector<ThreadDef>&       threads()       { return m_threads; }
+
+    // s103 — the author-side editorial-interchange ledger (what went out to which
+    // editor, under which passphrase, and whether it came home). Persisted as an
+    // interchange.json sidecar in the .folio bundle (write after explode, read on
+    // load); private, never travels. Export files a Sent entry; import flips it
+    // to Returned.
+    const InterchangeLedger& interchange_ledger() const { return m_interchange_ledger; }
+    InterchangeLedger&       interchange_ledger()       { return m_interchange_ledger; }
+
+    // s103 — file one imported editorial annotation as a PROPOSAL onto the scene
+    // node with iid `scene_iid` (never splices prose; §5/§13). Mints the
+    // node-local id, stamps created_at = now, and marks the model modified.
+    // Returns false if that scene node no longer exists (the note is dropped).
+    bool file_imported_annotation(const std::string& scene_iid,
+                                  int range_start, int range_end,
+                                  const std::string& text,
+                                  const std::string& kind,
+                                  const std::string& source,
+                                  const std::string& color_hex);
     // Resolve a thread iid → its registry entry (nullptr if absent / empty iid).
     const ThreadDef* find_thread(const std::string& iid) const;
     // Mint a new thread (a fresh thr_ iid), append it to the registry, and return
@@ -870,6 +890,9 @@ private:
     // s83: the project thread registry (the "assigned arc" home). Owned data,
     // serialised as the manifest's "threads" array; see threads()/§9.12.
     std::vector<ThreadDef> m_threads;
+
+    // s103 — author-side editorial-pass ledger (see interchange_ledger()).
+    InterchangeLedger m_interchange_ledger;
 
     // s19: parse a full in-memory project blob (the shape save_to builds and
     // load paths reassemble) into the model. load_from obtains the blob (from a

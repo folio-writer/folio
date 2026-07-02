@@ -5,7 +5,11 @@
 #include "PdfExporter.hpp"
 #include "PdfPaginator.hpp"
 #include "CompileFormatDialog.hpp"
+#include "Interchange.hpp"            // s103 — export glue (build/seal/record)
+#include "folioedit/Passphrase.hpp"  // s103 — generate_passphrase()
 #include <FolioLog.hpp>
+#include <algorithm>
+#include <cctype>
 #include <sstream>
 
 namespace Folio {
@@ -226,12 +230,14 @@ void ExportDialog::update_format_sensitivity() {
     if (!m_format_dd) return;
     guint sel = m_format_dd->get_selected();
 
-    // PDF (appended at index 7) runs the CompileFormat/paginator path and shares
-    // none of the ExportOptions controls — swap the whole property set.
+    // PDF (index 7) and Folio Interchange (index 8) each run their own path and
+    // share none of the standard ExportOptions controls — swap the whole set.
     bool is_pdf = (sel == 7);
-    m_standard_settings.set_visible(!is_pdf);
+    bool is_ic  = (sel == 8);
+    m_standard_settings.set_visible(!is_pdf && !is_ic);
     m_pdf_settings.set_visible(is_pdf);
-    if (is_pdf) return;   // standard controls below don't apply to PDF
+    m_interchange_settings.set_visible(is_ic);
+    if (is_pdf || is_ic) return;   // standard controls below don't apply to either
 
     bool is_docx = (sel == 0);
     bool is_epub = (sel == 1);
@@ -268,10 +274,13 @@ void ExportDialog::build_settings() {
     m_settings_box.append(*make_section("Format"));
 
     // DOCX, EPUB, HTML, Markdown, ODT, RTF, TXT are alphabetical; PDF is appended
-    // last (index 7) rather than slotted alphabetically so the hardcoded indices
-    // in build_opts/update_format_sensitivity stay stable.
+    // at index 7 and Folio Interchange at index 8 (both appended rather than
+    // slotted alphabetically so the hardcoded indices in build_opts /
+    // update_format_sensitivity stay stable). PDF (7) and Interchange (8) each
+    // run their own path and swap in their own property box.
     auto fmt_list = Gtk::StringList::create(
-        {"DOCX", "EPUB", "HTML", "Markdown", "ODT", "RTF", "TXT", "PDF"});
+        {"DOCX", "EPUB", "HTML", "Markdown", "ODT", "RTF", "TXT", "PDF",
+         "Folio Interchange (.folioedit)"});
     m_format_dd = Gtk::make_managed<Gtk::DropDown>(fmt_list);
     m_format_dd->set_selected(1); // default: EPUB
     m_format_dd->set_hexpand(false);
@@ -285,6 +294,7 @@ void ExportDialog::build_settings() {
     // below the format dropdown. update_format_sensitivity() shows exactly one.
     m_settings_box.append(m_standard_settings);
     m_settings_box.append(m_pdf_settings);
+    m_settings_box.append(m_interchange_settings);   // s103
 
     // ── PDF property set (shown only when format == PDF) ──────────────────────
     m_pdf_settings.append(*make_section("PDF Format"));
@@ -429,6 +439,116 @@ void ExportDialog::build_settings() {
     m_chk_cover.set_visible(false); // shown by update_format_sensitivity
     if (has_cover)
         m_standard_settings.append(m_chk_cover);
+
+    // s103 — the Interchange property set (hidden until format == index 8).
+    build_interchange_settings();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interchange property set (s103) — recipient / allowed hats / passphrase.
+// Seals the selected scenes into a .folioedit briefing and records the pass in
+// the project's InterchangeLedger; the manuscript is never rewritten on return
+// (imported comments arrive as annotation proposals). §4.1 / §6 / §16.5.
+// ─────────────────────────────────────────────────────────────────────────────
+void ExportDialog::build_interchange_settings() {
+    m_interchange_settings.append(*make_section("Editorial Interchange"));
+
+    auto* note = Gtk::make_managed<Gtk::Label>(
+        "Send the selected scenes out as a .folioedit pass for an editor — human "
+        "or AI. Their comments return as anchored annotation proposals; the prose "
+        "is never rewritten.");
+    note->set_wrap(true);
+    note->set_xalign(0.f);
+    note->add_css_class("dim-label");
+    m_interchange_settings.append(*note);
+
+    // Carrier (s105): who is this for, and therefore how it travels.
+    //   index 0 — a chat or AI (unsealed): readable JSON, no passphrase. A chat
+    //             can read/append it directly; Claude Code opens it plain. The
+    //             trusted-AI loop (§18.2). DEFAULT.
+    //   index 1 — a person (sealed & signed): AES-256-GCM + PBKDF2 passphrase +
+    //             the author's TOFU signature — for an untrusted third party.
+    auto carrier_list = Gtk::StringList::create(
+        {"A chat or AI — unsealed (readable)", "A person — sealed & signed"});
+    m_ic_carrier = Gtk::make_managed<Gtk::DropDown>(carrier_list);
+    m_ic_carrier->set_selected(0);          // plain is the default AI carrier
+    m_ic_carrier->set_hexpand(false);
+    m_ic_carrier->set_name("interchange-carrier");
+    m_interchange_settings.append(*make_row("Send to", *m_ic_carrier));
+
+    // Recipient / source — stamped as `source` on every annotation this pass makes.
+    m_ic_recipient.set_placeholder_text("e.g. claude, or jane");
+    m_ic_recipient.set_hexpand(true);
+    m_ic_recipient.set_name("interchange-recipient");
+    m_interchange_settings.append(*make_row("Label", m_ic_recipient));
+
+    // Allowed hats.
+    m_interchange_settings.append(*make_section("Allowed passes"));
+    m_ic_kind_proof.set_label("Proofreader");
+    m_ic_kind_editor.set_label("Editor (continuity)");
+    m_ic_kind_writer.set_label("Writer (taste)");
+    m_ic_kind_proof.set_active(true);            // sensible default
+    m_ic_kind_proof.set_name("interchange-kind-proofreader");
+    m_ic_kind_editor.set_name("interchange-kind-editor");
+    m_ic_kind_writer.set_name("interchange-kind-writer");
+    m_interchange_settings.append(m_ic_kind_proof);
+    m_interchange_settings.append(m_ic_kind_editor);
+    m_interchange_settings.append(m_ic_kind_writer);
+
+    // Plain-carrier note (shown when unsealed): readable, no passphrase.
+    m_ic_plain_note = Gtk::make_managed<Gtk::Label>(
+        "Unsealed: the file is readable JSON with a built-in briefing. Hand it to "
+        "a chat or to Claude Code; it appends its notes and returns the file. "
+        "Absorb verifies the manuscript was left untouched. Save the project after "
+        "to keep the record.");
+    m_ic_plain_note->set_wrap(true);
+    m_ic_plain_note->set_xalign(0.f);
+    m_ic_plain_note->add_css_class("dim-label");
+    m_ic_plain_note->set_name("interchange-plain-note");
+    m_interchange_settings.append(*m_ic_plain_note);
+
+    // Seal-only section (shown when the carrier is "a person"): generated,
+    // regenerable passphrase. The AES key is derived from it and never displayed.
+    m_ic_seal_box.set_name("interchange-seal-box");
+    m_ic_seal_box.append(*make_section("Passphrase"));
+    m_ic_phrase.set_text(folioedit::generate_passphrase());
+    m_ic_phrase.set_editable(false);
+    m_ic_phrase.set_can_focus(true);             // still selectable for copy
+    m_ic_phrase.set_hexpand(true);
+    m_ic_phrase.set_name("interchange-phrase");
+    m_ic_regen = Gtk::make_managed<Gtk::Button>("Regenerate");
+    m_ic_regen->add_css_class("pill-btn");
+    m_ic_regen->signal_clicked().connect(
+        [this]() { m_ic_phrase.set_text(folioedit::generate_passphrase()); });
+    auto* prow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    prow->append(m_ic_phrase);
+    prow->append(*m_ic_regen);
+    m_ic_seal_box.append(*prow);
+
+    auto* pnote = Gtk::make_managed<Gtk::Label>(
+        "The editor needs this passphrase to open the file. It is saved in this "
+        "project's ledger, so importing the returned file re-absorbs it without "
+        "asking. Save the project after sealing to keep the record.");
+    pnote->set_wrap(true);
+    pnote->set_xalign(0.f);
+    pnote->add_css_class("dim-label");
+    m_ic_seal_box.append(*pnote);
+    m_interchange_settings.append(m_ic_seal_box);
+
+    // Toggle the seal section with the carrier.
+    m_ic_carrier->property_selected().signal_changed().connect(
+        sigc::mem_fun(*this, &ExportDialog::update_interchange_carrier));
+    update_interchange_carrier();
+}
+
+bool ExportDialog::ic_is_sealed() const {
+    return m_ic_carrier && m_ic_carrier->get_selected() == 1;   // index 1 == a person
+}
+
+void ExportDialog::update_interchange_carrier() {
+    const bool sealed = ic_is_sealed();
+    m_ic_seal_box.set_visible(sealed);
+    if (m_ic_plain_note) m_ic_plain_note->set_visible(!sealed);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -557,6 +677,14 @@ ExportDialog::collect_selected_nodes() const {
 // on_export — show file chooser then write
 // ─────────────────────────────────────────────────────────────────────────────
 void ExportDialog::on_export() {
+    // Folio Interchange (index 8) seals a .folioedit briefing + records the pass;
+    // it owns its own scene gathering (it needs iids, which the SourceNode list
+    // drops) and validation, so dispatch before the standard export path.
+    if (m_format_dd && m_format_dd->get_selected() == 8) {
+        on_export_interchange();
+        return;
+    }
+
     auto nodes = collect_selected_nodes();
     // Count actual content nodes
     int n_scenes = 0;
@@ -676,6 +804,136 @@ void ExportDialog::on_export() {
             } else {
                 m_status_lbl.set_text("Error: " + err);
             }
+        });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// on_export_interchange — seal the selected scenes into a .folioedit briefing
+// and record the pass in the project's InterchangeLedger (s103). Build the
+// folioedit::Document from the checked leaves (raw node.content HTML, so anchor
+// offsets match the buffer), sign an `issued` custody event with the author's
+// TOFU identity, seal under the generated passphrase, write the file. The heavy
+// work happens in the FileDialog callback (after the chooser is gone) — no model
+// swap or view rebuild, so it is clear of the s24 modal-handler hazard.
+// ─────────────────────────────────────────────────────────────────────────────
+void ExportDialog::on_export_interchange() {
+    // Gather selected scene leaves WITH iids (collect_selected_nodes() drops them).
+    std::vector<Interchange::OutScene> scenes;
+    int order = 0;
+    for (const auto& row : m_rows) {
+        if (row.is_group || !row.node || !row.check || !row.check->get_active())
+            continue;
+        Interchange::OutScene s;
+        s.iid   = row.node->iid;
+        s.title = row.node->title;
+        s.html  = row.node->content;   // raw HTML — offsets must match the buffer
+        s.order = order++;
+        scenes.push_back(std::move(s));
+    }
+    if (scenes.empty()) { m_status_lbl.set_text("No scenes selected."); return; }
+
+    // Recipient (trimmed) — required; it is the `source` stamped on annotations.
+    std::string recipient = m_ic_recipient.get_text();
+    {
+        auto notspace = [](char c) { return !std::isspace(static_cast<unsigned char>(c)); };
+        auto b = std::find_if(recipient.begin(), recipient.end(), notspace);
+        auto e = std::find_if(recipient.rbegin(), recipient.rend(), notspace).base();
+        recipient = (b < e) ? std::string(b, e) : std::string();
+    }
+    if (recipient.empty()) {
+        m_status_lbl.set_text("Enter who this pass is for (e.g. jane, claude).");
+        return;
+    }
+
+    std::vector<std::string> kinds;
+    if (m_ic_kind_proof.get_active())  kinds.push_back("Proofreader");
+    if (m_ic_kind_editor.get_active()) kinds.push_back("Editor");
+    if (m_ic_kind_writer.get_active()) kinds.push_back("Writer");
+    if (kinds.empty()) kinds.push_back("Proofreader");   // never grant an empty pass
+
+    const bool sealed = ic_is_sealed();
+
+    // Sealed carrier only: gather the passphrase + mint/load the TOFU identity.
+    // The plain carrier needs neither (§18.2/18.5).
+    std::string phrase;
+    folioedit::KeyPair identity;
+    if (sealed) {
+        phrase = m_ic_phrase.get_text();
+        if (phrase.empty()) phrase = folioedit::generate_passphrase();
+        try {
+            identity = Interchange::load_or_create_identity();
+        } catch (const std::exception& ex) {
+            m_status_lbl.set_text(std::string("Identity error: ") + ex.what());
+            return;
+        }
+    }
+
+    Interchange::PassSpec spec;
+    spec.project_id    = m_model.project_title;   // no separate project id in the model
+    spec.project_title = m_model.project_title;
+    spec.source        = recipient;
+    spec.kinds         = kinds;
+    spec.rules         = Interchange::default_rules();
+    spec.author_label  = m_model.author;
+
+    auto sanitize = [](const std::string& in, const char* fallback) {
+        std::string safe;
+        for (unsigned char c : in)
+            safe += (std::isalnum(c) || c == '-' || c == '_') ? (char)c : '_';
+        return safe.empty() ? std::string(fallback) : safe;
+    };
+    std::string default_name = sanitize(m_model.project_title, "manuscript") + "_" +
+                               sanitize(recipient, "editor") + ".folioedit";
+
+    auto file_dialog = Gtk::FileDialog::create();
+    file_dialog->set_title(sealed ? "Seal Editorial Pass As…" : "Export Editorial Pass As…");
+    file_dialog->set_initial_name(default_name);
+    if (!m_prefs.last_export_folder.empty())
+        file_dialog->set_initial_folder(
+            Gio::File::create_for_path(m_prefs.last_export_folder));
+
+    auto filter = Gtk::FileFilter::create();
+    filter->set_name("Folio Editorial Pass");
+    filter->add_pattern("*.folioedit");
+    auto filters = Gio::ListStore<Gtk::FileFilter>::create();
+    filters->append(filter);
+    file_dialog->set_filters(filters);
+
+    const int n_scenes = static_cast<int>(scenes.size());
+    file_dialog->save(*this,
+        [this, file_dialog, spec, scenes, phrase, identity, recipient, n_scenes, sealed](
+                Glib::RefPtr<Gio::AsyncResult>& res) mutable {
+            Glib::RefPtr<Gio::File> file;
+            try { file = file_dialog->save_finish(res); } catch (...) { return; }
+            if (!file) return;
+            std::string path = file->get_path();
+
+            m_btn_export.set_sensitive(false);
+            m_status_lbl.set_text(sealed ? "Sealing…" : "Exporting…");
+
+            try {
+                LedgerEntry entry = sealed
+                    ? Interchange::write_pass(path, spec, scenes, phrase, identity)
+                    : Interchange::write_pass_plain(path, spec, scenes);
+                m_model.interchange_ledger().record_sent(std::move(entry));
+                m_model.mark_modified();   // persist the ledger on the next save
+
+                auto exported_file = Gio::File::create_for_path(path);
+                if (auto parent = exported_file->get_parent()) {
+                    m_prefs.last_export_folder = parent->get_path();
+                    try { m_prefs.save(); } catch (...) {}
+                }
+                const std::string verb = sealed ? "Sealed " : "Exported ";
+                const std::string tail = sealed
+                    ? "   (passphrase saved to the project ledger — save the project to keep it)"
+                    : "   (unsealed — hand it to a chat or Claude Code, then Absorb the reply)";
+                m_status_lbl.set_text("\u2713  " + verb + std::to_string(n_scenes) +
+                    " scene" + (n_scenes != 1 ? "s" : "") + " for " + recipient +
+                    " \u2192 " + path + tail);
+            } catch (const std::exception& ex) {
+                m_status_lbl.set_text(std::string("Error: ") + ex.what());
+            }
+            m_btn_export.set_sensitive(true);
         });
 }
 

@@ -9,6 +9,8 @@
 #include "EditorTabBar.hpp"
 #include "ExportDialog.hpp"
 #include "ImportDialog.hpp"
+#include "Interchange.hpp"          // s103 — editorial interchange glue (open_pass / absorb)
+#include "folioedit/Format.hpp"     // s103 — folioedit::Document
 #include "Inspector.hpp"
 #include "Module.hpp"            // s23 — built-in modules
 #include "ModuleIO.hpp"          // s23 — keypoint spectrum palette
@@ -579,6 +581,8 @@ void MainWindow::setup_headerbar() {
   auto share_sub = Gio::Menu::create();
   share_sub->append_item(make_item("Import…", "win.import", "<Ctrl><Shift>i"));
   share_sub->append_item(make_item("Export…", "win.export", "<Ctrl>e"));
+  share_sub->append_item(make_item("Absorb Editorial Pass…", "win.absorb-pass", ""));
+  share_sub->append_item(make_item("Editorial Ledger…", "win.editorial-ledger", ""));
   share_sub->append_item(make_item("Print…", "win.print", "<Ctrl>p"));
   share_sub->append_item(make_item("Save Report…", "win.save-report", ""));
 
@@ -1988,6 +1992,10 @@ void MainWindow::setup_actions() {
 
   add("export", [this]() { action_export(); });
   add("import", [this]() { action_import(); });
+  add("absorb-pass", [this]() { action_absorb_pass(); });
+  add("editorial-ledger", [this]() {
+    if (m_editor) m_editor->open_ledger(m_model.interchange_ledger());
+  });
   add("print", [this]() { action_print(); });
   add("save-report", [this]() { action_save_report(); });
   add("search", [this]() { action_search(); });
@@ -2162,6 +2170,240 @@ void MainWindow::action_export() {
     Glib::signal_idle().connect_once([this]() { m_export_dialog.reset(); });
   });
   m_export_dialog->present();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Absorb editorial pass (s103) — import the returned .folioedit as annotation
+// proposals. Open by a ledger passphrase (or a prompted one on a miss),
+// re-anchor against the current manuscript, file the comments beside the prose
+// (never rewriting it), flip the ledger entry to Returned, and surface the
+// result in the annotation report.
+// ─────────────────────────────────────────────────────────────────────────────
+void MainWindow::action_absorb_pass() {
+  auto dialog = Gtk::FileDialog::create();
+  dialog->set_title("Absorb Editorial Pass…");
+  if (!m_prefs.last_export_folder.empty())
+    dialog->set_initial_folder(
+        Gio::File::create_for_path(m_prefs.last_export_folder));
+
+  auto filter = Gtk::FileFilter::create();
+  filter->set_name("Folio Editorial Pass");
+  filter->add_pattern("*.folioedit");
+  auto filters = Gio::ListStore<Gtk::FileFilter>::create();
+  filters->append(filter);
+  dialog->set_filters(filters);
+
+  dialog->open(*this, [this, dialog](Glib::RefPtr<Gio::AsyncResult> &res) {
+    Glib::RefPtr<Gio::File> file;
+    try { file = dialog->open_finish(res); } catch (...) { return; }
+    if (!file) return;
+    absorb_pass_file(file->get_path(), "");
+  });
+}
+
+// The VISIBLE text of a scene: HTML tags removed, newlines -> spaces, the four
+// common entities decoded. This is the exact space the editor and the annotation
+// report count character offsets in (byte-for-byte the AnnotationReportDialog
+// excerpt strip). Absorb must re-anchor in THIS space, not the raw HTML: reanchor
+// returns codepoint offsets into whatever text it's given, and if that's the HTML
+// the offsets are inflated by every tag above the match (e.g. +133 chars in
+// "Office Hours"), landing each marker that far past the words it names. Stripping
+// here removes the tags from the count, so a returned quote lands on itself. The
+// exported scene text stays HTML (the editor needs the formatting); we translate
+// once, at the seam. (s105 fix A / DESIGN_editorialization s7 offset-unit.)
+static std::string scene_visible_text(const std::string &html) {
+  std::string plain;
+  plain.reserve(html.size());
+  bool in_tag = false;
+  for (unsigned char c : html) {
+    if (c == '<') { in_tag = true; continue; }
+    if (c == '>') { in_tag = false; continue; }
+    if (!in_tag) plain += (c == '\n') ? ' ' : static_cast<char>(c);
+  }
+  auto replace_all = [](std::string s, const std::string &from,
+                        const std::string &to) {
+    std::size_t p = 0;
+    while ((p = s.find(from, p)) != std::string::npos) {
+      s.replace(p, from.size(), to);
+      p += to.size();
+    }
+    return s;
+  };
+  plain = replace_all(plain, "&amp;",  "&");
+  plain = replace_all(plain, "&lt;",   "<");
+  plain = replace_all(plain, "&gt;",   ">");
+  plain = replace_all(plain, "&quot;", "\"");
+  return plain;
+}
+
+void MainWindow::absorb_pass_file(const std::string &path,
+                                  const std::string &extra_phrase) {
+  folioedit::Document doc;
+
+  // Content-sniff the carrier (s105). An unsealed pass (for a chat / AI) opens
+  // with NO passphrase and never prompts — if a plain file won't parse it is
+  // corrupt, not wrong-phrase. A sealed pass tries every phrase the ledger knows
+  // plus any just typed, and prompts on a miss (A-lean). Unknown falls to the
+  // sealed path, since a truncated/foreign envelope may still open by phrase.
+  if (Interchange::sniff(path) == Interchange::Carrier::Plain) {
+    try {
+      doc = Interchange::open_plain(path);
+    } catch (const std::exception &ex) {
+      auto alert = Gtk::AlertDialog::create("Couldn't read that pass");
+      alert->set_detail(std::string("The file looks unsealed but wouldn't "
+                                    "parse as a Folio pass: ") + ex.what());
+      alert->set_modal(true);
+      alert->set_buttons({"OK"});
+      alert->choose(*this, [alert](Glib::RefPtr<Gio::AsyncResult> &rr) {
+        try { alert->choose_finish(rr); } catch (...) {}
+      });
+      return;
+    }
+  } else {
+    std::vector<std::string> phrases;
+    for (const auto &e : m_model.interchange_ledger().entries())
+      if (!e.phrase.empty()) phrases.push_back(e.phrase);
+    if (!extra_phrase.empty()) phrases.push_back(extra_phrase);
+
+    try {
+      doc = Interchange::open_pass(path, phrases);
+    } catch (...) {
+      prompt_for_passphrase(path);   // miss -> ask (foreign / other-project file)
+      return;
+    }
+  }
+
+  // Re-anchor against the CURRENT manuscript (the author may have kept writing).
+  // Re-anchor against the VISIBLE scene text (tags stripped), not the raw HTML,
+  // so returned markers land on the words they name rather than N tag-chars past
+  // them (s105 fix A). Same space the editor + report count offsets in.
+  auto resolver = [this](const std::string &iid) -> std::string {
+    const BinderNode *n = m_model.find_node_by_iid(iid);
+    return n ? scene_visible_text(n->content) : std::string();
+  };
+  Interchange::AbsorbResult r = Interchange::absorb(doc, resolver);
+
+  // Colour each proposal by its hat (matches the in-app annotation palette).
+  auto colour_for = [](const std::string &kind) -> std::string {
+    if (kind == "Proofreader") return "#fca5a5";  // red
+    if (kind == "Writer")      return "#fef08a";  // yellow
+    return "#fab387";                             // Editor / default: peach
+  };
+
+  int filed = 0, skipped = 0;
+  for (const auto &a : r.annotations) {
+    if (m_model.file_imported_annotation(a.scene_iid, a.range_start, a.range_end,
+                                         a.text, a.kind, a.source,
+                                         colour_for(a.kind)))
+      ++filed;
+    else
+      ++skipped;   // that scene node no longer exists
+  }
+
+  // Flip the ledger entry to Returned — B-lean: only if this pass is ours.
+  const bool in_ledger =
+      (m_model.interchange_ledger().find(r.pass_id) != nullptr);
+  if (in_ledger) {
+    std::time_t t = std::time(nullptr);
+    std::tm tmv{};
+    gmtime_r(&t, &tmv);
+    char buf[32];
+    std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tmv);
+    m_model.interchange_ledger().mark_returned(r.pass_id, buf, filed);
+  }
+  m_model.mark_modified();
+
+  // Summary.
+  std::ostringstream head;
+  head << "Absorbed " << filed << " annotation" << (filed == 1 ? "" : "s")
+       << " from \"" << (r.source.empty() ? "editor" : r.source) << "\"";
+  std::ostringstream det;
+  det << r.exact << " anchored exactly, " << r.requoted
+      << " re-anchored by quote, " << r.floating << " floating";
+  if (r.ambiguous_count) det << " (" << r.ambiguous_count << " ambiguous)";
+  det << ".";
+  if (skipped)
+    det << "\n" << skipped << " skipped — their scene was removed.";
+  if (r.withdrawn)
+    det << "\n" << r.withdrawn << " withdrawn note"
+        << (r.withdrawn == 1 ? "" : "s") << " ignored.";
+  if (!r.chain_ok)
+    det << "\nWARNING: the custody chain did not verify.";
+  if (r.body_drift)
+    det << "\nNote: the returned prose differs from what was sent.";
+  if (!in_ledger)
+    det << "\nThis pass isn't in this project's ledger, so there's nothing to "
+           "reconcile — its notes were still filed as proposals.";
+  det << "\n\nThese are proposals beside your prose — accept or delete them in "
+         "the report; nothing was rewritten.";
+
+  auto alert = Gtk::AlertDialog::create(head.str());
+  alert->set_detail(det.str());
+  alert->set_modal(true);
+  alert->set_buttons({"OK"});
+  alert->choose(*this, [alert](Glib::RefPtr<Gio::AsyncResult> &rr) {
+    try { alert->choose_finish(rr); } catch (...) {}
+  });
+
+  // Surface in the annotation report (its source filter now includes r.source).
+  if (m_inspector) m_inspector->open_annotation_report();
+}
+
+void MainWindow::prompt_for_passphrase(const std::string &path) {
+  m_absorb_prompt = std::make_unique<Gtk::Window>();
+  Gtk::Window *win = m_absorb_prompt.get();
+  win->set_transient_for(*this);
+  win->set_modal(true);
+  win->set_title("Passphrase");
+  win->set_default_size(440, -1);
+
+  auto *box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 12);
+  box->set_margin_top(16);
+  box->set_margin_bottom(16);
+  box->set_margin_start(16);
+  box->set_margin_end(16);
+
+  auto *lbl = Gtk::make_managed<Gtk::Label>(
+      "None of this project's saved passphrases opened that file. Enter the "
+      "passphrase it was sealed with.");
+  lbl->set_wrap(true);
+  lbl->set_xalign(0.f);
+  box->append(*lbl);
+
+  auto *entry = Gtk::make_managed<Gtk::Entry>();
+  entry->set_placeholder_text("e.g. otters unionize discount turnips");
+  entry->set_hexpand(true);
+  box->append(*entry);
+
+  auto *btns = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+  btns->set_halign(Gtk::Align::END);
+  auto *cancel = Gtk::make_managed<Gtk::Button>("Cancel");
+  auto *ok = Gtk::make_managed<Gtk::Button>("Open");
+  ok->add_css_class("suggested-action");
+  btns->append(*cancel);
+  btns->append(*ok);
+  box->append(*btns);
+  win->set_child(*box);
+
+  // s24 discipline: gather -> close() -> heavy work on an idle tick, so the
+  // absorb (model mutation + report present) never runs inside the live modal's
+  // button handler.
+  auto do_open = [this, path, entry]() {
+    std::string phrase = entry->get_text();
+    if (m_absorb_prompt) m_absorb_prompt->close();
+    if (!phrase.empty())
+      Glib::signal_idle().connect_once(
+          [this, path, phrase]() { absorb_pass_file(path, phrase); });
+  };
+  ok->signal_clicked().connect(do_open);
+  entry->signal_activate().connect(do_open);
+  cancel->signal_clicked().connect([this]() {
+    if (m_absorb_prompt) m_absorb_prompt->close();
+  });
+  win->signal_hide().connect([this]() {
+    Glib::signal_idle().connect_once([this]() { m_absorb_prompt.reset(); });
+  });
+  win->present();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
