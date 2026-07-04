@@ -15,6 +15,8 @@
 #include "folioedit/Format.hpp"
 #include "folioedit/Identity.hpp"    // s107 — KeyPair / sign_event / fingerprint (Seal)
 #include "folioedit/Custody.hpp"     // s107 — CustodyEvent / append_event (Seal)
+#include "folioedit/Anchor.hpp"      // s109 — reanchor a returned note's quote (§27.2)
+#include "folioedit/TextMap.hpp"     // s109 — visible_text / map_range (§27.1 inverse)
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/component_base.hpp>
@@ -187,6 +189,29 @@ public:
         if (flat_.empty()) flat_.push_back({"", Color::Default, false, false});
         const int n = (int)flat_.size();
 
+        // §27.1 — resolve any pending note highlight against the freshly-wrapped
+        // lines (the codepoint range came from re-anchoring the note's quote), and
+        // centre the view on it ONCE, the frame the request lands.
+        hl_start_line_ = hl_end_line_ = -1;
+        if (has_highlight()) {
+            std::vector<fe::FlatLine> fl;
+            fl.reserve(flat_.size());
+            for (const VisLine& v : flat_) fl.push_back({v.text, v.prose, v.para_start});
+            fe::LineCol s, e;
+            if (fe::map_range(fl, hl_cp_start_, hl_cp_end_, s, e)) {
+                hl_start_line_ = s.line; hl_start_col_ = s.col;
+                hl_end_line_   = e.line; hl_end_col_   = e.col;
+                if (center_pending_) {
+                    caret_line_ = s.line;
+                    caret_col_  = s.col;
+                    scroll_top_ = s.line - height / 2;   // clamped by the follow block below
+                }
+            } else {
+                hl_cp_start_ = hl_cp_end_ = -1;          // couldn't place -> drop it
+            }
+            center_pending_ = false;
+        }
+
         caret_line_ = std::max(0, std::min(caret_line_, n - 1));
         caret_col_  = utf8_snap(flat_[(std::size_t)caret_line_].text, caret_col_);
 
@@ -252,9 +277,45 @@ public:
 
     // ── s107 marking (Mark → Set) ────────────────────────────────────────────
     // Mark drops the start of the range at the caret; the caret then extends it.
-    void begin_mark() { marking_ = true; anchor_line_ = caret_line_; anchor_col_ = caret_col_; }
+    void begin_mark() { clear_highlight(); marking_ = true; anchor_line_ = caret_line_; anchor_col_ = caret_col_; }
     void clear_mark() { marking_ = false; }
     bool marking() const { return marking_; }
+
+    // ── s109 note highlight (§27.1): select a note → highlight + centre ───────
+    // The scene's VISIBLE TEXT, built exactly as selection() joins it, so a
+    // returned note's quote re-anchors in the same space (§27.2).
+    std::string visible_text() const {
+        std::vector<fe::FlatLine> fl;
+        fl.reserve(flat_.size());
+        for (const VisLine& v : flat_) fl.push_back({v.text, v.prose, v.para_start});
+        std::vector<int> off;
+        return fe::visible_text(fl, off);
+    }
+    // Highlight a codepoint range in the visible text and centre on it. The range
+    // is resolved to (line,col) on the next Render (where flat_ is current), so it
+    // survives re-wrap / resize.
+    void focus_note(int cp_start, int cp_end) {
+        hl_cp_start_ = cp_start; hl_cp_end_ = cp_end; center_pending_ = true;
+    }
+    void clear_highlight() {
+        hl_cp_start_ = hl_cp_end_ = -1;
+        hl_start_line_ = hl_end_line_ = -1;
+        center_pending_ = false;
+    }
+    bool has_highlight() const { return hl_cp_start_ >= 0 && hl_cp_end_ > hl_cp_start_; }
+
+    // DEBUG (s109 log-mode): a compact dump of the viewer's highlight/scroll state,
+    // read back on screen instead of a log file (this is a fullscreen TUI). Strip
+    // once the highlight path is confirmed.
+    std::string debug_state() const {
+        int prose = 0;
+        for (const VisLine& v : flat_) if (v.prose) ++prose;
+        return "flat=" + std::to_string(flat_.size()) + " prose=" + std::to_string(prose) +
+               " hlcp=" + std::to_string(hl_cp_start_) + ".." + std::to_string(hl_cp_end_) +
+               " hlL=" + std::to_string(hl_start_line_) + ".." + std::to_string(hl_end_line_) +
+               " scroll=" + std::to_string(scroll_top_) + " carL=" + std::to_string(caret_line_) +
+               " foc=" + (Focused() ? "1" : "0");
+    }
 
     // Resolve the current mark to the scene's visible-text char range + quote.
     // Walks the flattened PROSE lines (skipping title/notes chrome), rejoining
@@ -309,12 +370,19 @@ private:
                 shi = (idx == cl) ? std::min(cc, sz) : sz;
             }
         }
+        // note-highlight span [hlo,hhi) on this line (bytes), if a note is selected
+        int hlo = -1, hhi = -1;
+        if (hl_start_line_ >= 0 && idx >= hl_start_line_ && idx <= hl_end_line_) {
+            hlo = (idx == hl_start_line_) ? std::min(hl_start_col_, sz) : 0;
+            hhi = (idx == hl_end_line_)   ? std::min(hl_end_col_,   sz) : sz;
+        }
         const bool caret_here = foc && idx == caret_line_;
         const int  car = caret_here ? std::min(caret_col_, sz) : -1;
 
-        // Cut the line at selection + caret boundaries, style each run.
+        // Cut the line at selection + highlight + caret boundaries, style each run.
         std::vector<int> cuts = {0, sz};
         if (slo >= 0) { cuts.push_back(slo); cuts.push_back(shi); }
+        if (hlo >= 0) { cuts.push_back(hlo); cuts.push_back(hhi); }
         if (car >= 0) { cuts.push_back(car); cuts.push_back(std::min(utf8_next(s, car), sz)); }
         std::sort(cuts.begin(), cuts.end());
         cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
@@ -325,9 +393,14 @@ private:
             if (b <= a) continue;
             const bool is_caret = (car >= 0 && a == car);
             const bool is_sel   = (slo >= 0 && a >= slo && b <= shi);
+            const bool is_hl    = (hlo >= 0 && a >= hlo && b <= hhi);
             Element seg = text(s.substr(static_cast<std::size_t>(a), static_cast<std::size_t>(b - a)));
-            if (is_caret)     seg = seg | inverted;                       // the moving end
-            else if (is_sel)  seg = seg | bgcolor(Color::GrayDark);       // the marked range
+            // Bright bg + dark fg so the highlight reads on a dark (Catppuccin) terminal;
+            // a dark-on-dark bgcolor renders but is invisible. Mark = light grey
+            // (selection in progress); note = mauve (a selected note).
+            if (is_caret)     seg = seg | inverted;                                                      // the moving end
+            else if (is_sel)  seg = seg | bgcolor(Color::RGB(0x93,0x99,0xb2)) | color(Color::RGB(0x1e,0x1e,0x2e));  // the marked range
+            else if (is_hl)   seg = seg | bgcolor(Color::RGB(0xcb,0xa6,0xf7)) | color(Color::RGB(0x1e,0x1e,0x2e));  // selected note
             runs.push_back(seg);
         }
         if (caret_here && car >= sz)   // caret past end-of-line: a lit cell
@@ -346,6 +419,12 @@ private:
     bool marking_ = false; // s107 — a range is being marked (Mark → Set)
     int anchor_line_ = 0;  // where Mark dropped the start of the range
     int anchor_col_  = 0;
+    // s109 — the selected note's highlight (§27.1). The cp range is the anchor of
+    // record; the line/col endpoints are re-derived each Render from flat_.
+    int  hl_cp_start_   = -1, hl_cp_end_  = -1;   // range in visible-text codepoints
+    int  hl_start_line_ = -1, hl_start_col_ = 0;  // resolved this frame (-1 = none)
+    int  hl_end_line_   = -1, hl_end_col_   = 0;
+    bool center_pending_ = false;                 // recentre once, on the next Render
     Box box_;
 };
 
@@ -419,6 +498,44 @@ fe::KeyPair load_or_create_identity() {
     fe::KeyPair kp = fe::generate_keypair();
     fe::save_keypair(kp, path.string());
     return kp;
+}
+
+// The editor's reply file (§21.1/§27.3): NEVER overwrite the received .folioedit —
+// each hop mints a new sealed message. Put "<stem>-reply.folioedit" beside the
+// received file; strip a trailing "-reply" first so re-saving overwrites the same
+// reply instead of chaining "-reply-reply". The custody chain carries the thread.
+std::string reply_path(const std::string& in_file) {
+    fs::path p(in_file);
+    std::string stem = p.stem().string();
+    const std::string suf = "-reply";
+    if (stem.size() >= suf.size() &&
+        stem.compare(stem.size() - suf.size(), suf.size(), suf) == 0)
+        stem.erase(stem.size() - suf.size());
+    const std::string name = stem + "-reply.folioedit";
+    return p.parent_path().empty() ? name : (p.parent_path() / name).string();
+}
+
+// The editor's CURRENT stance on a note from its resolution log: the latest
+// EDITOR event by `at`. -1 none, 0 reopen (half withdrawn), 1 resolve.
+int editor_stance(const fe::Annotation& a) {
+    int st = -1;
+    std::string best;
+    for (const fe::ResolutionEvent& ev : a.resolution_log) {
+        if (ev.by != fe::Resolver::Editor) continue;
+        if (best.empty() || ev.at >= best) { best = ev.at; st = ev.resolved ? 1 : 0; }
+    }
+    return st;
+}
+
+// The §25.1 handshake state, worded for the EDITOR's chair.
+std::string state_word_editor(fe::ResolutionState s) {
+    switch (s) {
+        case fe::ResolutionState::Open:       return "open";
+        case fe::ResolutionState::HalfAuthor: return "the author resolved \u2014 your turn to confirm";
+        case fe::ResolutionState::HalfEditor: return "resolved from your side \u2014 waiting on the author";
+        case fe::ResolutionState::Resolved:   return "resolved \u2014 you both agreed";
+    }
+    return "open";
 }
 
 }  // namespace
@@ -548,6 +665,8 @@ int run_tui(const std::string& initial_file) {
                    row("Prev / Next", "previous / next scene"),
                    row("Mark   m", "drop the start of a range at the cursor"),
                    row("Set    s", "write a note for the marked range"),
+                   row("Resolve r", "close your half of the selected note (toggles reopen)"),
+                   row("Reply  y", "reply to the selected note (inherits its range)"),
                    row("Tab", "move focus: scenes \u2192 text \u2192 Notes \u2192 buttons"),
                    row("Help   ?  /  F1", "this screen"),
                    row("Quit   Q", "leave folioedit"),
@@ -557,6 +676,9 @@ int run_tui(const std::string& initial_file) {
                    row("  Notes panel", "the right panel lists THIS scene's notes \u2014 verdict"),
                    row("", "glyph, range, the quoted span, your comment. Tab to it"),
                    row("", "and \u2191\u2193 to select; the full note opens below the text."),
+                   row("  select a note", "its passage highlights (mauve) in the scene and"),
+                   row("", "scrolls to centre \u2014 re-anchored by the quote, so it lands"),
+                   row("", "right even where the author edited the surrounding prose."),
                    row("  \u25B8 / \u2713 / \u2717", "proposed / accepted / declined (the author's verdict)."),
                    text(""),
                    text("The editing loop:") | color(Color::Plum1),
@@ -566,11 +688,17 @@ int run_tui(const std::string& initial_file) {
                    row("  Set", "press Set (s), type your comment, File it. The note is"),
                    row("", "filed as a PROPOSAL (\u25B8) — it never rewrites the prose;"),
                    row("", "the author accepts (\u2713) or declines (\u2717) it back in Folio."),
+                   row("  Resolve", "on a RETURNED note, Resolve (r) turns YOUR key in the"),
+                   row("", "two-key handshake. Once the author confirms, it's Resolved"),
+                   row("", "and drops off both worklists. Press r again to reopen."),
+                   row("  Reply", "Reply (y) writes a new note on the SAME range (re-anchored"),
+                   row("", "to the author's revised text) — no need to re-Mark it."),
                    row("  Seal", "sign the file with your name so the author can prove it"),
                    row("", "came from you, untampered, with a chain of custody. Your"),
                    row("", "identity key is made on first Seal and reused after."),
-                   row("  Save", "write everything — your notes and the seal — back into"),
-                   row("", "the .folioedit file (in place) to send home."),
+                   row("  Save", "MINTS a new \u2039name\u203a-reply.folioedit beside the file you"),
+                   row("", "opened — send THAT back. The received copy is never reused"),
+                   row("", "or overwritten (each hop is its own sealed message)."),
                    text(""),
                    text("Verdict glyphs (on notes in a returned pass):") | color(Color::Plum1),
                    row("  \u25B8 proposed", "awaiting the author's decision"),
@@ -619,6 +747,8 @@ int run_tui(const std::string& initial_file) {
 
     // ── Set (write a note) modal state ────────────────────────────────────────
     bool        set_shown = false;
+    bool        set_reply = false;   // s109 — the modal is a REPLY to the selected note
+                                     // (range auto-inherited, §27.1) vs a fresh Mark→Set
     bool        dirty     = false;   // unsaved notes / seal
     std::string set_note, set_kind, set_quote, set_error;
     Selection   set_sel;
@@ -651,14 +781,92 @@ int run_tui(const std::string& initial_file) {
             ann_selected = std::max(0, (int)ann_titles.size() - 1);
     };
 
+    // §27.1 — highlight the SELECTED note's range, re-anchored to the current prose,
+    // and centre on it. Driven from the renderer on a selection CHANGE, keyed by the
+    // note's identity — because FTXUI's Menu on_change does NOT fire for an already-
+    // selected single note or a click that doesn't move the index (s109 log-mode found
+    // hlcp stuck at -1 with reanchor already succeeding: the math was fine, the trigger
+    // never ran). Keying on identity also lights the default-selected note on open.
+    long hl_key = -1;   // (scene, ann-index) identity of the focused note; -1 = none
+    auto refocus_note = [&] {
+        if (!have_doc || ann_index.empty() ||
+            ann_selected < 0 || ann_selected >= (int)ann_index.size()) {
+            if (hl_key != -1) { viewer_impl->clear_highlight(); hl_key = -1; }
+            return;
+        }
+        const long want = static_cast<long>(scene_selected) * 1000003L
+                        + ann_index[(std::size_t)ann_selected];
+        if (want == hl_key) return;                    // this note is already focused
+        const fe::Annotation& a = doc.annotations[(std::size_t)ann_index[(std::size_t)ann_selected]];
+        const std::string V = viewer_impl->visible_text();
+        if (V.empty()) return;                         // flat_ not built yet — retry next frame
+        const fe::AnchorResult ar = fe::reanchor(V, a.range_start, a.range_end, a.quote);
+        if (ar.floating()) { viewer_impl->clear_highlight(); return; }   // don't commit; retry
+        viewer_impl->focus_note(ar.range_start, ar.range_end);
+        hl_key = want;                                 // committed
+        if (ar.method == fe::AnchorMethod::Offset)
+            status = "Note \u2014 text unchanged since it was flagged.";
+        else if (ar.ambiguous)
+            status = "Note re-anchored \u2014 quote appears more than once; showing the nearest.";
+        else
+            status = "Note re-anchored \u2014 the author changed the surrounding text.";
+    };
+
+    // §27.3 — the editor's §25 KEY. Toggle the editor's half on the selected note:
+    // resolve it (a signed reply, once sealed, makes the author's Confirm → Resolved),
+    // or withdraw that half (reopen). Author-authoritative reopen still lives on the
+    // author side; the editor only moves its own half (§25.2).
+    auto do_resolve = [&] {
+        if (!have_doc || ann_selected < 0 || ann_selected >= (int)ann_index.size()) {
+            status = "Select a note to resolve."; return;
+        }
+        fe::Annotation& a = doc.annotations[(std::size_t)ann_index[(std::size_t)ann_selected]];
+        fe::ResolutionEvent ev;
+        ev.by       = fe::Resolver::Editor;
+        ev.resolved = (editor_stance(a) != 1);   // already resolved → reopen; else resolve
+        ev.at       = now_iso();
+        a.resolution_log.push_back(ev);
+        dirty = true;
+        const fe::ResolutionState st = fe::resolution_state(a.resolution_log);
+        status = std::string(ev.resolved ? "You resolved this note \u2014 "
+                                          : "You reopened your side \u2014 ")
+                 + state_word_editor(st) + ". Seal, then Save to send it back.";
+    };
+
+    // §27.1 — REPLY to the selected note: a NEW proposal that auto-inherits the
+    // note's range, re-anchored to the CURRENT prose (no re-Mark). Reuses the Set
+    // modal; the difference is the range comes from the note, not a fresh mark.
+    auto begin_reply = [&] {
+        if (!have_doc || ann_selected < 0 || ann_selected >= (int)ann_index.size()) {
+            status = "Select a note to reply to."; return;
+        }
+        const fe::Annotation& a = doc.annotations[(std::size_t)ann_index[(std::size_t)ann_selected]];
+        const std::string V = viewer_impl->visible_text();
+        const fe::AnchorResult ar = fe::reanchor(V, a.range_start, a.range_end, a.quote);
+        set_sel.start = ar.range_start;
+        set_sel.end   = ar.range_end;
+        set_sel.quote = a.quote;        // the span's text (reanchor only relocates offsets)
+        set_sel.ok    = true;
+        set_kind  = a.kind.empty() ? (doc.pass.kinds.empty() ? std::string("Editor")
+                                                             : doc.pass.kinds.front())
+                                   : a.kind;
+        set_quote = a.quote.size() > 60 ? a.quote.substr(0, 57) + "\u2026" : a.quote;
+        set_note.clear(); set_error.clear();
+        set_reply = true; set_shown = true;
+        if (!ar.floating()) viewer_impl->focus_note(ar.range_start, ar.range_end);
+    };
+
     MenuOption menu_opt;
+    // Switching scenes drops the highlight and resets the note cursor — the notes
+    // panel always reflects the scene on screen.
+    menu_opt.on_change = [&] { viewer_impl->clear_highlight(); ann_selected = 0; };
     auto scene_menu = Menu(&scene_titles, &scene_selected, menu_opt);
-    MenuOption ann_opt;
+    MenuOption ann_opt;   // highlight is driven from the renderer (refocus_note), not on_change
     auto ann_menu = Menu(&ann_titles, &ann_selected, ann_opt);
 
     auto open_btn = Button("Open", [&] { modal_error.clear(); open_shown = true; });
-    auto prev_btn = Button("Prev", [&] { if (scene_selected > 0) scene_selected--; });
-    auto next_btn = Button("Next", [&] { if (scene_selected + 1 < (int)doc.scenes.size()) scene_selected++; });
+    auto prev_btn = Button("Prev", [&] { if (scene_selected > 0) { scene_selected--; viewer_impl->clear_highlight(); ann_selected = 0; } });
+    auto next_btn = Button("Next", [&] { if (scene_selected + 1 < (int)doc.scenes.size()) { scene_selected++; viewer_impl->clear_highlight(); ann_selected = 0; } });
     auto do_mark = [&] {
         if (!have_doc) { status = "Open a pass first."; return; }
         viewer_impl->begin_mark();
@@ -674,9 +882,12 @@ int run_tui(const std::string& initial_file) {
         set_quote = sel.quote.size() > 60 ? sel.quote.substr(0, 57) + "\u2026" : sel.quote;
         set_note.clear(); set_error.clear();
         set_kind = doc.pass.kinds.empty() ? std::string("Editor") : doc.pass.kinds.front();
+        set_reply = false;   // a fresh Mark→Set, not a reply
         set_shown = true;
     };
-    auto set_btn  = Button("Set",  [&] { begin_set(); });
+    auto set_btn     = Button("Set",     [&] { begin_set(); });
+    auto resolve_btn = Button("Resolve", [&] { do_resolve(); });
+    auto reply_btn   = Button("Reply",   [&] { begin_reply(); });
     auto seal_btn = Button("Seal", [&] {
         if (!have_doc) { status = "Open a pass first."; return; }
         try {
@@ -686,10 +897,10 @@ int run_tui(const std::string& initial_file) {
             e.actor    = editor_name.empty() ? std::string("editor") : editor_name;
             e.actor_id = fe::fingerprint(kp.public_key);   // set before finalize (bound)
             e.at       = now_iso();
-            e.binds    = fe::annotations_hash(doc);        // over the returned block
+            e.binds    = fe::annotations_hash(doc);        // over the returned block (verdicts + resolution)
             fe::sign_event(fe::append_event(doc.custody, e), kp);
             dirty = true;
-            status = "Sealed by " + e.actor + " — now Save to write it back.";
+            status = "Sealed by " + e.actor + " — now Save to mint your reply.";
         } catch (const std::exception& ex) {
             status = std::string("Seal failed: ") + ex.what();
         }
@@ -697,10 +908,13 @@ int run_tui(const std::string& initial_file) {
     auto save_btn = Button("Save", [&] {
         if (!have_doc) { status = "Open a pass first."; return; }
         try {
-            if (!in_pass.empty()) fe::save_document_pw(in_file, doc, in_pass);
-            else                  fe::save_document_plain(in_file, doc);
+            // §21.1 — mint a NEW reply file; never overwrite the received copy.
+            const std::string out = reply_path(in_file);
+            if (!in_pass.empty()) fe::save_document_pw(out, doc, in_pass);
+            else                  fe::save_document_plain(out, doc);
             dirty = false;
-            status = "Saved to " + in_file + " — send it back to the author.";
+            status = "Minted your reply → " + out +
+                     "  — send THAT file back; the received copy is untouched.";
         } catch (const std::exception& ex) {
             status = std::string("Save failed: ") + ex.what();
         }
@@ -724,26 +938,33 @@ int run_tui(const std::string& initial_file) {
         viewer_impl->clear_mark();
         dirty = true;
         set_shown = false;
-        status = "Note filed as a proposal on \u201c" + doc.scenes[(std::size_t)scene_selected].title + "\u201d.";
+        status = (set_reply ? "Reply filed as a proposal on \u201c"
+                            : "Note filed as a proposal on \u201c")
+                 + doc.scenes[(std::size_t)scene_selected].title + "\u201d.";
+        set_reply = false;
     });
-    auto set_cancel = Button("Cancel", [&] { set_shown = false; });
+    auto set_cancel = Button("Cancel", [&] { set_shown = false; set_reply = false; });
     auto set_container = Container::Vertical({note_input, Container::Horizontal({set_file, set_cancel})});
     auto set_modal = Renderer(set_container, [&] {
         return vbox({
-                   text("Write a note") | bold,
+                   text(set_reply ? "Reply to the note" : "Write a note") | bold,
                    separator(),
-                   hbox({text("Range  ") | dim, text("\u201c" + set_quote + "\u201d") | color(Color::Plum1)}),
+                   hbox({text(set_reply ? "Re     " : "Range  ") | dim,
+                         text("\u201c" + set_quote + "\u201d") | color(Color::Plum1)}),
                    hbox({text("Hat    ") | dim, text(set_kind)}),
                    text(""),
-                   hbox({text("Note   ") | dim, note_input->Render() | flex | border}),
+                   hbox({text(set_reply ? "Reply  " : "Note   ") | dim, note_input->Render() | flex | border}),
                    (set_error.empty() ? text("") : text(set_error) | color(Color::Red)),
                    separator(),
-                   hbox({text("It never rewrites the prose \u2014 the author accepts or declines it.") | dim,
+                   hbox({text(set_reply
+                              ? "A reply is a new proposal on the same range \u2014 the author sees it next round."
+                              : "It never rewrites the prose \u2014 the author accepts or declines it.") | dim,
                          filler(), set_file->Render(), text("  "), set_cancel->Render()}),
                }) | border | size(WIDTH, GREATER_THAN, 64) | bgcolor(Color::Black);
     });
     auto verb_bar = Container::Horizontal({
-        open_btn, prev_btn, next_btn, mark_btn, set_btn, seal_btn, save_btn, help_btn, quit_btn,
+        open_btn, prev_btn, next_btn, mark_btn, set_btn, resolve_btn, reply_btn,
+        seal_btn, save_btn, help_btn, quit_btn,
     });
 
     auto main_container = Container::Vertical({
@@ -756,6 +977,8 @@ int run_tui(const std::string& initial_file) {
 
     auto main_renderer = Renderer(main_container, [&] {
         rebuild_ann_list();   // keep the right panel in sync with the current scene
+        refocus_note();       // drive the selected-note highlight BEFORE the viewer renders
+                              // (so the recentre lands this frame, not next)
 
         auto header = hbox({
             text("folioedit") | color(Color::Plum1),
@@ -791,11 +1014,17 @@ int run_tui(const std::string& initial_file) {
             const char* word = "Proposed"; Color vc = Color::Plum1; const char* g = "\u25B8";
             if (a.verdict == fe::Verdict::Accepted) { word = "Accepted"; vc = Color::RGB(0xa6,0xe3,0xa1); g = "\u2713"; }
             else if (a.verdict == fe::Verdict::Declined) { word = "Declined"; vc = Color::RGB(0xf3,0x8b,0xa8); g = "\u2717"; }
+            const fe::ResolutionState rs = fe::resolution_state(a.resolution_log);
+            Element res_line = (rs == fe::ResolutionState::Open)
+                ? text("")
+                : hbox({text("\u25C9 ") | color(Color::RGB(0xcb,0xa6,0xf7)),
+                        text(state_word_editor(rs)) | color(Color::RGB(0xcb,0xa6,0xf7))});
             anno_body = vbox({
                 hbox({text(std::string(g) + " " + word) | color(vc),
                       text("   " + (a.kind.empty() ? std::string("note") : a.kind)) | color(Color::Plum1),
                       text("   " + std::to_string(a.range_start) + "\u2013" + std::to_string(a.range_end)) | dim,
                       filler()}),
+                res_line,
                 text("\u201c" + a.quote + "\u201d") | dim,
                 paragraph(a.text),
             });
@@ -803,11 +1032,12 @@ int run_tui(const std::string& initial_file) {
             anno_body = text("Mark (m) a range in the scene, then Set (s) to write a note.") | dim;
         }
         auto anno = vbox({text("Annotation") | color(Color::GrayDark), anno_body})
-                    | border | size(HEIGHT, EQUAL, 6);
+                    | border | size(HEIGHT, EQUAL, 7);
 
         auto bar = hbox({
             open_btn->Render(), text(" "), prev_btn->Render(), text(" "), next_btn->Render(), text("   "),
-            mark_btn->Render(), text(" "), set_btn->Render(), text(" "),
+            mark_btn->Render(), text(" "), set_btn->Render(), text("   "),
+            resolve_btn->Render(), text(" "), reply_btn->Render(), text("   "),
             seal_btn->Render(), text(" "), save_btn->Render(), filler(),
             help_btn->Render(), text(" "), quit_btn->Render(),
         }) | borderStyled(accent(verb_bar->Focused()));
@@ -818,7 +1048,29 @@ int run_tui(const std::string& initial_file) {
             (dirty ? text("\u25CF unsaved — Seal, then Save") | color(Color::RGB(0xf3, 0x8b, 0xa8))
                    : text("")),
         });
-        return vbox({header, top, anno, bar, statusline}) | border;
+
+        // DEBUG (s109 log-mode): a fresh reanchor of the SELECTED note every frame
+        // (independent of on_change firing) + the viewer's live highlight/scroll
+        // state. Read this line back to isolate where select→highlight→centre breaks.
+        std::string dbg = "dbg ";
+        if (have_doc && !ann_index.empty() && ann_selected >= 0 && ann_selected < (int)ann_index.size()) {
+            const fe::Annotation& da = doc.annotations[(std::size_t)ann_index[(std::size_t)ann_selected]];
+            const std::string V = viewer_impl->visible_text();
+            const fe::AnchorResult ar = fe::reanchor(V, da.range_start, da.range_end, da.quote);
+            const char* m = ar.floating() ? "FLOAT"
+                          : (ar.method == fe::AnchorMethod::Offset ? "OFFSET" : "QUOTE");
+            dbg += std::string("sel=") + std::to_string(ann_selected) +
+                   " note=" + std::to_string(da.range_start) + ".." + std::to_string(da.range_end) +
+                   " Vlen=" + std::to_string((int)V.size()) +
+                   " reanchor=" + m + " ar=" + std::to_string(ar.range_start) + ".." + std::to_string(ar.range_end) +
+                   " q'" + utf8_prefix(da.quote, 12) + "'  ";
+        } else {
+            dbg += "(no note selected)  ";
+        }
+        dbg += viewer_impl->debug_state();
+        auto dbgline = text(dbg) | color(Color::RGB(0xf9,0xe2,0xaf));
+
+        return vbox({header, top, anno, bar, dbgline, statusline}) | border;
     });
 
     auto app = Modal(main_renderer, open_modal, &open_shown);
@@ -831,6 +1083,11 @@ int run_tui(const std::string& initial_file) {
         if (!modal && viewer_impl->Focused()) {
             if (e == Event::Character('m')) { do_mark(); return true; }
             if (e == Event::Character('s')) { begin_set(); return true; }
+        }
+        // Editor loop-closers work from either the scene or the notes list (§27.3).
+        if (!modal && (viewer_impl->Focused() || ann_menu->Focused())) {
+            if (e == Event::Character('r')) { do_resolve(); return true; }
+            if (e == Event::Character('y')) { begin_reply(); return true; }
         }
         if (e == Event::Escape) {
             if (set_shown)  { set_shown = false; return true; }
