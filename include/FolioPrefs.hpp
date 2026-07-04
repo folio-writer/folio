@@ -290,6 +290,10 @@ public:
     bool        show_annotations     = true;
     bool        show_links           = true;
     bool        show_invisibles      = false;
+    // Zoom for the read-heavy metadata surfaces (editorial ledger, annotation
+    // report). One shared lever, not per-view: the reader's eyes are the constant,
+    // so a bump in one surface carries to the others. Percent, like editor zoom.
+    int         data_view_zoom_pct   = 100;   // 50–300
 
     // ── Auto-save ─────────────────────────────────────────────────────────────
     bool auto_save                 = true;

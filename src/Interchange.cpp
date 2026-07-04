@@ -216,6 +216,76 @@ LedgerEntry write_pass_plain(const std::string&           path,
     return le;
 }
 
+void write_return(const std::string&                   path,
+                  const fe::Document&                  sent,
+                  const std::vector<ReturnAnnotation>& returned,
+                  const std::string&                   author_label,
+                  const std::string&                   passphrase,
+                  const fe::KeyPair&                   identity) {
+    // Map the caller's return notes (verdict as a string) to engine annotations.
+    std::vector<fe::Annotation> anns;
+    anns.reserve(returned.size());
+    for (const ReturnAnnotation& r : returned) {
+        fe::Annotation a;
+        a.scene_iid   = r.scene_iid;
+        a.range_start = r.range_start;
+        a.range_end   = r.range_end;
+        a.quote       = r.quote;
+        a.kind        = r.kind;
+        a.text        = r.text;
+        a.withdrawn   = r.withdrawn;
+        a.verdict     = fe::verdict_from_str(r.verdict);   // "" -> proposed (boundary contract)
+        a.resolution_log = r.resolution_log;               // §25 — carry the resolution half
+        anns.push_back(std::move(a));
+    }
+
+    // Continue the carrier's chain: append the author's `sealed` event binding the
+    // verdict-laden annotations_hash (unsigned), then sign it + seal the file.
+    fe::Document doc = fe::make_return_document(
+        sent, anns,
+        author_label.empty() ? std::string("author") : author_label,
+        fe::fingerprint(identity.public_key),
+        now_iso());
+    fe::sign_event(doc.custody.back(), identity);      // the author signs the return seal
+    fe::save_document_pw(path, doc, passphrase);       // PBKDF2 + AES-256-GCM
+}
+
+void write_sendback(const std::string&                   path,
+                    const fe::Document&                  sent,
+                    const std::vector<fe::Scene>&        current_scenes,
+                    const std::vector<ReturnAnnotation>& returned,
+                    const std::string&                   author_label,
+                    const std::string&                   passphrase,
+                    const fe::KeyPair&                   identity) {
+    std::vector<fe::Annotation> anns;
+    anns.reserve(returned.size());
+    for (const ReturnAnnotation& r : returned) {
+        fe::Annotation a;
+        a.scene_iid   = r.scene_iid;
+        a.range_start = r.range_start;
+        a.range_end   = r.range_end;
+        a.quote       = r.quote;
+        a.kind        = r.kind;
+        a.text        = r.text;
+        a.withdrawn   = r.withdrawn;
+        a.verdict     = fe::verdict_from_str(r.verdict);
+        a.resolution_log = r.resolution_log;               // §25 — the author's half rides back
+        anns.push_back(std::move(a));
+    }
+
+    // Two authored links on the continued chain: re-issue the revised body, then
+    // seal the verdict/resolution block. Sign BOTH tail links before sealing.
+    fe::Document doc = fe::make_sendback_document(
+        sent, current_scenes, anns,
+        author_label.empty() ? std::string("author") : author_label,
+        fe::fingerprint(identity.public_key),
+        now_iso());
+    const std::size_t n = doc.custody.size();
+    fe::sign_event(doc.custody[n - 2], identity);      // issued(body_v2)
+    fe::sign_event(doc.custody[n - 1], identity);      // sealed(annotations)
+    fe::save_document_pw(path, doc, passphrase);       // PBKDF2 + AES-256-GCM
+}
+
 Carrier sniff(const std::string& path) {
     switch (fe::peek_file_face(path)) {
         case fe::FileFace::Plain:  return Carrier::Plain;
@@ -282,6 +352,7 @@ AbsorbResult absorb(const fe::Document& doc,
         ia.kind        = a.kind;
         ia.text        = a.text;
         ia.source      = doc.pass.source;   // identity is the pass's, shared by all its notes
+        ia.verdict     = fe::verdict_to_str(a.verdict);   // s107 — carry the author's verdict through
         ia.method      = ar.method;
         ia.ambiguous   = ar.ambiguous;
 

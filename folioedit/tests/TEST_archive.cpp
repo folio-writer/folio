@@ -127,6 +127,23 @@ static void test_binds_hashes() {
           fe::annotations_hash(a) != fe::annotations_hash(w));
     check("the withdrawn annotation is preserved, not deleted",
           w.annotations.size() == a.annotations.size());
+
+    // s107 -- a recorded verdict binds into the hash the way `withdrawn` does, so
+    // a sealed return commits the author's accept/decline (court-visible history).
+    fe::Document acc = a; acc.annotations[0].verdict = fe::Verdict::Accepted;
+    fe::Document dec = a; dec.annotations[0].verdict = fe::Verdict::Declined;
+    check("accepting an annotation changes annotations_hash",
+          fe::annotations_hash(a) != fe::annotations_hash(acc));
+    check("declining an annotation changes annotations_hash",
+          fe::annotations_hash(a) != fe::annotations_hash(dec));
+    check("accept vs decline are distinct in the hash",
+          fe::annotations_hash(acc) != fe::annotations_hash(dec));
+    // The default (proposed) is omitted from the canonical form, so an all-proposed
+    // block hashes byte-identically to the pre-s107 shape -- no version bump needed,
+    // old sealed files still verify. (Setting a verdict back to Proposed == unset.)
+    fe::Document prop = acc; prop.annotations[0].verdict = fe::Verdict::Proposed;
+    check("proposed verdict does not perturb the hash (omit-when-default)",
+          fe::annotations_hash(a) == fe::annotations_hash(prop));
 }
 
 static void test_append_event() {
@@ -193,6 +210,62 @@ static void test_capstone() {
     std::remove(path.c_str());
 }
 
+// s107 — the continuous RETURN: from a signed+sealed carrier, build the author's
+// return (verdicts folded in, whole prior chain preserved, a new author `sealed`
+// event appended), sign that event, seal, reopen, and verify the full 3-link
+// chain + all signatures + that the return binds the verdict-laden hash.
+static void test_make_return() {
+    const std::string path = tmp("folioedit_arc_ret.folioedit");
+    fe::KeyPair editor = fe::generate_keypair();
+    fe::KeyPair author = fe::generate_keypair();
+    const std::string efp = fe::fingerprint(editor.public_key);
+    const std::string afp = fe::fingerprint(author.public_key);
+
+    // A carrier as the author received + absorbed it: issued(author) + sealed(editor).
+    fe::Document sent = sample();
+    fe::CustodyEvent issued;
+    issued.kind = fe::CustodyEvent_Kind::Issued; issued.actor = "scott";
+    issued.actor_id = afp; issued.at = "2026-07-01T00:00:00Z";
+    issued.binds = fe::body_hash(sent);
+    fe::sign_event(fe::append_event(sent.custody, issued), author);
+    fe::CustodyEvent sealed;
+    sealed.kind = fe::CustodyEvent_Kind::Sealed; sealed.actor = "jane";
+    sealed.actor_id = efp; sealed.at = "2026-07-02T00:00:00Z";
+    sealed.binds = fe::annotations_hash(sent);
+    fe::sign_event(fe::append_event(sent.custody, sealed), editor);
+
+    // Author verdicts a note, then builds + signs + seals the return.
+    std::vector<fe::Annotation> returned = sent.annotations;
+    check("carrier has at least one note to verdict", !returned.empty());
+    returned[0].verdict = fe::Verdict::Declined;
+
+    fe::Document ret = fe::make_return_document(sent, returned, "scott", afp,
+                                                "2026-07-03T00:00:00Z");
+    check("return preserves prior chain + appends one (3 links)", ret.custody.size() == 3);
+    check("return continuity: first two event hashes unchanged",
+          ret.custody[0].hash == sent.custody[0].hash &&
+          ret.custody[1].hash == sent.custody[1].hash);
+    fe::sign_event(ret.custody.back(), author);          // author signs the return seal
+
+    fe::save_document_pw(path, ret, "otters unionize discount turnips");
+    fe::Document back = fe::open_document_pw(path, "otters unionize discount turnips");
+
+    check("return: chain verifies after file round-trip", fe::verify_chain(back.custody));
+    check("return: all three signatures verify (author, editor, author)",
+          back.custody.size() == 3 &&
+          fe::verify_event_signature(back.custody[0], author.public_key) &&
+          fe::verify_event_signature(back.custody[1], editor.public_key) &&
+          fe::verify_event_signature(back.custody[2], author.public_key));
+    check("return: the author's seal binds the recomputed annotations_hash",
+          back.custody[2].binds == fe::annotations_hash(back));
+    check("return: the verdict survived the seal round-trip",
+          !back.annotations.empty() && back.annotations[0].verdict == fe::Verdict::Declined);
+    check("return: the author's seal differs from the editor's (verdict changed the hash)",
+          back.custody[2].binds != back.custody[1].binds);
+
+    std::remove(path.c_str());
+}
+
 int main() {
     std::printf("folioedit Archive tests\n");
     test_raw_key_file();
@@ -200,6 +273,7 @@ int main() {
     test_binds_hashes();
     test_append_event();
     test_capstone();
+    test_make_return();
     std::printf("\nfolioedit archive: %d/%d\n", g_pass, g_total);
     return g_pass == g_total ? 0 : 1;
 }

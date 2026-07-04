@@ -2083,7 +2083,7 @@ void Inspector::build_notes_tab() {
     if (!root)
       return;
     if (!m_ann_report)
-      m_ann_report = std::make_unique<AnnotationReportDialog>(*root, m_model);
+      m_ann_report = std::make_unique<AnnotationReportDialog>(*root, m_model, m_prefs);
     else
       m_ann_report->refresh();
     m_ann_report->present();
@@ -3300,8 +3300,80 @@ void Inspector::build_annotations_tab() {
   // This function is kept for link compatibility but does nothing.
 }
 
+Gtk::Widget* Inspector::build_verdict_chip(const Annotation& ann) {
+  if (!ann.is_proposal()) return nullptr;
+  const std::string& v = ann.verdict;
+
+  const char* word = "Proposed";
+  const char* colour = "#cba6f7";                       // mauve (proposed)
+  if (v == Verdicts::kAccepted)      { word = "Accepted"; colour = "#a6e3a1"; }  // green
+  else if (v == Verdicts::kDeclined) { word = "Declined"; colour = "#f38ba8"; }  // red
+
+  auto* chip = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 4);
+  chip->add_css_class("verdict-chip");
+  chip->set_valign(Gtk::Align::CENTER);
+
+  if (v == Verdicts::kProposed) {
+    auto* img = Gtk::make_managed<Gtk::Image>();
+    img->set_from_icon_name("folio-proposal-symbolic");  // the s106 proposal glyph
+    img->set_valign(Gtk::Align::CENTER);
+    auto icss = Gtk::CssProvider::create();              // symbolic -> tint mauve
+    icss->load_from_data(std::string("image { color:") + colour + "; }");
+    img->get_style_context()->add_provider(icss, GTK_STYLE_PROVIDER_PRIORITY_USER);
+    chip->append(*img);
+  } else {
+    auto* glyph = Gtk::make_managed<Gtk::Label>(
+        v == Verdicts::kAccepted ? "\u2713" : "\u2717");  // ✓ / ✗
+    glyph->set_valign(Gtk::Align::CENTER);
+    auto gcss = Gtk::CssProvider::create();
+    gcss->load_from_data(std::string("label { color:") + colour + "; font-weight:bold; }");
+    glyph->get_style_context()->add_provider(gcss, GTK_STYLE_PROVIDER_PRIORITY_USER);
+    chip->append(*glyph);
+  }
+
+  auto* state_lbl = Gtk::make_managed<Gtk::Label>(word);
+  state_lbl->add_css_class("annotation-kind");
+  auto ccss = Gtk::CssProvider::create();
+  ccss->load_from_data(std::string("label { color:") + colour + "; }");
+  state_lbl->get_style_context()->add_provider(ccss, GTK_STYLE_PROVIDER_PRIORITY_USER);
+  chip->append(*state_lbl);
+  return chip;
+}
+
+Gtk::Widget* Inspector::build_verdict_actions(const Annotation& ann, BinderNode* node) {
+  if (!ann.is_proposal()) return nullptr;
+  const std::string& v = ann.verdict;
+  int aid = ann.id;
+
+  auto* act = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+  act->set_halign(Gtk::Align::END);
+  act->set_margin_end(8);
+  act->set_margin_bottom(4);
+
+  auto* accept = Gtk::make_managed<Gtk::Button>("\u2713 Accept");
+  accept->add_css_class("flat");
+  accept->set_tooltip_text("Author will address this note");
+  if (v == Verdicts::kAccepted) { accept->add_css_class("suggested-action"); accept->set_sensitive(false); }
+  accept->signal_clicked().connect([this, node, aid]() {
+    m_model.set_annotation_verdict(node, aid, Verdicts::kAccepted);
+    refresh_annotations();
+  });
+
+  auto* decline = Gtk::make_managed<Gtk::Button>("\u2717 Decline");
+  decline->add_css_class("flat");
+  decline->set_tooltip_text("Author rejects this note (prose unchanged; the \u201cno\u201d is on record)");
+  if (v == Verdicts::kDeclined) { decline->add_css_class("destructive-action"); decline->set_sensitive(false); }
+  decline->signal_clicked().connect([this, node, aid]() {
+    m_model.set_annotation_verdict(node, aid, Verdicts::kDeclined);
+    refresh_annotations();
+  });
+
+  act->append(*accept);
+  act->append(*decline);
+  return act;
+}
+
 void Inspector::refresh_annotations() {
-  // Clear existing cards
   while (auto *child = m_ann_box.get_first_child())
     m_ann_box.remove(*child);
 
@@ -3365,6 +3437,8 @@ void Inspector::refresh_annotations() {
         kind_lbl->set_hexpand(true);
         hdr->append(*kind_lbl);
 
+        if (auto* chip = build_verdict_chip(ann)) hdr->append(*chip);   // s107 verdict state
+
         if (!ann.created_at.empty()) {
           auto *date_lbl =
               Gtk::make_managed<Gtk::Label>(ann.created_at.substr(0, 10));
@@ -3421,6 +3495,8 @@ void Inspector::refresh_annotations() {
         btn_row->append(*edit_btn);
         btn_row->append(*del_btn);
         card->append(*btn_row);
+
+        if (auto* va = build_verdict_actions(ann, node)) card->append(*va);  // s107 Accept/Decline
 
         // Inline edit revealer
         auto *edit_rev = Gtk::make_managed<Gtk::Revealer>();
@@ -3549,6 +3625,8 @@ void Inspector::refresh_annotations() {
     kind_lbl->set_hexpand(true);
     hdr->append(*kind_lbl);
 
+    if (auto* chip = build_verdict_chip(ann)) hdr->append(*chip);   // s107 verdict state
+
     // Date (just show date part of ISO timestamp)
     if (!ann.created_at.empty()) {
       auto *date_lbl =
@@ -3607,6 +3685,8 @@ void Inspector::refresh_annotations() {
     btn_row->append(*edit_btn);
     btn_row->append(*del_btn);
     card->append(*btn_row);
+
+    if (auto* va = build_verdict_actions(ann, m_current_node)) card->append(*va);  // s107 Accept/Decline
 
     // Inline edit revealer
     auto *edit_rev = Gtk::make_managed<Gtk::Revealer>();
@@ -3679,7 +3759,7 @@ void Inspector::open_annotation_report() {
   auto *root = dynamic_cast<Gtk::Window *>(get_root());
   if (!root) return;
   if (!m_ann_report)
-    m_ann_report = std::make_unique<AnnotationReportDialog>(*root, m_model);
+    m_ann_report = std::make_unique<AnnotationReportDialog>(*root, m_model, m_prefs);
   else
     m_ann_report->refresh();
   m_ann_report->present();

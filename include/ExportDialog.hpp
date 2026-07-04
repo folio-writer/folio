@@ -87,6 +87,7 @@ private:
     // — sealed & signed". The AI carrier is plain-only; sealing is the person path.
     Gtk::DropDown*   m_ic_carrier = nullptr;
     Gtk::Entry       m_ic_recipient;      // editor/source label — stamped on annotations
+    Gtk::DropDown*   m_ic_known_editors = nullptr;  // s108 — reuse a past editor (fills recipient)
     Gtk::CheckButton m_ic_kind_proof;     // allowed hats
     Gtk::CheckButton m_ic_kind_editor;
     Gtk::CheckButton m_ic_kind_writer;
@@ -99,6 +100,10 @@ private:
     void update_interchange_carrier();    // show/hide the seal section
     void build_interchange_settings();
     void on_export_interchange();
+    // s108 — a plain OK dialog for the interchange path so a refusal (no scenes /
+    // no recipient) or a success is impossible to miss (the quiet status line was
+    // easy to overlook). close_after closes the export dialog on OK (used on success).
+    void ic_alert(const std::string& title, const std::string& detail, bool close_after);
 
     // Output mode
     Gtk::CheckButton m_radio_combined;

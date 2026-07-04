@@ -94,6 +94,38 @@ static void test_document_roundtrip() {
     check("empty document round-trips byte-identical", e1 == e2);
 }
 
+static void test_verdict() {
+    // enum <-> string is total and round-trips.
+    check("verdict_to_str(Proposed) == \"proposed\"", fe::verdict_to_str(fe::Verdict::Proposed) == "proposed");
+    check("verdict_to_str(Accepted) == \"accepted\"", fe::verdict_to_str(fe::Verdict::Accepted) == "accepted");
+    check("verdict_to_str(Declined) == \"declined\"", fe::verdict_to_str(fe::Verdict::Declined) == "declined");
+    check("verdict_from_str round-trips",
+          fe::verdict_from_str("accepted") == fe::Verdict::Accepted &&
+          fe::verdict_from_str("declined") == fe::Verdict::Declined &&
+          fe::verdict_from_str("proposed") == fe::Verdict::Proposed);
+    check("verdict_from_str(\"\") -> Proposed (absent = default)", fe::verdict_from_str("") == fe::Verdict::Proposed);
+    check("verdict_from_str(garbage) -> Proposed",  fe::verdict_from_str("banana") == fe::Verdict::Proposed);
+
+    // Default verdict is OMITTED from the wire: a fresh (all-proposed) block is
+    // byte-identical to the pre-s107 shape -- the whole point of omit-when-default.
+    fe::Annotation p{"scn_1", 0, 4, "quo", "Editor", "note"};   // verdict defaults Proposed
+    check("proposed annotation defaults correctly", p.verdict == fe::Verdict::Proposed);
+    fe::Document dp; dp.annotations.push_back(p);
+    check("proposed verdict is omitted from JSON",
+          !fe::to_json(dp)["annotations"][0].contains("verdict"));
+
+    // A recorded verdict IS emitted and survives the round-trip.
+    fe::Document da;
+    fe::Annotation a{"scn_1", 0, 4, "quo", "Editor", "note"};
+    a.verdict = fe::Verdict::Declined;
+    da.annotations.push_back(a);
+    check("declined verdict is emitted to JSON", fe::to_json(da)["annotations"][0].contains("verdict"));
+    fe::Document da2 = fe::from_json(fe::to_json(da));
+    check("verdict survives round-trip", da2.annotations.size() == 1 &&
+          da2.annotations[0].verdict == fe::Verdict::Declined);
+    check("verdict round-trips byte-identical", fe::to_json(da).dump(2) == fe::to_json(da2).dump(2));
+}
+
 static void test_envelope_frame() {
     fe::Envelope env;
     env.schema = 1;
@@ -128,6 +160,7 @@ static void test_envelope_frame() {
 
 int main() {
     test_document_roundtrip();
+    test_verdict();
     test_envelope_frame();
     std::printf("\nfolioedit format: %d/%d\n", g_pass, g_total);
     return g_pass == g_total ? 0 : 1;

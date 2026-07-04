@@ -182,6 +182,7 @@ set(SOURCES
     src/DiffView.cpp              # s98 — side-by-side snapshot diff, editor view
     src/LedgerSurface.cpp         # s104 — editorial ledger, editor view (read-only card list)
     src/DocumentModel.cpp
+    src/NoteStep.cpp              # s108 - the note stepper (pure; phase + next action)
     src/Iid.cpp                   # s19 — pure cross-layer part identity (GTK-free, tested)
     src/MindMap.cpp               # s47 — pure mind-map lens: glyph derivation (GTK-free, tested)
     src/CustomMindMap.cpp         # s50 — pure owned mind-map DOCUMENT (Reference form): nodes/edges/subjects/stamp/json (GTK-free, tested)

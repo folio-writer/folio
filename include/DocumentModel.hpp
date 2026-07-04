@@ -299,9 +299,61 @@ struct Annotation {
     // Makes the annotation layer multi-author (DESIGN_editorialization §3);
     // import stamps it from pass.source, the report can filter by it.
     std::string source;                   // "" = self/legacy
+    // s107 — the author's verdict on an imported PROPOSAL. Empty for the author's
+    // own notes (source == "") — you don't "decline" your own note, they keep
+    // plain delete. Imported proposals are filed "proposed" and transition to
+    // "accepted" | "declined"; the annotation never disappears, it re-renders
+    // (balloon → ✓ → ✗) and — the crux — the verdict rides the return pass back
+    // to the editor. (DESIGN_editorialization §20.)
+    std::string verdict;                  // "" = not a proposal | "proposed"|"accepted"|"declined"
+    // s108 §22 — the note's RESOLUTION trail (mirrors folioedit::ResolutionEvent).
+    // Orthogonal to verdict: a note is resolved BY being accepted/declined; this
+    // records the terminal done-ness. Append-only; effective open/resolved is
+    // derived (resolution_resolved) with the AUTHOR authoritative — never a lossy
+    // scalar. Empty == open; omit-when-empty on disk so pre-§22 notes are unchanged.
+    struct ResolutionEvent {
+        std::string by;                   // "author" | "editor" (Resolvers::)
+        bool        resolved = true;      // true = resolved, false = reopened
+        std::string at;                   // ISO-8601 UTC (lexical order == time order)
+    };
+    std::vector<ResolutionEvent> resolution_log{};
+    bool is_proposal()      const { return !verdict.empty(); }
+    bool verdict_pending()  const { return verdict == "proposed"; }
     json to_json() const;
     void from_json(const json& j);
 };
+
+// s107 — verdict state words (single source of truth; the GTK/report/TUI layers
+// switch on these, never on bare string literals). The glyph is a per-face
+// concern rendered from the word, not stored.
+namespace Verdicts {
+inline constexpr const char* kProposed = "proposed";
+inline constexpr const char* kAccepted = "accepted";
+inline constexpr const char* kDeclined = "declined";
+}
+
+// s108 §22 — resolver actor words (single source of truth; must stay == the engine
+// `folioedit::resolver_to_str` strings — a boundary test asserts it). The AUTHOR is
+// the definitive authority (§22.2).
+namespace Resolvers {
+inline constexpr const char* kAuthor = "author";
+inline constexpr const char* kEditor = "editor";
+}
+
+// s108 §25 — the two-key Resolve handshake state (mirror of
+// folioedit::ResolutionState; a boundary test asserts they agree). Resolved needs
+// BOTH sides; a half is shown but does NOT archive; author reopen is authoritative.
+enum class ResolutionState { Open, HalfAuthor, HalfEditor, Resolved };
+
+// The §25.3 rule (mirrors folioedit::resolution_state). Author reopen -> Open
+// (authoritative override); both resolve -> Resolved; author-only -> HalfAuthor;
+// editor-only -> HalfEditor; else Open. "Latest" per side is by `at`.
+ResolutionState resolution_state(const std::vector<Annotation::ResolutionEvent>& log);
+
+// Convenience: fully resolved (both keys) -- the only state that recedes/archives.
+inline bool resolution_resolved(const std::vector<Annotation::ResolutionEvent>& log) {
+    return resolution_state(log) == ResolutionState::Resolved;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BoardItem — identifies any selected node in any section
@@ -835,7 +887,28 @@ public:
                                   const std::string& text,
                                   const std::string& kind,
                                   const std::string& source,
-                                  const std::string& color_hex);
+                                  const std::string& color_hex,
+                                  const std::string& verdict = Verdicts::kProposed);
+    // s107 — record the author's verdict on a proposal. Finds annotation `aid` on
+    // `node`, sets its verdict ("proposed" | "accepted" | "declined"), and marks
+    // the model modified. The annotation is NEVER removed — a verdict is a
+    // transition, not a deletion (§20.1). Returns false if node/aid not found.
+    bool set_annotation_verdict(BinderNode* node, int aid, const std::string& verdict);
+    // s108 §22/§24 — the author's RESOLVE/REOPEN on a proposal. Appends an
+    // author-actor ResolutionEvent (resolved=true resolves, false reopens) to the
+    // annotation's log and marks modified. Append-only: the note is NEVER removed
+    // and the prior state is never erased (resolved -> reopened -> resolved is a
+    // trail); effective open/resolved is resolution_resolved(ann.resolution_log),
+    // with the author authoritative (§22.2). "Archive" is the VIEW consequence
+    // (the report hides resolved notes) -- recede, not delete. Returns false if
+    // node/aid not found.
+    bool set_annotation_resolution(BinderNode* node, int aid, bool resolved);
+
+    // s108 (test) — remove every IMPORTED annotation (source non-empty) from all
+    // trees; self/legacy notes (empty source) are kept. Returns how many were
+    // cleared and marks modified. Powers the "Reset Editorial Interchange" test
+    // action so a mucked-up absorb history can be wiped to a clean slate.
+    int clear_imported_annotations();
     // Resolve a thread iid → its registry entry (nullptr if absent / empty iid).
     const ThreadDef* find_thread(const std::string& iid) const;
     // Mint a new thread (a fresh thr_ iid), append it to the registry, and return
@@ -898,6 +971,14 @@ private:
     // load paths reassemble) into the model. load_from obtains the blob (from a
     // v5 bundle via implode, or a legacy file via migrate_v4) then calls this.
     void parse_blob(const json& j);
+    // s107 — one-time promotion of legacy imported annotations to proposals. An
+    // annotation filed from an editorial pass BEFORE the verdict feature carries
+    // source but an empty verdict, so it renders without the balloon / Accept /
+    // Decline. On load we stamp such notes `proposed` so they become adjudicable
+    // (idempotent: only empty→proposed; a recorded accept/decline is left alone).
+    // Runs in memory without marking the project modified; it persists on the next
+    // save (verdicting one marks modified anyway).
+    void migrate_imported_verdicts();
 
     void collect_compile_nodes(const BinderNode& node,
                                std::vector<const BinderNode*>& out) const;

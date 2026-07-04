@@ -123,6 +123,11 @@ private:
     Gtk::Box             m_ann_box;
     void build_annotations_tab();
     void refresh_annotations();
+    // s107 — verdict UI for imported proposals, shared by both annotation render
+    // paths (JV aggregate + single-node). Each returns nullptr for self/legacy
+    // notes (verdict == "") so those cards render exactly as before.
+    Gtk::Widget* build_verdict_chip(const Annotation& ann);                    // header glyph + state word
+    Gtk::Widget* build_verdict_actions(const Annotation& ann, BinderNode* node); // Accept/Decline row
     std::unique_ptr<AnnotationReportDialog> m_ann_report;  // rebuild card list from current node
 
     // ── Metadata tab ──────────────────────────────────────────────────────────

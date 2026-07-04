@@ -144,6 +144,13 @@ private:
   void action_absorb_pass();
   void absorb_pass_file(const std::string& path, const std::string& extra_phrase);
   void prompt_for_passphrase(const std::string& path);
+  // s107 — send the author's verdicts on a returned pass back to the editor:
+  // read the stashed carrier, gather the pass's verdicted annotations from the
+  // model, seal a continuous return (Interchange::write_return) to a chosen path.
+  void return_verdicts_for_pass(const std::string& pass_id);
+  // s108 (test only) — wipe imported notes + ledger + carriers + absorbed/ files
+  // back to a clean slate, so a mucked-up absorb history doesn't confound testing.
+  void action_reset_interchange();
   void action_search();
   void action_print();
   void action_save_report();
@@ -160,6 +167,7 @@ private:
   std::unique_ptr<PrintDialog>       m_print_dialog;
   std::unique_ptr<Gtk::Window>       m_absorb_prompt;      // s103 — passphrase prompt (miss fallback)
   Glib::RefPtr<Gtk::FileDialog>      m_report_file_dialog; // kept alive across async save
+  Glib::RefPtr<Gtk::FileDialog>      m_return_file_dialog; // s107 — verdict-return save
 
   // ── Pomodoro ──────────────────────────────────────────────────────────────
   // Headerbar pill — shown when timer is running and pref is set

@@ -299,11 +299,17 @@ public:
                                const std::string& color_hex);
   void scroll_to_annotation(int id);
   void rebuild_annotation_tags();
+  void refresh_ledger();  // s108 (test) — repaint the hosted ledger from the model
   void refresh_annotation_visibility();  // show/hide all ann: tag visuals
   void refresh_link_visibility();        // show/hide all link: tag visuals
 
   // Fired whenever annotations change — wired to Inspector in MainWindow
   std::function<void()> on_annotations_changed;
+
+  // s107 — fired from the Editorial Ledger surface's "Return verdicts…" button with
+  // the pass id. MainWindow handles it: read the stashed carrier, gather the pass's
+  // verdicted annotations from the model, and write a sealed return.
+  std::function<void(const std::string& pass_id)> on_return_verdicts;
 
   // Fired when the user requests a document split.
   // original: the node being split (still holds its truncated content after

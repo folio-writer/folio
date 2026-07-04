@@ -74,7 +74,18 @@ json Annotation::to_json() const {
     };
     // Omit-when-empty: legacy/self annotations stay byte-identical on disk, so
     // adding this field diffs cleanly and old projects re-save unchanged.
-    if (!source.empty()) j["source"] = source;
+    if (!source.empty())  j["source"]  = source;
+    // s107 — same omit-when-empty discipline: only imported proposals carry a
+    // verdict, so self/legacy notes stay byte-identical on disk.
+    if (!verdict.empty()) j["verdict"] = verdict;
+    // s108 §22 — omit-when-empty: only a resolved/reopened note carries a log, so
+    // all-open notes stay byte-identical on disk (pre-§22 projects re-save unchanged).
+    if (!resolution_log.empty()) {
+        json arr = json::array();
+        for (const auto& ev : resolution_log)
+            arr.push_back({{"by", ev.by}, {"resolved", ev.resolved}, {"at", ev.at}});
+        j["resolution"] = std::move(arr);
+    }
     return j;
 }
 void Annotation::from_json(const json& j) {
@@ -86,6 +97,39 @@ void Annotation::from_json(const json& j) {
     kind        = j.value("kind",        "Writer");
     created_at  = j.value("created_at",  "");
     source      = j.value("source",      "");   // absent -> self/legacy
+    verdict     = j.value("verdict",     "");   // absent -> not a proposal
+    // s108 §22 — per-field tolerant read (§21.6): absent/garbled never throws.
+    resolution_log.clear();
+    if (j.contains("resolution") && j.at("resolution").is_array()) {
+        for (const auto& e : j.at("resolution")) {
+            if (!e.is_object()) continue;
+            ResolutionEvent ev;
+            ev.by       = e.value("by",       std::string{});
+            ev.resolved = e.value("resolved", true);
+            ev.at       = e.value("at",       std::string{});
+            resolution_log.push_back(std::move(ev));
+        }
+    }
+}
+
+// s108 §25.3 — two-key handshake state (mirror of the engine's rule).
+ResolutionState resolution_state(const std::vector<Annotation::ResolutionEvent>& log) {
+    const Annotation::ResolutionEvent* a = nullptr;   // author's latest
+    const Annotation::ResolutionEvent* e = nullptr;   // editor's latest
+    for (const auto& ev : log) {
+        const bool is_author = (ev.by == Resolvers::kAuthor);
+        const Annotation::ResolutionEvent*& slot = is_author ? a : e;
+        if (!slot || ev.at >= slot->at) slot = &ev;
+    }
+    const bool a_resolve = a && a->resolved;
+    const bool a_reopen  = a && !a->resolved;
+    const bool e_resolve = e && e->resolved;
+
+    if (a_reopen)               return ResolutionState::Open;        // author authoritative
+    if (a_resolve && e_resolve) return ResolutionState::Resolved;    // both keys
+    if (a_resolve)              return ResolutionState::HalfAuthor;  // waiting on editor
+    if (e_resolve)              return ResolutionState::HalfEditor;  // author's turn
+    return ResolutionState::Open;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -995,6 +1039,9 @@ void DocumentModel::save_to(const std::string& path) {
     // that never uses interchange gets no sidecar.
     if (!m_interchange_ledger.empty())
         write_interchange(path, m_interchange_ledger.dump());
+    else
+        remove_interchange(path);   // ledger emptied (e.g. last pass removed) —
+                                    // don't leave a stale sidecar behind on disk
 
     current_path = path;
     is_modified  = false;
@@ -1039,6 +1086,28 @@ void DocumentModel::load_from(const std::string& path) {
     } catch (...) {
         m_interchange_ledger = InterchangeLedger{};
     }
+
+    migrate_imported_verdicts();   // s107 — promote pre-verdict imported notes to proposals
+}
+
+// s107 — see the header. Stamp every imported (source != "") annotation that has
+// no verdict yet as `proposed`, across all binder trees, so notes filed before the
+// verdict feature become adjudicable (balloon + Accept/Decline). Idempotent — a
+// recorded accept/decline is non-empty and left untouched. Runs in memory without
+// marking the project modified; it persists on the next save.
+void DocumentModel::migrate_imported_verdicts() {
+    std::function<void(std::vector<BinderNode>&)> walk =
+        [&](std::vector<BinderNode>& nodes) {
+            for (auto& n : nodes) {
+                for (auto& a : n.annotations)
+                    if (!a.source.empty() && a.verdict.empty())
+                        a.verdict = Verdicts::kProposed;
+                if (!n.children.empty()) walk(n.children);
+            }
+        };
+    for (Section s : {Section::Manuscript, Section::Characters, Section::Places,
+                      Section::References, Section::Templates, Section::Trash})
+        walk(root(s));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1049,7 +1118,8 @@ bool DocumentModel::file_imported_annotation(const std::string& scene_iid,
                                              const std::string& text,
                                              const std::string& kind,
                                              const std::string& source,
-                                             const std::string& color_hex) {
+                                             const std::string& color_hex,
+                                             const std::string& verdict) {
     BinderNode* node = find_node_by_iid(scene_iid);
     if (!node) return false;
 
@@ -1061,11 +1131,72 @@ bool DocumentModel::file_imported_annotation(const std::string& scene_iid,
     ann.kind        = kind.empty() ? "Editor" : kind;
     ann.color_hex   = color_hex;
     ann.source      = source;                 // the editor's identity (multi-author)
+    ann.verdict     = verdict.empty() ? std::string(Verdicts::kProposed) : verdict;
+                                              // s107 — every imported note is a PROPOSAL; a
+                                              // verdict-bearing RETURN preserves the carried state
     ann.created_at  = now_iso8601();          // the import moment
     node->annotations.push_back(std::move(ann));
 
     mark_modified();
     return true;
+}
+
+bool DocumentModel::set_annotation_verdict(BinderNode* node, int aid,
+                                           const std::string& verdict) {
+    if (!node) return false;
+    for (auto& ann : node->annotations) {
+        if (ann.id == aid) {
+            ann.verdict = verdict;   // "proposed" | "accepted" | "declined"
+            mark_modified();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool DocumentModel::set_annotation_resolution(BinderNode* node, int aid, bool resolved) {
+    if (!node) return false;
+    for (auto& ann : node->annotations) {
+        if (ann.id == aid) {
+            std::time_t t = std::time(nullptr);
+            std::tm tmv{};
+            gmtime_r(&t, &tmv);
+            char buf[24];
+            std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tmv);
+            Annotation::ResolutionEvent ev;
+            ev.by       = Resolvers::kAuthor;   // author-side action (§22.2 authoritative)
+            ev.resolved = resolved;
+            ev.at       = buf;
+            ann.resolution_log.push_back(std::move(ev));   // append-only; never erases
+            mark_modified();
+            return true;
+        }
+    }
+    return false;
+}
+
+// s108 (test) — recursive helper: drop every imported (source non-empty) note.
+static int clear_imported_in(std::vector<BinderNode>& nodes) {
+    int removed = 0;
+    for (auto& n : nodes) {
+        const std::size_t before = n.annotations.size();
+        n.annotations.erase(
+            std::remove_if(n.annotations.begin(), n.annotations.end(),
+                           [](const Annotation& a) { return !a.source.empty(); }),
+            n.annotations.end());
+        removed += static_cast<int>(before - n.annotations.size());
+        removed += clear_imported_in(n.children);
+    }
+    return removed;
+}
+
+int DocumentModel::clear_imported_annotations() {
+    int removed = 0;
+    for (Section s : { Section::Manuscript, Section::Characters, Section::Places,
+                       Section::References, Section::Templates, Section::Trash })
+        removed += clear_imported_in(root(s));
+    if (removed) mark_modified();
+    return removed;
 }
 
 void DocumentModel::parse_blob(const json& j) {

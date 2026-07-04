@@ -10,6 +10,7 @@
 #include "ExportDialog.hpp"
 #include "ImportDialog.hpp"
 #include "Interchange.hpp"          // s103 — editorial interchange glue (open_pass / absorb)
+#include "ProjectBundle.hpp"        // s107 write_carrier; s108 archive_absorbed_copy (§21.4)
 #include "folioedit/Format.hpp"     // s103 — folioedit::Document
 #include "Inspector.hpp"
 #include "Module.hpp"            // s23 — built-in modules
@@ -33,6 +34,7 @@
 #include <iomanip>
 #include <set>
 #include <sstream>
+#include <system_error>
 #include <unistd.h>
 
 namespace Folio {
@@ -582,7 +584,7 @@ void MainWindow::setup_headerbar() {
   share_sub->append_item(make_item("Import…", "win.import", "<Ctrl><Shift>i"));
   share_sub->append_item(make_item("Export…", "win.export", "<Ctrl>e"));
   share_sub->append_item(make_item("Absorb Editorial Pass…", "win.absorb-pass", ""));
-  share_sub->append_item(make_item("Editorial Ledger…", "win.editorial-ledger", ""));
+  share_sub->append_item(make_item("Reset Editorial Interchange (testing)…", "win.reset-interchange", ""));
   share_sub->append_item(make_item("Print…", "win.print", "<Ctrl>p"));
   share_sub->append_item(make_item("Save Report…", "win.save-report", ""));
 
@@ -769,6 +771,9 @@ void MainWindow::setup_headerbar() {
         "Barcode…",            "win.tool-barcode",
         "view-barcode-symbolic"));
     tools_menu->append_item(make_tool_item(
+        "Editorial Ledger…",   "win.editorial-ledger",
+        "accessories-dictionary-symbolic"));
+    tools_menu->append_item(make_tool_item(
         "Pomodoro Timer…",     "win.pomodoro",
         "alarm-symbolic"));
     tools_menu->append_item(make_tool_item(
@@ -832,6 +837,9 @@ void MainWindow::setup_layout() {
   m_timeline = std::make_unique<EditorTabBar>(m_model, m_prefs);
   m_editor = std::make_unique<Editor>(m_model, m_prefs);
   m_editor->apply_font_prefs(m_prefs);
+  // s107 — the Editorial Ledger's "Return verdicts…" button routes here.
+  m_editor->on_return_verdicts =
+      [this](const std::string &pass_id) { return_verdicts_for_pass(pass_id); };
   m_inspector = std::make_unique<Inspector>(m_model, m_prefs);
 
   m_center_box.append(*m_timeline);
@@ -1993,6 +2001,7 @@ void MainWindow::setup_actions() {
   add("export", [this]() { action_export(); });
   add("import", [this]() { action_import(); });
   add("absorb-pass", [this]() { action_absorb_pass(); });
+  add("reset-interchange", [this]() { action_reset_interchange(); });
   add("editorial-ledger", [this]() {
     if (m_editor) m_editor->open_ledger(m_model.interchange_ledger());
   });
@@ -2294,7 +2303,7 @@ void MainWindow::absorb_pass_file(const std::string &path,
   for (const auto &a : r.annotations) {
     if (m_model.file_imported_annotation(a.scene_iid, a.range_start, a.range_end,
                                          a.text, a.kind, a.source,
-                                         colour_for(a.kind)))
+                                         colour_for(a.kind), a.verdict))
       ++filed;
     else
       ++skipped;   // that scene node no longer exists
@@ -2310,6 +2319,14 @@ void MainWindow::absorb_pass_file(const std::string &path,
     char buf[32];
     std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tmv);
     m_model.interchange_ledger().mark_returned(r.pass_id, buf, filed);
+    // s107 — stash the carrier we just absorbed so a later verdict RETURN can
+    // continue its custody chain (§20.7 / make_return_document). Bundle-private
+    // under interchange_carriers/<pass_id>.json; explode carries it forward across
+    // saves. No-op until the project is saved as a .folio bundle (write_carrier
+    // guards on is_directory), which is fine — the return flow needs a saved bundle.
+    if (!m_model.current_path.empty())
+      write_carrier(m_model.current_path, r.pass_id,
+                    folioedit::to_json(doc).dump());
   }
   m_model.mark_modified();
 
@@ -2337,16 +2354,288 @@ void MainWindow::absorb_pass_file(const std::string &path,
   det << "\n\nThese are proposals beside your prose — accept or delete them in "
          "the report; nothing was rewritten.";
 
-  auto alert = Gtk::AlertDialog::create(head.str());
-  alert->set_detail(det.str());
-  alert->set_modal(true);
-  alert->set_buttons({"OK"});
-  alert->choose(*this, [alert](Glib::RefPtr<Gio::AsyncResult> &rr) {
-    try { alert->choose_finish(rr); } catch (...) {}
-  });
+  // §21.4 — the received .folioedit is a spent email-attachment copy: it's now
+  // recorded in the project, so the file on disk is a dead one-way message. State
+  // that plainly, and offer to move the spent copy out of the working directory
+  // into an `absorbed/` folder beside the project (visible in the file manager).
+  // Only offer when the project is saved somewhere to sit beside and the copy
+  // isn't already in an absorbed/ folder (idempotent re-import — don't nag).
+  det << "\n\nThis .folioedit is a spent copy — don't reopen or resend it. To "
+         "reply with your accept/decline verdicts, use \"Send back to editor.\"";
+
+  const auto absorbed_dir = Folio::absorbed_dir_for(m_model.current_path);
+  const bool already_in_absorbed =
+      std::filesystem::path(path).parent_path().filename() == "absorbed";
+  const bool can_archive = !absorbed_dir.empty() && !already_in_absorbed;
+
+  if (can_archive) {
+    // Name the destination up front so the offer says where it will go. Local
+    // calendar day (it's a human-facing filename in the user's file manager).
+    std::time_t now = std::time(nullptr);
+    std::tm lt{};
+    localtime_r(&now, &lt);
+    char dbuf[16];
+    std::strftime(dbuf, sizeof dbuf, "%Y-%m-%d", &lt);
+    const std::string today = dbuf;
+
+    std::string stem = std::filesystem::path(m_model.current_path).stem().string();
+    if (stem.empty()) stem = "project";
+    det << "\n\nMove this spent copy into " << absorbed_dir.string()
+        << "/ (as " << stem << "-returned-" << today << ".folioedit)?";
+
+    auto alert = Gtk::AlertDialog::create(head.str());
+    alert->set_detail(det.str());
+    alert->set_modal(true);
+    alert->set_buttons({"Keep the file", "Move to absorbed/"});
+    alert->set_cancel_button(0);
+    alert->set_default_button(1);
+    alert->choose(*this, [this, alert, path, today](
+                             Glib::RefPtr<Gio::AsyncResult> &rr) {
+      int resp = 0;
+      try { resp = alert->choose_finish(rr); } catch (...) { return; }
+      if (resp != 1) return;   // "Keep the file"
+      auto res = Folio::archive_absorbed_copy(m_model.current_path, path, today);
+      if (!res.ok) {
+        auto e = Gtk::AlertDialog::create("Couldn't archive the copy");
+        e->set_detail("The pass was absorbed and recorded — only moving the "
+                      "spent file failed (" + res.reason +
+                      "). Your copy is untouched where it was.");
+        e->set_modal(true);
+        e->set_buttons({"OK"});
+        e->choose(*this, [e](Glib::RefPtr<Gio::AsyncResult> &r2) {
+          try { e->choose_finish(r2); } catch (...) {}
+        });
+      }
+    });
+  } else {
+    auto alert = Gtk::AlertDialog::create(head.str());
+    alert->set_detail(det.str());
+    alert->set_modal(true);
+    alert->set_buttons({"OK"});
+    alert->choose(*this, [alert](Glib::RefPtr<Gio::AsyncResult> &rr) {
+      try { alert->choose_finish(rr); } catch (...) {}
+    });
+  }
 
   // Surface in the annotation report (its source filter now includes r.source).
   if (m_inspector) m_inspector->open_annotation_report();
+}
+
+// s107 — codepoint-aware substring of the visible scene text, for the returned
+// annotation's `quote` (the same UTF-8 char offsets absorb re-anchored on).
+static std::string cp_substr(const std::string &s, int start, int end) {
+  if (start < 0 || end <= start) return {};
+  int i = 0, cp = 0, bstart = -1, bend = static_cast<int>(s.size());
+  while (i < static_cast<int>(s.size())) {
+    if (cp == start) bstart = i;
+    if (cp == end)   { bend = i; break; }
+    const unsigned char c = static_cast<unsigned char>(s[static_cast<std::size_t>(i)]);
+    i += (c < 0x80) ? 1 : ((c >> 5) == 0x6) ? 2 : ((c >> 4) == 0xE) ? 3
+                        : ((c >> 3) == 0x1E) ? 4 : 1;
+    ++cp;
+  }
+  if (bstart < 0) return {};
+  return s.substr(static_cast<std::size_t>(bstart),
+                  static_cast<std::size_t>(bend - bstart));
+}
+
+void MainWindow::return_verdicts_for_pass(const std::string &pass_id) {
+  const LedgerEntry *le = m_model.interchange_ledger().find(pass_id);
+  if (!le) return;
+
+  // The carrier the author absorbed (scenes + custody chain) is a bundle sidecar
+  // written at absorb time; the continuous return is built by re-sealing it.
+  const std::string carrier_json = read_carrier(m_model.current_path, pass_id);
+  if (carrier_json.empty()) {
+    auto dlg = Gtk::AlertDialog::create("No stored carrier for this pass.");
+    dlg->set_detail(
+        "Returning verdicts needs the original .folioedit you absorbed, which "
+        "Folio keeps inside the project. This pass was absorbed before that "
+        "feature existed, or the project hasn't been saved since. Absorb the "
+        "pass again (or save the project) and retry.");
+    dlg->show(*this);
+    return;
+  }
+
+  folioedit::Document sent;
+  try {
+    sent = folioedit::from_json(nlohmann::json::parse(carrier_json));
+  } catch (...) {
+    auto dlg = Gtk::AlertDialog::create("The stored carrier is unreadable.");
+    dlg->show(*this);
+    return;
+  }
+
+  // Gather this pass's annotations from the model (verdicts included), scoped by
+  // the editor's identity (source == recipient) AND the pass's scene inventory so
+  // two passes from the same editor don't bleed together.
+  std::set<std::string> inv;
+  for (const auto &it : le->inventory) inv.insert(it.iid);
+  const std::string recipient = le->recipient;
+
+  std::vector<Interchange::ReturnAnnotation> returned;
+  std::function<void(const std::vector<BinderNode> &)> walk =
+      [&](const std::vector<BinderNode> &nodes) {
+        for (const auto &n : nodes) {
+          if (inv.empty() || inv.count(n.iid) > 0) {
+            const std::string vis = scene_visible_text(n.content);
+            for (const auto &a : n.annotations) {
+              if (!Folio::same_editor(a.source, recipient)) continue;   // another editor / self note
+              Interchange::ReturnAnnotation ra;
+              ra.scene_iid   = n.iid;
+              ra.range_start = a.range_start;
+              ra.range_end   = a.range_end;
+              ra.quote       = cp_substr(vis, a.range_start, a.range_end);
+              ra.kind        = a.kind;
+              ra.text        = a.text;
+              ra.verdict     = a.verdict.empty() ? std::string(Verdicts::kProposed) : a.verdict;
+              // §25 — the author's resolution half rides back so the editor sees it
+              // and can add their key (map model string-events -> engine events).
+              for (const auto &mev : a.resolution_log) {
+                folioedit::ResolutionEvent fev;
+                fev.by       = folioedit::resolver_from_str(mev.by);
+                fev.resolved = mev.resolved;
+                fev.at       = mev.at;
+                ra.resolution_log.push_back(fev);
+              }
+              returned.push_back(std::move(ra));
+            }
+          }
+          if (!n.children.empty()) walk(n.children);
+        }
+      };
+  walk(m_model.root(Section::Manuscript));
+
+  if (returned.empty()) {
+    auto dlg = Gtk::AlertDialog::create("No annotations to return for this pass.");
+    dlg->set_detail("Nothing from this editor is filed on the manuscript's scenes.");
+    dlg->show(*this);
+    return;
+  }
+
+  folioedit::KeyPair identity;
+  try {
+    identity = Interchange::load_or_create_identity();
+  } catch (const std::exception &e) {
+    auto dlg = Gtk::AlertDialog::create(std::string("Couldn't load your identity: ") + e.what());
+    dlg->show(*this);
+    return;
+  }
+
+  std::string base = m_model.project_title.empty() ? "return" : m_model.project_title;
+  std::string safe;
+  for (unsigned char c : base)
+    safe += (std::isalnum(c) || c == '-' || c == '_') ? static_cast<char>(c) : '_';
+
+  // §21.2 — rebuild the return's scenes from the CURRENT manuscript so the fix
+  // travels. Keep the carrier's iid/title/order (so body_v2-vs-body_v1 reflects
+  // ONLY prose changes) and swap in each scene's live content; a scene whose node
+  // is gone keeps its sent text (best effort).
+  std::vector<folioedit::Scene> current_scenes = sent.scenes;
+  for (auto &sc : current_scenes) {
+    const BinderNode *n = m_model.find_node_by_iid(sc.iid);
+    if (n) sc.text = n->content;
+  }
+
+  auto filter = Gtk::FileFilter::create();
+  filter->set_name("Folio Interchange (*.folioedit)");
+  filter->add_pattern("*.folioedit");
+  auto filters = Gio::ListStore<Gtk::FileFilter>::create();
+  filters->append(filter);
+
+  m_return_file_dialog = Gtk::FileDialog::create();
+  m_return_file_dialog->set_title("Send Back to Editor As\u2026");
+  m_return_file_dialog->set_initial_name(safe + "-revised.folioedit");
+  m_return_file_dialog->set_filters(filters);
+
+  const std::string phrase = le->phrase;   // reuse the pass's phrase (the editor has it)
+  const std::string author = m_model.author;
+  m_return_file_dialog->save(
+      *this, [this, sent, current_scenes, returned, phrase, author, identity](
+                 Glib::RefPtr<Gio::AsyncResult> &res) {
+        Glib::RefPtr<Gio::File> file;
+        try {
+          file = m_return_file_dialog->save_finish(res);
+        } catch (const Gtk::DialogError &) {
+          m_return_file_dialog.reset();   // dismissed — not an error
+          return;
+        } catch (const Glib::Error &e) {
+          auto err = Gtk::AlertDialog::create(e.what());
+          err->show(*this);
+          m_return_file_dialog.reset();
+          return;
+        }
+        if (!file) { m_return_file_dialog.reset(); return; }
+
+        std::string path = file->get_path();
+        if (path.size() < 10 || path.substr(path.size() - 10) != ".folioedit")
+          path += ".folioedit";
+
+        try {
+          Interchange::write_sendback(path, sent, current_scenes, returned,
+                                      author, phrase, identity);
+        } catch (const std::exception &e) {
+          auto err = Gtk::AlertDialog::create(std::string("Couldn't write the return: ") + e.what());
+          err->show(*this);
+          m_return_file_dialog.reset();
+          return;
+        }
+
+        auto ok = Gtk::AlertDialog::create("Sent back to editor.");
+        ok->set_detail(
+            "This .folioedit carries your revised prose, your accept / decline on "
+            "each note, and any resolves you\u2019ve made \u2014 all signed onto the "
+            "pass\u2019s chain of custody. Send it to the editor to continue the pass.");
+        ok->show(*this);
+        m_return_file_dialog.reset();
+      });
+}
+
+// s108 (test only) — wipe the editorial-interchange state to a clean slate. Clears
+// every imported note (proposals + their verdicts/resolves), empties the pass
+// ledger, and deletes the bundle's stored carriers + the absorbed/ folder beside
+// it. Manuscript prose and the author's own notes are untouched. Behind a confirm;
+// not undoable. A testing convenience, not part of the real lifecycle.
+void MainWindow::action_reset_interchange() {
+  auto dlg = Gtk::AlertDialog::create("Reset editorial interchange?");
+  dlg->set_detail(
+      "TESTING ONLY. Clears every imported editorial note (proposals and the "
+      "accept/decline/resolve on them), empties the pass ledger, and deletes this "
+      "project's stored carriers and the absorbed/ folder. Your manuscript and your "
+      "own notes are untouched. This can't be undone.");
+  dlg->set_modal(true);
+  dlg->set_buttons({"Cancel", "Reset"});
+  dlg->set_cancel_button(0);
+  dlg->set_default_button(0);
+  dlg->choose(*this, [this, dlg](Glib::RefPtr<Gio::AsyncResult> &r) {
+    int resp = 0;
+    try { resp = dlg->choose_finish(r); } catch (...) { return; }
+    if (resp != 1) return;   // Cancel
+
+    const int n = m_model.clear_imported_annotations();
+    m_model.interchange_ledger().clear();
+    if (!m_model.current_path.empty()) {
+      Folio::remove_all_carriers(m_model.current_path);
+      const auto absorbed = Folio::absorbed_dir_for(m_model.current_path);
+      if (!absorbed.empty()) {
+        std::error_code ec;
+        std::filesystem::remove_all(absorbed, ec);   // ignore "wasn't there"
+      }
+    }
+    m_model.mark_modified();
+    if (m_editor) { m_editor->rebuild_annotation_tags(); m_editor->refresh_ledger(); }
+
+    auto done = Gtk::AlertDialog::create("Interchange reset.");
+    done->set_detail("Cleared " + std::to_string(n) + " imported note" +
+                     (n == 1 ? "" : "s") +
+                     ", emptied the ledger, and removed stored carriers + absorbed "
+                     "files. Save the project to persist the clean state.");
+    done->set_modal(true);
+    done->set_buttons({"OK"});
+    done->choose(*this, [done](Glib::RefPtr<Gio::AsyncResult> &r2) {
+      try { done->choose_finish(r2); } catch (...) {}
+    });
+  });
 }
 
 void MainWindow::prompt_for_passphrase(const std::string &path) {

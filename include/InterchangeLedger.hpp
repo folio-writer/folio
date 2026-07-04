@@ -47,6 +47,19 @@ enum class PassStatus { Sent, Returned };
 std::string pass_status_to_str(PassStatus s);
 PassStatus  pass_status_from_str(const std::string& s);
 
+// s108 — editor identity matching. A `recipient`/`source` is a HUMAN-typed label,
+// so it drifts by case and spacing ("James", "james", " james ") across passes.
+// The interchange keys scoping on it (a return pulls only THIS editor's notes), so
+// the match must be robust or one editor silently splits into several. `editor_key`
+// is the normalized matching key: trimmed, internal whitespace collapsed, ASCII-
+// lowercased (UTF-8 bytes are left untouched, so accented names survive). Display
+// always preserves the original label; only MATCHING uses the key. `same_editor`
+// is the predicate every scope/dedup compare should use instead of raw `==`.
+// (Two editors are distinguished by their NAME, never by capitalization -- the case
+//  distinction buys nothing real and only risks fragmenting one person.)
+std::string editor_key(const std::string& label);
+bool        same_editor(const std::string& a, const std::string& b);
+
 // One scene that went out, recorded by its stable iid + a human title for the
 // report. (Titles can drift; the iid is the anchor.)
 struct LedgerScene {
@@ -70,6 +83,13 @@ struct LedgerEntry {
     std::string returned_at;              // ISO-8601 — when re-absorbed ("" until then)
     int         annotation_count = 0;     // annotations filed on import (0 until then)
 
+    // Author-side visibility. The ledger is a permanent register — an abandoned,
+    // never-finished, or mistaken pass is HIDDEN, not destroyed: it drops out of
+    // the default view but stays in the book (revealed by "Show hidden", and only
+    // deletable from there, deliberately). Omitted from JSON while false so an
+    // untouched ledger diffs clean (same omit-when-empty pattern as returned_at).
+    bool        hidden = false;
+
     json to_json() const;
     void from_json(const json& j);
 };
@@ -84,6 +104,13 @@ public:
     // Find by pass id; nullptr if absent. (const + mutable.)
     const LedgerEntry* find(const std::string& id) const;
     LedgerEntry*       find(const std::string& id);
+
+    // s108 — the distinct editors this project has sent to, deduped by editor_key
+    // (case/space-insensitive), each shown in its most-recent display form, in
+    // first-appearance order. Feeds the export "To" dropdown so the author reuses a
+    // known editor instead of retyping (which is what let the label drift). Hidden
+    // passes are excluded unless `include_hidden`.
+    std::vector<std::string> distinct_editors(bool include_hidden = false) const;
 
     // Does the entry's recorded body_hash equal `hash`? False if the id is
     // unknown. This is the "is the file back the file I sent?" check import runs
@@ -101,6 +128,23 @@ public:
     // Returns false (and changes nothing) if the id is unknown.
     bool mark_returned(const std::string& id, const std::string& returned_at,
                        int annotation_count);
+
+    // Drop a pass from the author's private book. This is a LOCAL record only —
+    // it does NOT touch any .folioedit file already sent, nor the custody chain
+    // sealed inside it (that book travels; this one stays home). Removing a pass
+    // you no longer track, or a mistaken/test entry, is exactly what this is for.
+    // Returns false (and changes nothing) if the id is unknown.
+    bool remove(const std::string& id);
+
+    // Hide / unhide a pass without destroying it — the register stays complete,
+    // the entry just leaves the default view. Reversible. Returns false (and
+    // changes nothing) if the id is unknown.
+    bool set_hidden(const std::string& id, bool hidden);
+
+    // s108 (test) — wipe every entry. Used by the "Reset Editorial Interchange"
+    // test action to return the ledger to empty; not part of the normal lifecycle
+    // (passes are hidden/archived, never bulk-deleted, in real use).
+    void clear() { m_entries.clear(); }
 
     // ── persistence (pure JSON; Folio writes this into the .folio bundle) ──────
     json        to_json() const;

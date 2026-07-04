@@ -189,6 +189,9 @@ void FolioPrefs::load() {
     show_annotations     = boolv(GROUP_APPEARANCE, "show-annotations",     show_annotations);
     show_links           = boolv(GROUP_APPEARANCE, "show-links",           show_links);
     show_invisibles      = boolv(GROUP_APPEARANCE, "show-invisibles",      show_invisibles);
+    data_view_zoom_pct   = intv (GROUP_APPEARANCE, "data-view-zoom-pct",   data_view_zoom_pct);
+    if (data_view_zoom_pct < 50)  data_view_zoom_pct = 50;
+    if (data_view_zoom_pct > 300) data_view_zoom_pct = 300;
 
     auto_save              = boolv(GROUP_AUTOSAVE, "auto-save",         auto_save);
     auto_save_interval_min = intv (GROUP_AUTOSAVE, "interval-min",      auto_save_interval_min);
@@ -608,6 +611,7 @@ void FolioPrefs::save() const {
     g_key_file_set_boolean(kf, GROUP_APPEARANCE, "show-annotations",     show_annotations);
     g_key_file_set_boolean(kf, GROUP_APPEARANCE, "show-links",           show_links);
     g_key_file_set_boolean(kf, GROUP_APPEARANCE, "show-invisibles",      show_invisibles);
+    g_key_file_set_integer(kf, GROUP_APPEARANCE, "data-view-zoom-pct",   data_view_zoom_pct);
 
     g_key_file_set_boolean(kf, GROUP_AUTOSAVE, "auto-save",         auto_save);
     g_key_file_set_integer(kf, GROUP_AUTOSAVE, "interval-min",      auto_save_interval_min);

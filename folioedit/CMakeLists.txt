@@ -176,8 +176,37 @@ endif()
 # default so a normal Folio build doesn't produce it.
 #   cmake -B build -DFOLIOEDIT_BUILD_CLI=ON
 option(FOLIOEDIT_BUILD_CLI "Build the folioedit CLI" OFF)
+# The interactive human face (FTXUI). Links INTO the folioedit binary so that a
+# bare `folioedit` (no args) launches it; subcommands still work for scripting.
+# FTXUI is fetched at configure time (like the OpenSSL ExternalProject) and
+# static-linked, keeping the single-binary story. Needs the CLI target.
+#   cmake -B build -DFOLIOEDIT_OPENSSL_ROOT=~/Develop/openssl \
+#         -DFOLIOEDIT_BUILD_CLI=ON -DFOLIOEDIT_BUILD_TUI=ON
+option(FOLIOEDIT_BUILD_TUI "Build the interactive TUI into the folioedit binary (fetches FTXUI)" OFF)
 if(FOLIOEDIT_BUILD_CLI)
     add_executable(folioedit_cli cli/main.cpp)
     set_target_properties(folioedit_cli PROPERTIES OUTPUT_NAME folioedit)
     target_link_libraries(folioedit_cli PRIVATE folioedit)
+
+    if(FOLIOEDIT_BUILD_TUI)
+        include(FetchContent)
+        FetchContent_Declare(ftxui
+            GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
+            GIT_TAG        v5.0.0)
+        set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(FTXUI_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+        set(FTXUI_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+        set(FTXUI_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(ftxui)
+
+        target_sources(folioedit_cli PRIVATE tui/Tui.cpp)
+        target_include_directories(folioedit_cli PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tui")
+        target_compile_definitions(folioedit_cli PRIVATE FOLIOEDIT_HAVE_TUI)
+        target_link_libraries(folioedit_cli PRIVATE
+            ftxui::component ftxui::dom ftxui::screen)
+        message(STATUS "folioedit: TUI enabled -- bare `folioedit` launches the interactive face")
+    endif()
+elseif(FOLIOEDIT_BUILD_TUI)
+    message(WARNING "folioedit: FOLIOEDIT_BUILD_TUI needs FOLIOEDIT_BUILD_CLI=ON "
+                    "(the TUI links into the folioedit binary)")
 endif()

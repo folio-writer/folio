@@ -94,6 +94,56 @@ LedgerEntry write_pass_plain(const std::string&           path,
                              const PassSpec&              spec,
                              const std::vector<OutScene>& scenes);
 
+// ─── the verdict RETURN (s107 §20.7) ──────────────────────────────────────────
+
+// One annotation going BACK to the editor, carrying the author's verdict. The
+// caller builds these from the model's current annotations for the pass (the same
+// scene_iid/range/quote/kind/text it filed on import, plus the recorded verdict).
+struct ReturnAnnotation {
+    std::string scene_iid;
+    int         range_start = 0;
+    int         range_end   = 0;
+    std::string quote;
+    std::string kind;
+    std::string text;
+    std::string verdict;              // "proposed" | "accepted" | "declined"
+    bool        withdrawn = false;
+    // s108 §25 — the author's resolution half rides back so the editor sees it and
+    // can add their key. Engine events (Resolver/bool/at); the caller maps the
+    // model's string-keyed events into these.
+    std::vector<folioedit::ResolutionEvent> resolution_log;
+};
+
+// Build + sign + seal the author's verdict return and write it to `path`. `sent`
+// is the stashed carrier the author absorbed (ProjectBundle::read_carrier ->
+// folioedit::from_json); its scenes + whole custody chain are kept and continued.
+// `returned` replaces the annotations block (verdicts folded in); an author
+// `sealed` event is appended (make_return_document), signed with `identity`, and
+// the file is sealed under `passphrase` (reuse the pass's phrase — the editor
+// already has it). Court-grade-continuous per §20.7. Throws on I/O / crypto error.
+void write_return(const std::string&                   path,
+                  const folioedit::Document&           sent,
+                  const std::vector<ReturnAnnotation>& returned,
+                  const std::string&                   author_label,
+                  const std::string&                   passphrase,
+                  const folioedit::KeyPair&            identity);
+
+// s108 §21.2/§25.5 — "Send back to editor": like write_return, but the return
+// carries the author's CURRENT (revised) prose so the fix travels. `current_scenes`
+// is the manuscript as it stands now (the caller rebuilds it from the pass's
+// inventory, keeping iid/title/order and swapping in live content). Builds via
+// make_sendback_document (two authored links: re-issue the revised body + seal the
+// verdict/resolution block), signs BOTH tail links, seals under `passphrase`. The
+// editor's side gets revised prose + verdicts + the author's resolution half, and a
+// signed body_v2-vs-body_v1 change indicator. Throws on I/O / crypto error.
+void write_sendback(const std::string&                     path,
+                    const folioedit::Document&             sent,
+                    const std::vector<folioedit::Scene>&   current_scenes,
+                    const std::vector<ReturnAnnotation>&   returned,
+                    const std::string&                     author_label,
+                    const std::string&                     passphrase,
+                    const folioedit::KeyPair&              identity);
+
 // ─── carrier sniff + plain open (§18.7 content-sniff) ─────────────────────────
 
 // Which face a file on disk is, decided by its leading bytes (no key needed):
@@ -118,6 +168,10 @@ struct InAnnotation {
     std::string          kind;              // Proofreader / Editor / Writer
     std::string          text;             // the comment
     std::string          source;           // = doc.pass.source (the editor's identity)
+    std::string          verdict;          // s107 — the author's recorded verdict carried in the
+                                           //   file ("proposed" default). Faithful to the engine's
+                                           //   Annotation.verdict so a verdict-bearing RETURN pass
+                                           //   surfaces each note's fate; the caller files it.
     folioedit::AnchorMethod method = folioedit::AnchorMethod::Floating;
     bool                 ambiguous  = false;  // quote matched >1 place; nearest chosen
 };

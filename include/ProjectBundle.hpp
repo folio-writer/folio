@@ -135,6 +135,51 @@ ProjectFormat detect_format(const fs::path& path);
 // memory each save) and reads it back on load. Path is the bundle ROOT.
 void        write_interchange(const fs::path& root, const std::string& json_text);
 std::string read_interchange (const fs::path& root);  // "" if absent / not a bundle dir
+void        remove_interchange(const fs::path& root); // delete the sidecar if present (no-op otherwise)
+
+// s107 — absorbed-carrier store. When the author absorbs an editorial pass we keep
+// the opened carrier (scenes + custody chain, as folioedit Document JSON) so a
+// later verdict RETURN can continue that chain (make_return_document; §20.7). One
+// plain-JSON file per pass under `interchange_carriers/<pass_id>.json` in the
+// bundle root (author-private, not in the manifest). pass_id is a `pass_<base32>`
+// token — safe as a filename; write_carrier still rejects anything with a path
+// separator out of caution.
+void        write_carrier (const fs::path& root, const std::string& pass_id, const std::string& json_text);
+std::string read_carrier  (const fs::path& root, const std::string& pass_id);  // "" if absent
+void        remove_carrier(const fs::path& root, const std::string& pass_id);   // no-op if absent
+
+// s108 (test) — remove the ENTIRE absorbed-carrier store (interchange_carriers/).
+// Used by the "Reset Editorial Interchange" test action; no-op if absent.
+void        remove_all_carriers(const fs::path& root);
+
+// s108 — archive a spent received .folioedit copy (§21.4). A received pass is an
+// email-attachment COPY: once absorbed it is a spent one-way message, so moving it
+// out of the working directory destroys nothing. This relocates that copy into an
+// `absorbed/` folder BESIDE the project bundle (its PARENT dir, so it stays visible
+// in the file manager — deliberately NOT inside the bundle, where it would be
+// buried), renamed `<ProjectStem>-returned-<date>.folioedit`.
+//
+// Pure filesystem, sandbox-testable, and — per the §21.6 mandate — it NEVER throws:
+// every failure path returns {ok=false, reason} and leaves the source untouched, so
+// a botched archive can never take out the project. The move prefers rename and
+// falls back to copy+remove across filesystems (a Downloads copy typically lives on
+// a different mount than the project). Same-day collisions get a `-2`/`-3` suffix;
+// an existing file is never clobbered. `date` is passed in (caller supplies today,
+// `YYYY-MM-DD`) so the naming stays deterministic and unit-testable.
+struct AbsorbedArchive {
+    bool        ok = false;   // moved (or already there)
+    fs::path    dest;         // where it landed (valid iff ok)
+    std::string reason;       // why not, for the caller to surface (empty iff ok)
+};
+AbsorbedArchive archive_absorbed_copy(const fs::path&    project_path,
+                                      const fs::path&    src_path,
+                                      const std::string& date);  // "YYYY-MM-DD"
+
+// Where archive_absorbed_copy would put things, without moving — the `absorbed/`
+// dir beside `project_path`. Empty path if project_path has no usable parent
+// (e.g. an unsaved project). Pure; lets the GTK layer decide whether to even
+// offer the move, and name the destination in the prompt before acting.
+fs::path absorbed_dir_for(const fs::path& project_path);
 
 // ── The seam ─────────────────────────────────────────────────────────────────
 

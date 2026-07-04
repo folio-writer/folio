@@ -156,9 +156,78 @@ std::string annotations_hash(const Document& doc) {
         add_str(c, "quote",       a.quote);
         add_str(c, "kind",        a.kind);
         add_str(c, "text",        a.text);
+        // s107 -- an author's verdict is court-visible history, so it MUST bind
+        // into the hash the way `withdrawn` does. Bound only when NON-default:
+        // an all-`proposed` block (every editor pass, every pre-s107 file) hashes
+        // byte-identically to before -- no "v2" bump, old sealed files still
+        // verify -- while a recorded accept/decline changes the hash the moment
+        // the author seals it into the return pass.
+        if (a.verdict != Verdict::Proposed)
+            add_str(c, "verdict", verdict_to_str(a.verdict));
         add_int(c, "withdrawn",   a.withdrawn ? 1 : 0);
+        // §22 -- resolution is court-visible history, bound like verdict/withdrawn.
+        // Omitted entirely when the log is empty (open), so a pre-§22 block hashes
+        // byte-identically -- no "v2" bump. Each event binds actor+action+timestamp,
+        // so the whole resolved/reopened argument is committed once it's sealed.
+        if (!a.resolution_log.empty()) {
+            add_int(c, "res_count", static_cast<long long>(a.resolution_log.size()));
+            for (const ResolutionEvent& ev : a.resolution_log) {
+                add_str(c, "res_by",     resolver_to_str(ev.by));
+                add_int(c, "res_action", ev.resolved ? 1 : 0);
+                add_str(c, "res_at",     ev.at);
+            }
+        }
     }
     return sha256_hex(c);
+}
+
+Document make_return_document(const Document&                sent,
+                             const std::vector<Annotation>& returned,
+                             const std::string&             actor,
+                             const std::string&             actor_id,
+                             const std::string&             at) {
+    Document doc = sent;              // keep body (scenes) + pass + the whole custody chain
+    doc.annotations = returned;       // replace the block with the verdict-laden notes
+
+    CustodyEvent e;
+    e.kind     = CustodyEvent_Kind::Sealed;   // a return seals its returned annotations block
+    e.actor    = actor;
+    e.actor_id = actor_id;            // set before finalize so the event hash binds the identity
+    e.at       = at;
+    e.binds    = annotations_hash(doc);       // over the returned block (verdicts folded in)
+    append_event(doc.custody, e);     // seq/prev_hash/hash set + finalized; UNSIGNED (caller signs)
+    return doc;
+}
+
+Document make_sendback_document(const Document&                sent,
+                                const std::vector<Scene>&      current_scenes,
+                                const std::vector<Annotation>& returned,
+                                const std::string&             actor,
+                                const std::string&             actor_id,
+                                const std::string&             at) {
+    Document doc = sent;                 // keep pass + the whole custody chain
+    doc.scenes      = current_scenes;    // §21.2 -- the REVISED prose travels (the fix)
+    doc.annotations = returned;          // verdict/resolution-laden block
+
+    // Link 1: the author RE-ISSUES the revised prose -- binds the new body hash, so
+    // the fix is signed and body_v2-vs-body_v1 is a court-grade change indicator.
+    CustodyEvent iss;
+    iss.kind     = CustodyEvent_Kind::Issued;
+    iss.actor    = actor;
+    iss.actor_id = actor_id;
+    iss.at       = at;
+    iss.binds    = body_hash(doc);       // over current_scenes
+    append_event(doc.custody, iss);
+
+    // Link 2: the author SEALS the verdict/resolution-laden notes block.
+    CustodyEvent seal;
+    seal.kind     = CustodyEvent_Kind::Sealed;
+    seal.actor    = actor;
+    seal.actor_id = actor_id;
+    seal.at       = at;
+    seal.binds    = annotations_hash(doc);
+    append_event(doc.custody, seal);
+    return doc;                          // UNSIGNED -- caller signs BOTH tail links
 }
 
 }  // namespace folioedit

@@ -152,6 +152,12 @@ static std::string read_file(const fs::path& p) {
     return ss.str();
 }
 
+// s107 — absorbed editorial carriers live in the bundle under this dir, one
+// plain-JSON folioedit Document per pass. Like assets/thumbs, their bytes are NOT
+// reconstructed from the manifest blob, so explode must carry them forward across
+// the swap. Declared here (above explode) so both sites share the one name.
+static constexpr const char* kCarrierDir = "interchange_carriers";
+
 // Copy a binary subdirectory (assets/ or thumbs/) forward into the freshly
 // built tmp bundle. These hold bytes that are NOT reconstructed from the blob
 // (unlike content/snapshots), so explode MUST carry the live bundle's copies
@@ -254,6 +260,7 @@ void explode(const json& blob, const fs::path& root) {
     // job, flagged as a known follow-on.
     copy_tree_if_exists(root / bundle_dir::kAssets, tmp_root / bundle_dir::kAssets);
     copy_tree_if_exists(root / bundle_dir::kThumbs, tmp_root / bundle_dir::kThumbs);
+    copy_tree_if_exists(root / kCarrierDir,         tmp_root / kCarrierDir);   // s107 editorial carriers
 
     // Swap tmp_root into place atomically: stash any existing bundle, move tmp
     // in, then drop the stash.
@@ -456,6 +463,138 @@ std::string read_interchange(const fs::path& root) {
     std::ostringstream ss;
     ss << f.rdbuf();
     return ss.str();
+}
+
+void remove_interchange(const fs::path& root) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return;   // v5 bundle only
+    fs::remove(root / kInterchangeFile, ec);   // ignore "wasn't there"
+}
+
+// ── absorbed-carrier store (s107) ─────────────────────────────────────────────
+// Reject any pass_id that could escape the carriers dir; return "" if unsafe.
+static std::string safe_carrier_name(const std::string& pass_id) {
+    if (pass_id.empty()) return {};
+    for (char c : pass_id)
+        if (c == '/' || c == '\\' || c == ':' || c == '.') return {};  // path/ext games
+    return pass_id + ".json";
+}
+
+void write_carrier(const fs::path& root, const std::string& pass_id, const std::string& json_text) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return;   // v5 bundle only
+    const std::string name = safe_carrier_name(pass_id);
+    if (name.empty()) return;
+    fs::create_directories(root / kCarrierDir, ec);
+    write_file_atomic(root / kCarrierDir / name, json_text);
+}
+
+std::string read_carrier(const fs::path& root, const std::string& pass_id) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return {};
+    const std::string name = safe_carrier_name(pass_id);
+    if (name.empty()) return {};
+    std::ifstream f(root / kCarrierDir / name, std::ios::binary);
+    if (!f) return {};
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+void remove_carrier(const fs::path& root, const std::string& pass_id) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return;
+    const std::string name = safe_carrier_name(pass_id);
+    if (name.empty()) return;
+    fs::remove(root / kCarrierDir / name, ec);   // ignore "wasn't there"
+}
+
+void remove_all_carriers(const fs::path& root) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return;
+    fs::remove_all(root / kCarrierDir, ec);       // whole dir; ignore "wasn't there"
+}
+
+// ── absorbed-copy archive (s108 §21.4) ────────────────────────────────────────
+// The spent-copy vault lives BESIDE the bundle, not inside it, so it shows up
+// where the author looks (the folder holding their .folio). Deliberately parallel
+// to interchange_carriers/ (inside, private, custody spine) — this is the visible,
+// disposable transport artifact.
+static constexpr const char* kAbsorbedDir = "absorbed";
+
+fs::path absorbed_dir_for(const fs::path& project_path) {
+    if (project_path.empty()) return {};
+    fs::path parent = project_path.parent_path();
+    if (parent.empty()) return {};        // no directory component -> nowhere to sit beside
+    return parent / kAbsorbedDir;
+}
+
+AbsorbedArchive archive_absorbed_copy(const fs::path&    project_path,
+                                      const fs::path&    src_path,
+                                      const std::string& date) {
+    AbsorbedArchive out;
+    std::error_code ec;
+
+    if (src_path.empty() || !fs::exists(src_path, ec) || fs::is_directory(src_path, ec)) {
+        out.reason = "the received file is no longer where it was";
+        return out;
+    }
+    const fs::path dir = absorbed_dir_for(project_path);
+    if (dir.empty()) {
+        out.reason = "the project hasn't been saved anywhere yet";
+        return out;
+    }
+
+    // Idempotent: if the source already lives in this absorbed/ dir, it's done.
+    // (weakly_canonical so a re-import of an already-archived copy is a no-op, not
+    // a self-move that could truncate the file.)
+    const fs::path canon_dir = fs::weakly_canonical(dir, ec);
+    const fs::path canon_src_parent =
+        fs::weakly_canonical(src_path.parent_path(), ec);
+    if (!canon_dir.empty() && canon_dir == canon_src_parent) {
+        out.ok   = true;
+        out.dest = src_path;
+        return out;
+    }
+
+    fs::create_directories(dir, ec);
+    if (ec || !fs::is_directory(dir, ec)) {
+        out.reason = "couldn't create the absorbed/ folder";
+        return out;
+    }
+
+    // <ProjectStem>-returned-<date>.folioedit, with -2/-3... on same-day collisions.
+    std::string stem = project_path.stem().string();
+    if (stem.empty()) stem = "project";
+    const std::string base = stem + "-returned-" + date;
+    fs::path dest = dir / (base + ".folioedit");
+    for (int n = 2; fs::exists(dest, ec) && n < 1000; ++n)
+        dest = dir / (base + "-" + std::to_string(n) + ".folioedit");
+    if (fs::exists(dest, ec)) {            // pathological: 1000 same-day archives
+        out.reason = "too many archived copies for today";
+        return out;
+    }
+
+    // Move: rename first (atomic, same filesystem); on cross-device / any rename
+    // failure, fall back to copy-then-remove. If the copy fails we abort with the
+    // source intact; if only the post-copy remove fails we still succeeded (both
+    // copies exist -- a harmless leftover, never data loss).
+    std::error_code ren_ec;
+    fs::rename(src_path, dest, ren_ec);
+    if (ren_ec) {
+        std::error_code cp_ec;
+        fs::copy_file(src_path, dest, fs::copy_options::none, cp_ec);
+        if (cp_ec) {
+            out.reason = "couldn't move the file into absorbed/";
+            return out;                    // source untouched
+        }
+        std::error_code rm_ec;
+        fs::remove(src_path, rm_ec);       // best effort; leftover source is benign
+    }
+
+    out.ok   = true;
+    out.dest = dest;
+    return out;
 }
 
 }  // namespace Folio

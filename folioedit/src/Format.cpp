@@ -15,9 +15,57 @@
 #include <stdexcept>
 
 namespace folioedit {
+
+// ── verdict enum <-> string (single source of truth) ─────────────────────────
+std::string verdict_to_str(Verdict v) {
+    switch (v) {
+        case Verdict::Accepted: return "accepted";
+        case Verdict::Declined: return "declined";
+        case Verdict::Proposed: break;
+    }
+    return "proposed";
+}
+Verdict verdict_from_str(const std::string& s) {
+    if (s == "accepted") return Verdict::Accepted;
+    if (s == "declined") return Verdict::Declined;
+    return Verdict::Proposed;   // "" / "proposed" / anything unknown -> default
+}
+
+// ── resolver enum <-> string + §22.2 precedence (single source of truth) ─────
+std::string resolver_to_str(Resolver r) {
+    switch (r) {
+        case Resolver::Author: return "author";
+        case Resolver::Editor: break;
+    }
+    return "editor";
+}
+Resolver resolver_from_str(const std::string& s) {
+    if (s == "author") return Resolver::Author;
+    return Resolver::Editor;   // "" / "editor" / anything unknown -> Editor (least authority)
+}
+
+ResolutionState resolution_state(const std::vector<ResolutionEvent>& log) {
+    // Latest stance per side (max `at`, ties -> later log position via >=).
+    const ResolutionEvent* a = nullptr;   // author's latest
+    const ResolutionEvent* e = nullptr;   // editor's latest
+    for (const ResolutionEvent& ev : log) {
+        const ResolutionEvent*& slot = (ev.by == Resolver::Author) ? a : e;
+        if (!slot || ev.at >= slot->at) slot = &ev;
+    }
+    const bool a_resolve = a && a->resolved;
+    const bool a_reopen  = a && !a->resolved;
+    const bool e_resolve = e && e->resolved;
+
+    if (a_reopen)                 return ResolutionState::Open;        // author authoritative
+    if (a_resolve && e_resolve)   return ResolutionState::Resolved;    // both keys
+    if (a_resolve)                return ResolutionState::HalfAuthor;  // waiting on editor
+    if (e_resolve)                return ResolutionState::HalfEditor;  // author's turn
+    return ResolutionState::Open;
+}
+
 namespace {
 
-// (enum <-> string live in Custody -- single source of truth; used below.)
+// (custody enum <-> string live in Custody -- single source of truth; used below.)
 
 // ── per-record JSON ──────────────────────────────────────────────────────────
 json scene_to_json(const Scene& s) {
@@ -64,7 +112,21 @@ json annotation_to_json(const Annotation& a) {
     j["range_start"] = a.range_start;
     j["scene_iid"]   = a.scene_iid;
     j["text"]        = a.text;
+    // Omit-when-default: a fresh editor pass is all-`proposed`, so this keeps the
+    // sent block byte-identical to the pre-s107 shape -- the key appears only once
+    // an author has actually recorded accept/decline (the thing that rides back).
+    if (a.verdict != Verdict::Proposed) j["verdict"] = verdict_to_str(a.verdict);
     j["withdrawn"]   = a.withdrawn;
+    // §22 omit-when-empty: only a note someone has resolved/reopened carries a log,
+    // so an all-open block stays byte-identical to the pre-§22 shape on disk.
+    if (!a.resolution_log.empty()) {
+        json arr = json::array();
+        for (const ResolutionEvent& ev : a.resolution_log)
+            arr.push_back({{"by",       resolver_to_str(ev.by)},
+                           {"resolved", ev.resolved},
+                           {"at",       ev.at}});
+        j["resolution"] = std::move(arr);
+    }
     return j;
 }
 Annotation annotation_from_json(const json& j) {
@@ -75,7 +137,19 @@ Annotation annotation_from_json(const json& j) {
     a.quote       = j.value("quote",       std::string{});
     a.kind        = j.value("kind",        std::string{});
     a.text        = j.value("text",        std::string{});
+    a.verdict     = verdict_from_str(j.value("verdict", std::string{}));  // absent -> proposed
     a.withdrawn   = j.value("withdrawn",   false);
+    // §22 -- per-field tolerant read (§21.6): absent/garbled resolution never throws.
+    if (j.contains("resolution") && j.at("resolution").is_array()) {
+        for (const auto& e : j.at("resolution")) {
+            if (!e.is_object()) continue;
+            ResolutionEvent ev;
+            ev.by       = resolver_from_str(e.value("by", std::string{}));
+            ev.resolved = e.value("resolved", true);
+            ev.at       = e.value("at", std::string{});
+            a.resolution_log.push_back(std::move(ev));
+        }
+    }
     return a;
 }
 

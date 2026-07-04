@@ -12,6 +12,9 @@
 #ifndef FOLIOEDIT_NO_CRYPTO
 #include "folioedit/Identity.hpp"  // keypairs + signing (sealed face only)
 #endif
+#ifdef FOLIOEDIT_HAVE_TUI
+#include "Tui.hpp"                 // the interactive human face (bare `folioedit`)
+#endif
 
 #include <iostream>
 #include <ctime>
@@ -307,7 +310,14 @@ int cmd_seal(const std::vector<std::string>& rest) {
 
 int main(int argc, char** argv) {
     std::vector<std::string> args(argv + 1, argv + argc);
-    if (args.empty()) { std::cout << fe::render_help(); return 0; }
+    if (args.empty()) {
+#ifdef FOLIOEDIT_HAVE_TUI
+        return folioedit::run_tui();   // bare launch → the interactive human face
+#else
+        std::cout << fe::render_help();
+        return 0;
+#endif
+    }
 
     const std::string verb = args[0];
     const std::vector<std::string> rest(args.begin() + 1, args.end());

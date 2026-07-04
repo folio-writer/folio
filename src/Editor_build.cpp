@@ -2855,6 +2855,31 @@ void Editor::build_editor_area() {
   // prior view, like the diff surface.
   m_view_stack.add(m_ledger_view, "ledger");
   m_ledger_view.set_close_callback([this]() { close_ledger(); });
+  // Remove a pass from the author-private ledger (the surface holds a copy; the
+  // real book lives on the model). Drop it, mark modified so it persists, and
+  // hand the surface a fresh snapshot.
+  m_ledger_view.set_remove_callback([this](const std::string &id) {
+    if (m_model.interchange_ledger().remove(id)) {
+      m_model.mark_modified();
+      m_ledger_view.refresh(m_model.interchange_ledger());
+    }
+  });
+  // Hide / unhide a pass — reversible, non-destructive; the register stays whole.
+  m_ledger_view.set_hide_callback([this](const std::string &id, bool hidden) {
+    if (m_model.interchange_ledger().set_hidden(id, hidden)) {
+      m_model.mark_modified();
+      m_ledger_view.refresh(m_model.interchange_ledger());
+    }
+  });
+  // s107 — send the author's verdicts on a returned pass back to the editor.
+  // The surface only knows the pass id; MainWindow owns the carrier + engine work.
+  m_ledger_view.set_return_callback([this](const std::string &id) {
+    if (on_return_verdicts) on_return_verdicts(id);
+  });
+  // Persist the shared data-view zoom when the user nudges it here.
+  m_ledger_view.set_scale_changed_callback([this](double f) {
+    m_prefs.data_view_zoom_pct = static_cast<int>(f * 100.0 + 0.5);
+  });
   // s98 — picked snapshot text → annotation on the matching Current paragraph.
   m_diff_view.on_add_annotation =
       [this](const BinderNode *n, int idx, const std::string &t) {

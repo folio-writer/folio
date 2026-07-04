@@ -1060,6 +1060,7 @@ void Editor::close_diff() {
 // s104 — editorial ledger view (owned surface, mirrors open_diff/close_diff).
 void Editor::open_ledger(const InterchangeLedger& ledger) {
   m_view_before_ledger = m_view_mode;
+  m_ledger_view.set_text_scale(m_prefs.data_view_zoom_pct / 100.0);
   m_ledger_view.refresh(ledger);
   m_toolbar.set_visible(false);
   m_grid_toolbar.set_visible(false);
@@ -1069,6 +1070,12 @@ void Editor::open_ledger(const InterchangeLedger& ledger) {
 
 void Editor::close_ledger() {
   set_view_mode(m_view_before_ledger);
+}
+
+// s108 (test) — repaint the hosted editorial ledger from the current model (used
+// by the "Reset Editorial Interchange" action after it empties the ledger).
+void Editor::refresh_ledger() {
+  m_ledger_view.refresh(m_model.interchange_ledger());
 }
 
 

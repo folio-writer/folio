@@ -7,6 +7,7 @@
 #include "CompileFormatDialog.hpp"
 #include "Interchange.hpp"            // s103 — export glue (build/seal/record)
 #include "folioedit/Passphrase.hpp"  // s103 — generate_passphrase()
+#include <gtkmm/alertdialog.h>       // s108 — export refusal/success dialogs
 #include <FolioLog.hpp>
 #include <algorithm>
 #include <cctype>
@@ -477,6 +478,34 @@ void ExportDialog::build_interchange_settings() {
     m_interchange_settings.append(*make_row("Send to", *m_ic_carrier));
 
     // Recipient / source — stamped as `source` on every annotation this pass makes.
+    // s108 — if this project has sent to editors before, offer them in a dropdown so
+    // the author reuses the SAME label (picking, not retyping, is what keeps the
+    // label from drifting by case/spacing and splitting one editor into several).
+    // Selecting a name fills the entry below; index 0 is an inert prompt. Typing a
+    // new name in the entry is still how you add a new editor.
+    const std::vector<std::string> known_editors =
+        m_model.interchange_ledger().distinct_editors();
+    if (!known_editors.empty()) {
+        std::vector<Glib::ustring> items;
+        items.reserve(known_editors.size() + 1);
+        items.emplace_back("Choose an editor\u2026");   // index 0 -- no-op prompt
+        for (const auto& e : known_editors) items.emplace_back(e);
+        auto ed_list = Gtk::StringList::create(items);
+        m_ic_known_editors = Gtk::make_managed<Gtk::DropDown>(ed_list);
+        m_ic_known_editors->set_selected(0);
+        m_ic_known_editors->set_hexpand(true);
+        m_ic_known_editors->set_name("interchange-known-editors");
+        m_ic_known_editors->property_selected().signal_changed().connect(
+            [this, known_editors]() {
+                const guint sel = m_ic_known_editors->get_selected();
+                if (sel == 0) return;   // inert prompt row
+                const std::size_t idx = static_cast<std::size_t>(sel) - 1;
+                if (idx < known_editors.size())   // also rejects the invalid position
+                    m_ic_recipient.set_text(known_editors[idx]);
+            });
+        m_interchange_settings.append(*make_row("Reuse", *m_ic_known_editors));
+    }
+
     m_ic_recipient.set_placeholder_text("e.g. claude, or jane");
     m_ic_recipient.set_hexpand(true);
     m_ic_recipient.set_name("interchange-recipient");
@@ -807,6 +836,18 @@ void ExportDialog::on_export() {
         });
 }
 
+void ExportDialog::ic_alert(const std::string& title, const std::string& detail,
+                            bool close_after) {
+    auto a = Gtk::AlertDialog::create(title);
+    if (!detail.empty()) a->set_detail(detail);
+    a->set_modal(true);
+    a->set_buttons({"OK"});
+    a->choose(*this, [this, a, close_after](Glib::RefPtr<Gio::AsyncResult>& r) {
+        try { a->choose_finish(r); } catch (...) {}
+        if (close_after) close();   // success -> the dialog's done its job; close it
+    });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // on_export_interchange — seal the selected scenes into a .folioedit briefing
 // and record the pass in the project's InterchangeLedger (s103). Build the
@@ -830,7 +871,12 @@ void ExportDialog::on_export_interchange() {
         s.order = order++;
         scenes.push_back(std::move(s));
     }
-    if (scenes.empty()) { m_status_lbl.set_text("No scenes selected."); return; }
+    if (scenes.empty()) {
+        m_status_lbl.set_text("No scenes selected.");
+        ic_alert("No scenes selected",
+                 "Tick the scenes you want to send in the list above, then Export.", false);
+        return;
+    }
 
     // Recipient (trimmed) — required; it is the `source` stamped on annotations.
     std::string recipient = m_ic_recipient.get_text();
@@ -842,6 +888,9 @@ void ExportDialog::on_export_interchange() {
     }
     if (recipient.empty()) {
         m_status_lbl.set_text("Enter who this pass is for (e.g. jane, claude).");
+        ic_alert("Who is this pass for?",
+                 "Enter an editor's name in the Label box (e.g. jane, claude). "
+                 "It's stamped on every note they send back.", false);
         return;
     }
 
@@ -864,6 +913,7 @@ void ExportDialog::on_export_interchange() {
             identity = Interchange::load_or_create_identity();
         } catch (const std::exception& ex) {
             m_status_lbl.set_text(std::string("Identity error: ") + ex.what());
+            ic_alert("Couldn't load your signing identity", ex.what(), false);
             return;
         }
     }
@@ -930,10 +980,24 @@ void ExportDialog::on_export_interchange() {
                 m_status_lbl.set_text("\u2713  " + verb + std::to_string(n_scenes) +
                     " scene" + (n_scenes != 1 ? "s" : "") + " for " + recipient +
                     " \u2192 " + path + tail);
+                m_btn_export.set_sensitive(true);
+                // s108 — a clear success dialog; on OK it closes the export dialog so
+                // it doesn't linger looking like it's still waiting (Scott's ask).
+                ic_alert(verb + std::to_string(n_scenes) + " scene" +
+                             (n_scenes != 1 ? "s" : "") + " for " + recipient,
+                         (sealed
+                              ? "Sealed to:\n" + path +
+                                "\n\nThe passphrase is saved in the project ledger \u2014 "
+                                "save the project to keep it."
+                              : "Written to:\n" + path +
+                                "\n\nUnsealed \u2014 hand it to a chat or Claude Code, then Absorb the reply."),
+                         /*close_after=*/true);
+                return;
             } catch (const std::exception& ex) {
                 m_status_lbl.set_text(std::string("Error: ") + ex.what());
+                m_btn_export.set_sensitive(true);
+                ic_alert("Couldn't seal the pass", ex.what(), false);
             }
-            m_btn_export.set_sensitive(true);
         });
 }
 

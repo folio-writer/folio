@@ -69,4 +69,38 @@ FileFace peek_file_face(const std::string& path);
 std::string body_hash(const Document& doc);
 std::string annotations_hash(const Document& doc);
 
+// ── the continuous RETURN document (s107 verdicts) ───────────────────────────
+// Build the author's return from a previously-`sent` document (the stashed
+// carrier the author received and absorbed): keep its body (scenes) + pass + the
+// WHOLE existing custody chain, replace the annotations block with `returned`
+// (the same notes, now carrying the author's verdicts), and APPEND a new `sealed`
+// custody event by the author (`actor`/`actor_id`, timestamp `at`) binding the
+// verdict-laden annotations_hash. The chain therefore reads
+// issued(author) -> sealed(editor) -> sealed(author,+verdicts), so the return
+// leg is court-grade-continuous, not a fresh chain (DESIGN_editorialization
+// §20.7). PURE + UNSIGNED: the caller signs the appended event (sign_event) and
+// seals (save_document_pw) -- signing/sealing need crypto, this doesn't, so the
+// custody/hash logic is sandbox-provable. Returns the assembled Document.
+Document make_return_document(const Document&                 sent,
+                              const std::vector<Annotation>&  returned,
+                              const std::string&              actor,
+                              const std::string&              actor_id,
+                              const std::string&              at);
+
+// s108 §21.2/§25.5 — "Send back to editor": the return carries the author's
+// CURRENT (revised) prose, not the absorb-time snapshot, so the fix travels. Keeps
+// `sent`'s pass + custody chain, swaps in `current_scenes`, replaces the block with
+// `returned` (verdict/resolution-laden), then appends TWO signed-by-caller links:
+//   issued(author, body_hash(current_scenes))   -- re-issue the revised prose
+//   sealed(author, annotations_hash(returned))   -- seal the verdicts/resolution
+// So body_v2-vs-body_v1 is a signed change indicator and the revised prose is
+// court-grade tamper-evident. The caller signs BOTH appended events (custody has
+// two new tail links) before sealing. UNSIGNED on return.
+Document make_sendback_document(const Document&                sent,
+                                const std::vector<Scene>&      current_scenes,
+                                const std::vector<Annotation>& returned,
+                                const std::string&             actor,
+                                const std::string&             actor_id,
+                                const std::string&             at);
+
 }  // namespace folioedit

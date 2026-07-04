@@ -1390,6 +1390,7 @@ void Editor::show_annotation_popover(double x, double y) {
   // Pre-populate if editing existing annotation.
   // In JV mode m_current_node is null — search segments instead.
   BinderNode *existing_node = nullptr;
+  std::string popover_verdict;   // s107 — the clicked note's verdict (if a proposal)
   if (existing_id >= 0) {
     if (m_current_node) {
       existing_node = m_current_node;
@@ -1414,9 +1415,56 @@ void Editor::show_annotation_popover(double x, double y) {
           kind_sel = 2;
         kind_dd->set_selected(kind_sel);
         *selected_color = ann.color_hex;
+        popover_verdict = ann.verdict;   // s107 — capture for the verdict row below
         break;
       }
     }
+  }
+
+  // s107 — verdict row for an imported PROPOSAL: show the state (▸/✓/✗) and let the
+  // author accept/decline right here, on the inline annotation they clicked. Self/
+  // legacy notes (empty verdict) get nothing — they keep plain edit/delete.
+  if (existing_id >= 0 && existing_node && !popover_verdict.empty()) {
+    const std::string &v = popover_verdict;
+    const char *glyph = (v == Verdicts::kAccepted) ? "\u2713"
+                      : (v == Verdicts::kDeclined) ? "\u2717" : "\u25B8";
+    const char *word  = (v == Verdicts::kAccepted) ? "Accepted"
+                      : (v == Verdicts::kDeclined) ? "Declined" : "Proposed";
+    const char *hex   = (v == Verdicts::kAccepted) ? "#a6e3a1"
+                      : (v == Verdicts::kDeclined) ? "#f38ba8" : "#cba6f7";
+
+    auto *vrow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    auto *state = Gtk::make_managed<Gtk::Label>(std::string(glyph) + " " + word);
+    {
+      auto css = Gtk::CssProvider::create();
+      css->load_from_data(std::string("label { color:") + hex + "; font-weight:bold; }");
+      state->get_style_context()->add_provider(css, GTK_STYLE_PROVIDER_PRIORITY_USER);
+    }
+    state->set_halign(Gtk::Align::START);
+    state->set_hexpand(true);
+    vrow->append(*state);
+
+    int vid = existing_id;
+    BinderNode *vnode = existing_node;
+    auto *accept = Gtk::make_managed<Gtk::Button>("\u2713 Accept");
+    accept->add_css_class("flat");
+    if (v == Verdicts::kAccepted) { accept->add_css_class("suggested-action"); accept->set_sensitive(false); }
+    accept->signal_clicked().connect([this, vnode, vid]() {
+      m_model.set_annotation_verdict(vnode, vid, Verdicts::kAccepted);
+      if (m_ann_popover) m_ann_popover->popdown();
+      if (on_annotations_changed) on_annotations_changed();
+    });
+    auto *decline = Gtk::make_managed<Gtk::Button>("\u2717 Decline");
+    decline->add_css_class("flat");
+    if (v == Verdicts::kDeclined) { decline->add_css_class("destructive-action"); decline->set_sensitive(false); }
+    decline->signal_clicked().connect([this, vnode, vid]() {
+      m_model.set_annotation_verdict(vnode, vid, Verdicts::kDeclined);
+      if (m_ann_popover) m_ann_popover->popdown();
+      if (on_annotations_changed) on_annotations_changed();
+    });
+    vrow->append(*accept);
+    vrow->append(*decline);
+    box->append(*vrow);
   }
 
   // Buttons row
