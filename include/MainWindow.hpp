@@ -9,6 +9,7 @@
 #include "SnapshotDialog.hpp"
 #include "ExportDialog.hpp"
 #include "ImportDialog.hpp"
+#include "LedgerSurface.hpp"   // s111 §29 — LedgerNote / NoteAction for the note-list host hooks
 #include "PatternDialog.hpp"   // s24 — Layer 3: pattern input dialog
 #include "PrintDialog.hpp"
 #include "ReportEngine.hpp"
@@ -142,7 +143,26 @@ private:
   // Returned; prompt_for_passphrase() is the miss fallback (foreign / other-
   // project file).
   void action_absorb_pass();
-  void absorb_pass_file(const std::string& path, const std::string& extra_phrase);
+  // s111 §29 — Acknowledge a return from a specific Ledger (Sent) card: opens a
+  // chooser, then hard-binds the picked file to THAT entry by pass id (a return
+  // of a different pass is refused, not filed). expected_pass_id="" keeps the
+  // free Absorb path unchanged. acknowledge_return_for_pass wraps it per-card.
+  void absorb_pass_file(const std::string& path, const std::string& extra_phrase,
+                        const std::string& expected_pass_id = "");
+  void acknowledge_return_for_pass(const std::string& pass_id);
+  // s111 §29 slice 2 — the Ledger note list. notes_for_pass gathers a pass's
+  // notes from the model (scoped by editor identity + scene inventory, same as the
+  // return path); apply_note_action maps the author's per-note move to a model
+  // mutation; goto_note leaves the ledger and jumps to the note in the prose.
+  std::vector<Folio::LedgerNote> notes_for_pass(const std::string& pass_id);
+  void apply_note_action(const std::string& pass_id, const std::string& scene_iid,
+                         int note_id, Folio::NoteAction action);
+  void goto_note(const std::string& scene_iid, int note_id);
+  // s111 §29 — open the read-only annotation report scoped to a pass's editor.
+  void show_report_for_pass(const std::string& pass_id);
+  // s111 §29 — the Ledger "Send to editor…" front door: opens the export dialog
+  // pre-set to the Folio Interchange carrier.
+  void open_interchange_export();
   void prompt_for_passphrase(const std::string& path);
   // s107 — send the author's verdicts on a returned pass back to the editor:
   // read the stashed carrier, gather the pass's verdicted annotations from the

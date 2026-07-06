@@ -355,6 +355,27 @@ inline bool resolution_resolved(const std::vector<Annotation::ResolutionEvent>& 
     return resolution_state(log) == ResolutionState::Resolved;
 }
 
+// s111 §29 / §28.3 — the AUTHOR-SOVEREIGN recede predicate for the Ledger note
+// list. A note recedes from the author's active list on the AUTHOR's OWN latest
+// word (resolved -> recede, reopened -> active), independent of the editor's key.
+// This is deliberately NOT resolution_resolved (both-keys, the court-grade "both
+// agreed" record, which stays intact for the return doc + folioedit parity): the
+// author having the last word (§28.3) means his own future judgment governs what
+// he still sees (§28.5). His Resolve sets a note aside; his Reopen brings it back.
+// The editor's key does not force a note back onto the author's surface -- an
+// editor reopen travels on the return trip, it does not nag from the ledger.
+inline bool author_resolved(const std::vector<Annotation::ResolutionEvent>& log) {
+    bool resolved = false;
+    std::string latest_at;
+    for (const auto& e : log) {
+        if (e.by == Resolvers::kAuthor && e.at >= latest_at) {
+            latest_at = e.at;
+            resolved  = e.resolved;
+        }
+    }
+    return resolved;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // BoardItem — identifies any selected node in any section
 //

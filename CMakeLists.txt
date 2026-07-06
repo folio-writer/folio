@@ -192,6 +192,7 @@ set(SOURCES
     src/ImageNormalize.cpp        # s57 — pure Gallery asset-layer policy: guard/downscale/format-choice/plan (GTK-free, tested)
     src/ImagePool.cpp             # s57 — pure shared image POOL: fragment model + soft-delete + JSON serialization (GTK-free, tested)
     src/Gallery.cpp               # s57 — pure Gallery LENS reads: image↔object link directions + lightbox prev/next (GTK-free, tested)
+    src/ResearchCapture.cpp       # s113 — pure Research capture engine: HTML meta extractor (title/summary) + monolith shell-out (GTK-free; extractor tested)
     src/ObjectImage.cpp           # s72 — pure object PORTRAIT helpers: dual-read iid/path resolver + long-edge display math (GTK-free, tested)
     src/TimelineRelief.cpp        # s79 — pure Relationship Timeline relief fn: told-order spine + claimed set -> bars/dots/gaps (iid-keyed, GTK-free, tested)
     src/TimelineSpine.cpp         # s80 — pure spine + structure-band projection: depth-first told-order walk + group spans by depth (iid-keyed, GTK-free, tested)
@@ -207,6 +208,7 @@ set(SOURCES
     src/CustomMindMapCanvas.cpp   # s51 — the OWNED mind-map document surface (a Reference form): canvas + toolbar + subjects
     src/JournalSurface.cpp        # s53 — journal card/calendar lens: cairo painter over the pure layer (calendar + cards)
     src/GallerySurface.cpp        # s61 — owned Gallery surface: wall/lightbox shell + file-picker import door (GTK)
+    src/ResearchCard.cpp          # s113 — owned Research capture surface: title/editable summary/source/open-in-browser (GTK)
     src/ModuleIO.cpp              # s23 — pure (json<->Module) anatomy seam (GTK-free, tested)
     src/ModulePlanner.cpp         # s23 — pure scaffold planner: module+inputs -> Part/Chapter/Scene plan
     src/ModuleMaterializer.cpp    # s23 — Layer 2: materialise a plan into BinderNodes (kp_id stamped)

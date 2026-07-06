@@ -605,6 +605,13 @@ void Inspector::build_meta_tab() {
   build_reference_meta_section(*rs);
   m_meta_box.append(*rs);
 
+  m_batch_box.set_orientation(Gtk::Orientation::VERTICAL);
+  m_batch_box.set_spacing(12);
+  m_batch_box.set_name("batch-meta");
+  m_batch_box.set_visible(false);
+  build_batch_section(m_batch_box);
+  m_meta_box.append(m_batch_box);
+
   m_meta_scroll.set_child(m_meta_box);
   m_meta_wrapper.append(m_meta_scroll);
 
@@ -1640,16 +1647,352 @@ void Inspector::load_joined_nodes(const std::vector<BinderNode *> &nodes) {
   m_current_node = nullptr;
   m_loading = true;
 
-  // Notes is the only meaningful tab in JV mode — always switch to it.
-  // Metadata and Snapshots don't apply to a multi-node aggregate view.
+  // Multi-select shows a BATCH metadata panel on the Metadata tab — color,
+  // status, and include-in-export applied across the whole selection. (Notes
+  // still aggregates on its own tab; Snapshots has no single history to show.)
+  m_mode = InspectorMode::Node;
+  show_meta_section("batch-meta");
   m_tab_history.set_sensitive(false);
-  m_tab_notes.set_active(true);
-  show_tab(2);
+  // Land on Metadata so the batch controls are the thing in front of the user.
+  // Never leave them stranded on the now-disabled Snapshots tab.
+  m_tab_meta.set_active(true);
+  show_tab(1);
   m_progress_footer.set_visible(false);
 
   m_loading = false;
+  populate_batch_section();
   refresh_notes();
   refresh_annotations();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Batch (multi-select) metadata — one panel, writes fan out across the selection
+// ─────────────────────────────────────────────────────────────────────────────
+
+// True for the kinds that carry the node-meta fields (status + the KP/colour
+// coupling). Character/Place/Reference get colour only, no KP coupling — mirrors
+// the single-node path.
+static bool batch_is_node_meta_kind(const BinderNode *n) {
+  return n && (n->kind == BinderKind::Scene ||
+               n->kind == BinderKind::Group ||
+               n->kind == BinderKind::Template);
+}
+
+// build_color_dropdown, but with a leading "—" (Mixed) row at position 0.
+// Positions: 0 = — (mixed / no common value), 1 = None, 2.. = palette colours.
+// A real color_idx k maps to dropdown position k + 1.
+Gtk::DropDown *Inspector::build_batch_color_dropdown() {
+  auto strings = Gtk::StringList::create({});
+  strings->append("\u2014");   // 0 — Mixed sentinel
+  strings->append("None");      // 1
+  bool use_prefs = !m_prefs.tag_colors.empty();
+  if (use_prefs) {
+    for (const auto &tc : m_prefs.tag_colors)
+      strings->append(tc.name);
+  } else {
+    for (const auto &dc : k_default_colors)
+      strings->append(dc.name);
+  }
+
+  auto *dd = Gtk::make_managed<Gtk::DropDown>(strings);
+  dd->set_hexpand(true);
+
+  auto factory = Gtk::SignalListItemFactory::create();
+  factory->signal_setup().connect([](const Glib::RefPtr<Gtk::ListItem> &item) {
+    auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+    row->set_margin_start(4);
+    auto *chip = Gtk::make_managed<Gtk::Label>(" ");
+    chip->add_css_class("color-chip");
+    chip->set_size_request(16, 16);
+    auto *lbl = Gtk::make_managed<Gtk::Label>();
+    lbl->set_halign(Gtk::Align::START);
+    row->append(*chip);
+    row->append(*lbl);
+    item->set_child(*row);
+  });
+  factory->signal_bind().connect([this, use_prefs](
+                                     const Glib::RefPtr<Gtk::ListItem> &item) {
+    guint idx = item->get_position();
+    auto *row = dynamic_cast<Gtk::Box *>(item->get_child());
+    if (!row)
+      return;
+    auto *chip = dynamic_cast<Gtk::Label *>(row->get_first_child());
+    auto *lbl =
+        chip ? dynamic_cast<Gtk::Label *>(chip->get_next_sibling()) : nullptr;
+    if (!chip || !lbl)
+      return;
+
+    if (idx == 0) {                 // — Mixed
+      chip->set_visible(false);
+      lbl->set_text("\u2014");
+      return;
+    }
+    if (idx == 1) {                 // None
+      chip->set_visible(false);
+      lbl->set_text("None");
+      return;
+    }
+    chip->set_visible(true);
+    guint cidx = idx - 2;           // palette index (0-based)
+    std::string name, hex;
+    if (use_prefs && cidx < m_prefs.tag_colors.size()) {
+      name = m_prefs.tag_colors[cidx].name;
+      hex = m_prefs.tag_colors[cidx].hex;
+    } else {
+      int nd = (int)(sizeof(k_default_colors) / sizeof(k_default_colors[0]));
+      if ((int)cidx < nd) {
+        name = k_default_colors[cidx].name;
+        hex = k_default_colors[cidx].hex;
+      }
+    }
+    auto provider = Gtk::CssProvider::create();
+    provider->load_from_data(".dyn-chip { background-color: " + hex + "; }");
+    chip->add_css_class("dyn-chip");
+    chip->get_style_context()->add_provider(
+        provider, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    lbl->set_text(name);
+  });
+  dd->set_factory(factory);
+  dd->set_list_factory(factory);
+
+  dd->property_selected().signal_changed().connect([this, dd]() {
+    if (m_loading)
+      return;
+    guint pos = dd->get_selected();
+    if (pos == 0)          // — sentinel: no common value, leave the selection be
+      return;
+    batch_apply_color((int)pos - 1);   // pos 1 -> 0 (None), pos 2 -> 1 (colour 1)
+  });
+  return dd;
+}
+
+void Inspector::build_batch_section(Gtk::Box &parent) {
+  m_batch_header.set_text("Editing selection");
+  m_batch_header.add_css_class("pref-group-title");
+  m_batch_header.set_halign(Gtk::Align::START);
+  m_batch_header.set_margin_start(4);
+  m_batch_header.set_margin_top(2);
+  parent.append(m_batch_header);
+
+  auto *lb = make_listbox();
+
+  auto add_row = [&](const std::string &label, Gtk::Widget &ctrl) {
+    auto *row = Gtk::make_managed<Gtk::ListBoxRow>();
+    auto *rb = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+    rb->set_margin_start(8);
+    rb->set_margin_end(8);
+    rb->set_margin_top(3);
+    rb->set_margin_bottom(3);
+    auto *l = Gtk::make_managed<Gtk::Label>(label);
+    l->add_css_class("pref-row-label");
+    l->set_hexpand(true);
+    l->set_halign(Gtk::Align::START);
+    rb->append(*l);
+    rb->append(ctrl);
+    row->set_child(*rb);
+    lb->append(*row);
+  };
+
+  // Color (also re-tags the KP via the swatch coupling, per node)
+  m_batch_color_dropdown = build_batch_color_dropdown();
+  add_row("Color", *m_batch_color_dropdown);
+
+  // Status
+  auto status_strings = Gtk::StringList::create({"\u2014", "None"});
+  const auto &statuses =
+      m_prefs.statuses.empty()
+          ? std::vector<StatusDef>{{"Rough Draft", "#f9e2af"},
+                                   {"In Progress", "#89b4fa"},
+                                   {"Polished", "#a6e3a1"},
+                                   {"Skip", "#6c7086"}}
+          : m_prefs.statuses;
+  for (const auto &s : statuses)
+    status_strings->append(s.name);
+  m_batch_status_dropdown = Gtk::make_managed<Gtk::DropDown>(status_strings);
+  m_batch_status_dropdown->set_hexpand(true);
+  m_batch_status_dropdown->property_selected().signal_changed().connect([this]() {
+    if (m_loading)
+      return;
+    guint p = m_batch_status_dropdown->get_selected();
+    if (p == 0)   // — sentinel
+      return;
+    if (p == 1) { // None
+      batch_apply_status(NodeStatus::Untitled);
+      return;
+    }
+    auto *sl = dynamic_cast<Gtk::StringList *>(
+        m_batch_status_dropdown->get_model().get());
+    if (!sl)
+      return;
+    std::string name = sl->get_string(p);
+    NodeStatus s = NodeStatus::Untitled;
+    if (name == "Rough Draft")
+      s = NodeStatus::RoughDraft;
+    else if (name == "In Progress")
+      s = NodeStatus::InProgress;
+    else if (name == "Polished")
+      s = NodeStatus::Polished;
+    else if (name == "Skip")
+      s = NodeStatus::Skip;
+    batch_apply_status(s);
+  });
+  add_row("Status", *m_batch_status_dropdown);
+
+  // Include in export (switch + a "Mixed" hint shown when the selection differs)
+  auto *inc_box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+  m_batch_include_hint.set_text("Mixed");
+  m_batch_include_hint.add_css_class("dim-label");
+  m_batch_include_hint.set_visible(false);
+  m_batch_include_switch.set_halign(Gtk::Align::END);
+  m_batch_include_switch.set_valign(Gtk::Align::CENTER);
+  m_batch_include_switch.property_active().signal_changed().connect([this]() {
+    if (m_loading)
+      return;
+    m_batch_include_hint.set_visible(false);
+    batch_apply_include(m_batch_include_switch.get_active());
+  });
+  inc_box->append(m_batch_include_hint);
+  inc_box->append(m_batch_include_switch);
+  add_row("Include in export", *inc_box);
+
+  parent.append(*lb);
+}
+
+void Inspector::populate_batch_section() {
+  m_loading = true;
+
+  m_batch_header.set_text("Editing " + std::to_string(m_jv_nodes.size()) +
+                          " selected");
+
+  // ── Color: common color_idx across the whole selection ────────────────────
+  {
+    bool have = false, mixed = false;
+    int common = 0;
+    for (auto *n : m_jv_nodes) {
+      if (!n)
+        continue;
+      if (!have) {
+        common = n->color_idx;
+        have = true;
+      } else if (n->color_idx != common) {
+        mixed = true;
+        break;
+      }
+    }
+    if (m_batch_color_dropdown)
+      m_batch_color_dropdown->set_selected(mixed || !have ? 0u
+                                                          : (guint)common + 1u);
+  }
+
+  // ── Status: common across node-meta kinds only ────────────────────────────
+  {
+    bool have = false, mixed = false;
+    NodeStatus common = NodeStatus::Untitled;
+    for (auto *n : m_jv_nodes) {
+      if (!batch_is_node_meta_kind(n))
+        continue;
+      if (!have) {
+        common = n->status;
+        have = true;
+      } else if (n->status != common) {
+        mixed = true;
+        break;
+      }
+    }
+    if (m_batch_status_dropdown) {
+      guint pos = 0; // — sentinel
+      if (have && !mixed) {
+        std::string target;
+        switch (common) {
+        case NodeStatus::RoughDraft: target = "Rough Draft"; break;
+        case NodeStatus::InProgress: target = "In Progress"; break;
+        case NodeStatus::Polished:   target = "Polished"; break;
+        case NodeStatus::Skip:       target = "Skip"; break;
+        default:                     target = ""; break; // Untitled -> None (pos 1)
+        }
+        pos = 1; // None
+        if (!target.empty()) {
+          auto *sl = dynamic_cast<Gtk::StringList *>(
+              m_batch_status_dropdown->get_model().get());
+          if (sl)
+            for (guint i = 2; i < sl->get_n_items(); ++i)
+              if (std::string(sl->get_string(i)) == target) {
+                pos = i;
+                break;
+              }
+        }
+      }
+      m_batch_status_dropdown->set_selected(pos);
+    }
+  }
+
+  // ── Include in export: common across the whole selection ──────────────────
+  {
+    bool have = false, mixed = false, common = true;
+    for (auto *n : m_jv_nodes) {
+      if (!n)
+        continue;
+      if (!have) {
+        common = n->include_in_export;
+        have = true;
+      } else if (n->include_in_export != common) {
+        mixed = true;
+        break;
+      }
+    }
+    if (mixed) {
+      m_batch_include_switch.set_active(false);
+      m_batch_include_hint.set_visible(true);
+    } else {
+      m_batch_include_switch.set_active(have ? common : true);
+      m_batch_include_hint.set_visible(false);
+    }
+  }
+
+  m_loading = false;
+}
+
+void Inspector::batch_apply_color(int idx) {
+  if (m_jv_nodes.empty())
+    return;
+  for (auto *n : m_jv_nodes) {
+    if (!n)
+      continue;
+    n->color_idx = idx;
+    if (batch_is_node_meta_kind(n)) {
+      // The palette IS the arc — colouring a scene re-tags its Key Point.
+      n->kp_label = m_prefs.color_name_for_idx(idx);
+      n->kp_id = (idx >= 1 && idx <= (int)m_prefs.tag_colors.size())
+                     ? m_prefs.tag_colors[idx - 1].id
+                     : std::string();
+      if (idx == 0) { // colour removed -> no identity -> cannot be a beat
+        n->is_key_point = false;
+        n->pin = false;
+      }
+    }
+  }
+  m_model.mark_modified();
+  notify_meta_changed();
+}
+
+void Inspector::batch_apply_status(NodeStatus s) {
+  if (m_jv_nodes.empty())
+    return;
+  for (auto *n : m_jv_nodes)
+    if (batch_is_node_meta_kind(n))
+      n->status = s;
+  m_model.mark_modified();
+  notify_meta_changed();
+}
+
+void Inspector::batch_apply_include(bool inc) {
+  if (m_jv_nodes.empty())
+    return;
+  for (auto *n : m_jv_nodes)
+    if (n)
+      n->include_in_export = inc;
+  m_model.mark_modified();
+  notify_meta_changed();
 }
 
 void Inspector::load_project() {
@@ -3755,13 +4098,16 @@ void Inspector::refresh_annotations() {
 
 // ── Tools-menu entry points ───────────────────────────────────────────────────
 
-void Inspector::open_annotation_report() {
+void Inspector::open_annotation_report(const std::string& focus_source) {
   auto *root = dynamic_cast<Gtk::Window *>(get_root());
   if (!root) return;
   if (!m_ann_report)
     m_ann_report = std::make_unique<AnnotationReportDialog>(*root, m_model, m_prefs);
   else
     m_ann_report->refresh();
+  // s111 §29 — Ledger "Show report" opens scoped to one pass's editor.
+  if (!focus_source.empty())
+    m_ann_report->focus_source(focus_source);
   m_ann_report->present();
 }
 

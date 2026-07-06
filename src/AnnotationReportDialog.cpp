@@ -4,6 +4,7 @@
 
 #include "AnnotationReportDialog.hpp"
 #include "NoteStep.hpp"                 // s108 §26 — the note stepper (phase + next action)
+#include "InterchangeLedger.hpp"        // s111 §29 — Folio::same_editor for focus_source
 #include <gtkmm/checkbutton.h>
 #include <gtkmm/stringlist.h>
 #include <gtkmm/gestureclick.h>
@@ -662,6 +663,25 @@ void AnnotationReportDialog::nudge_scale(double delta) {
     m_scale = next;
     apply_scale();
     m_prefs.data_view_zoom_pct = static_cast<int>(m_scale * 100.0 + 0.5);
+}
+
+void AnnotationReportDialog::focus_source(const std::string& editor_label) {
+    // Refresh the source list first so a just-absorbed editor is present, then
+    // narrow to that editor (case/space-insensitive match, since the source is a
+    // human label) and reveal receded notes — the report is the complete record
+    // of the interaction, so set-aside notes belong in it.
+    rebuild_source_filter();
+    if (m_show_resolved) m_show_resolved->set_active(true);
+    guint want = 0;                                  // fallback: All sources
+    if (!editor_label.empty()) {
+        for (std::size_t i = 0; i < m_sources.size(); ++i)
+            if (Folio::same_editor(m_sources[i], editor_label)) {
+                want = static_cast<guint>(i + 2);
+                break;
+            }
+    }
+    if (m_filter_source) m_filter_source->set_selected(want);
+    rebuild_list();
 }
 
 void AnnotationReportDialog::rebuild_source_filter() {

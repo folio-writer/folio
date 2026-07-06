@@ -7,7 +7,9 @@
 #include <gtkmm.h>
 #include <memory>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "DocumentModel.hpp"
@@ -19,6 +21,9 @@
 #include "JournalSurface.hpp"      // s54 — the journal's owned writing surface (its own buffer + serializer)
 #include "GallerySurface.hpp"      // s61 — the gallery's owned surface (lens over the image pool)
 #include "Gallery.hpp"             // s61 — gallery front-door sentinel (kGalleryTemplateId) + lens reads
+#include "ResearchCard.hpp"        // s113 — the Research capture surface (owned card)
+#include "Research.hpp"            // s113 — research front-door sentinel (kResearchTemplateId)
+#include "ResearchCapture.hpp"     // s113 — CaptureResult (async capture result type)
 #include "ObjectForm.hpp"   // s41 — the inversion: the object form is the Editor document
 #include "SearchEngine.hpp"
 #include "EditorHtmlSerializer.hpp"
@@ -266,6 +271,10 @@ public:
   // ── Find / Replace (inline bar) ───────────────────────────────────────────
   void open_find(bool with_replace = false);
   void close_find();
+  // Drive the Find bar from an external search (a global Search dialog result
+  // click): load the query + that search's options, reveal the bar, and
+  // highlight every match in the current scene, scrolling to the first.
+  void find_with_query(const std::string& query, const SearchOptions& opts);
 
   // Tools-menu entry points — open manager dialogs from outside the editor
   void open_style_manager();
@@ -310,6 +319,20 @@ public:
   // the pass id. MainWindow handles it: read the stashed carrier, gather the pass's
   // verdicted annotations from the model, and write a sealed return.
   std::function<void(const std::string& pass_id)> on_return_verdicts;
+
+  // s111 §29 — Ledger hub actions, fired from the hosted LedgerSurface and routed
+  // to MainWindow (same pattern as on_return_verdicts). on_ledger_export opens the
+  // interchange export front door; on_acknowledge_return acknowledges a Sent card's
+  // return, hard-bound to that pass id.
+  std::function<void()>                           on_ledger_export;
+  std::function<void(const std::string& pass_id)> on_acknowledge_return;
+  // s111 §29 slice 2 — the Ledger note list asks the host for a pass's notes and
+  // fires the author's per-note action back (both routed to MainWindow).
+  std::function<std::vector<LedgerNote>(const std::string& pass_id)> on_ledger_notes_provider;
+  std::function<void(const std::string& pass_id, const std::string& scene_iid,
+                     int note_id, NoteAction action)>                on_ledger_note_action;
+  // s111 §29 — Ledger "Show report": open the read-only report scoped to the pass.
+  std::function<void(const std::string& pass_id)>                   on_ledger_show_report;
 
   // Fired when the user requests a document split.
   // original: the node being split (still holds its truncated content after
@@ -619,6 +642,14 @@ private:
     return n && n->kind == BinderKind::Reference &&
            n->template_id == Folio::kGalleryTemplateId;
   }
+  // s113 — a Reference whose form is "Research": a captured web page. Routed to
+  // the owned ResearchCard surface (title / editable summary / source / open-in-
+  // browser). The sentinel template_id marks it; the captured HTML lives at
+  // assets/<iid>.html (NOT the body — content is eager-loaded and multi-MB).
+  bool node_is_research_form(const BinderNode* n) const {
+    return n && n->kind == BinderKind::Reference &&
+           n->template_id == Folio::kResearchTemplateId;
+  }
   void populate_object_form();   // render m_object_form for m_current_node
 
   // Exit-focus overlay button
@@ -729,6 +760,29 @@ private:
   // handed in via set_context. Shown in Write mode for a gallery Reference.
   Folio::GallerySurface m_gallery_surface;
   std::string m_gallery_iid;
+  // s113 — the Research capture card: an owned surface for a captured web page.
+  // Shown in Write mode for a research Reference; persists the editable summary
+  // back to the host node's synopsis, keyed by m_research_iid.
+  Folio::ResearchCard m_research_card;
+  std::string m_research_iid;
+  // s113 — async capture plumbing. research_capture (monolith shell-out, network-
+  // bound) runs on m_capture_thread; when it finishes it fires m_capture_done
+  // (Glib::Dispatcher, the thread-safe worker->UI signal), whose handler
+  // (on_capture_done) finalizes on the UI thread. A modal spinner window sits on
+  // top during the run so the main loop stays free (no more "Force Quit").
+  void begin_capture(const std::string& iid, const std::string& url);
+  void on_capture_done();
+  void show_capture_dialog(const std::string& url);
+  void close_capture_dialog();
+  Glib::Dispatcher     m_capture_done;
+  std::thread          m_capture_thread;
+  Folio::CaptureResult m_capture_result;   // worker writes, UI reads (dispatcher = barrier)
+  std::string          m_capture_iid;      // node being captured
+  std::string          m_capture_url;
+  Gtk::Window*         m_capture_dialog = nullptr;  // make_managed, built once, reused
+  Gtk::Label*          m_capture_dialog_label = nullptr;
+  Gtk::Spinner*        m_capture_dialog_spinner = nullptr;
+  bool                 m_capture_in_flight = false;
   std::string m_cmm_iid;
   // Fired when a node glyph is activated on the map. MainWindow wires it to the
   // app-wide navigate path (switch to Write + select), so map-open == sidebar-open.
@@ -871,6 +925,34 @@ private:
 private:
   void show_annotation_popover(double x, double y);
   void apply_annotation_tag(const Annotation& ann);
+
+  // ── s111 §28 — live mark-backed annotation ranges ──────────────────────────
+  // The stored Annotation::range_start/range_end are a CACHE; the truth is a pair
+  // of Gtk::TextMarks on the live buffer (start = left gravity, end = right
+  // gravity — greedy edges, matching the JoinedSegment pattern). Marks track the
+  // author's edits automatically, so a note stays on its prose instead of drifting
+  // when text is inserted/deleted inside or at the span. The cache is re-derived
+  // from the marks on save and on caret-leave (resync_annotation_ranges), and the
+  // marks are (re)built from the stored ranges each time a node loads. A fully
+  // deleted span collapses to a zero-width caret (range_start == range_end): the
+  // note is still listed and reopenable, never removed (§28.5 recede-not-delete),
+  // and can re-expand if text is later inserted between its marks (replace-all).
+  //
+  // Scope: single-node prose mode (m_current_node, not Joined View — that path
+  // keeps its existing rebased-static ranges; see load_joined). Marks live only
+  // for the currently loaded node's buffer and are cleared before each reload.
+  struct AnnMarks {
+    Glib::RefPtr<Gtk::TextMark> start;   // left gravity  — stays left of an insert
+    Glib::RefPtr<Gtk::TextMark> end;     // right gravity — moves right of an insert
+  };
+  std::unordered_map<int, AnnMarks> m_ann_marks;      // ann id -> marks (current node)
+  std::unordered_set<int>           m_ann_caret_inside; // ids whose span holds the caret
+
+  void install_annotation_marks();        // (re)create marks for the current node
+  void install_marks_for(const Annotation& ann); // one annotation (used by add)
+  void clear_annotation_marks();          // delete all marks from the buffer + map
+  void resync_annotation_ranges();        // marks -> range_start/end cache (save/leave)
+  void annotation_caret_leave_check();     // on caret move: resync if a span was left
   Gtk::Popover*  m_ann_popover  = nullptr;
   double         m_last_rc_x        = 0;
   double         m_last_rc_y        = 0;

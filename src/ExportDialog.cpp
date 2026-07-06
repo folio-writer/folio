@@ -270,6 +270,15 @@ void ExportDialog::update_format_sensitivity() {
     m_chk_cover.set_visible(is_epub && has_cover);
 }
 
+// s111 §29 — pre-select the Folio Interchange carrier (index 8). set_selected
+// fires the format-changed handler, which swaps in the interchange property set;
+// the explicit call keeps it correct even if that wiring changes.
+void ExportDialog::select_interchange() {
+    if (!m_format_dd) return;
+    m_format_dd->set_selected(8);   // "Folio Interchange (.folioedit)"
+    update_format_sensitivity();
+}
+
 void ExportDialog::build_settings() {
     // ── Format ────────────────────────────────────────────────────────────────
     m_settings_box.append(*make_section("Format"));

@@ -17,6 +17,7 @@
 #include <regex>
 #include <set>
 #include <string>
+#include <utility>   // std::swap
 
 namespace Folio {
 // ─────────────────────────────────────────────────────────────────────────────
@@ -51,6 +52,28 @@ void Editor::close_find() {
 
 bool Editor::find_bar_visible() const {
   return m_find_revealer.get_reveal_child();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// find_with_query — external entry point (global Search result click). Reuses
+// the in-editor Find so the user gets every match highlighted, a count, and
+// Next/Prev to evaluate the hits. No-op when there is no live text buffer
+// (non-Write view or an empty editor).
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Editor::find_with_query(const std::string &query, const SearchOptions &opts) {
+  if (query.empty() || !m_find_entry || !m_buffer)
+    return;
+  // Match the originating search's terms exactly.
+  if (m_find_case_btn)
+    m_find_case_btn->set_active(opts.case_sensitive);
+  if (m_find_word_btn)
+    m_find_word_btn->set_active(opts.whole_word);
+  if (m_find_regex_btn)
+    m_find_regex_btn->set_active(opts.use_regex);
+  m_find_entry->set_text(query);
+  m_find_revealer.set_reveal_child(true);
+  find_update(); // highlight all + mark current + scroll to first
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -955,6 +978,11 @@ void Editor::apply_annotation_tag(const Annotation &ann) {
 void Editor::rebuild_annotation_tags() {
   if (!m_buffer || !m_current_node)
     return;
+  // s111 §28 — if marks are installed (mid-session), the marks are the truth:
+  // pull the ranges from them first so the tags we re-stamp below land where the
+  // author's edits left the span, not on a stale stored offset. No-op on the
+  // initial load (marks are installed AFTER this call, from the stored ranges).
+  resync_annotation_ranges();
   // Remove all existing ann: tags from the entire buffer
   std::vector<Glib::RefPtr<Gtk::TextTag>> ann_tags;
   m_buffer->get_tag_table()->foreach (
@@ -970,6 +998,111 @@ void Editor::rebuild_annotation_tags() {
   for (const auto &ann : m_current_node->annotations)
     apply_annotation_tag(ann);
   m_loading = false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// s111 §28 — live mark-backed annotation ranges
+//
+// Each annotation is anchored to the live buffer by a start(left-gravity)/
+// end(right-gravity) Gtk::TextMark pair. The marks ride the author's edits, so
+// the note stays on its prose; Annotation::range_start/range_end are a cache we
+// re-derive from the marks on save and on caret-leave. Single-node prose mode
+// only — Joined View keeps its rebased-static ranges (load_joined owns that).
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Editor::install_marks_for(const Annotation &ann) {
+  if (!m_buffer)
+    return;
+  // Clamp against the live buffer — a stored range from an externally shortened
+  // scene must never seat a mark past the end (would assert in GTK).
+  const int last = m_buffer->end().get_offset();
+  int s = ann.range_start < 0 ? 0 : ann.range_start;
+  int e = ann.range_end   < 0 ? 0 : ann.range_end;
+  if (s > last) s = last;
+  if (e > last) e = last;
+  if (e < s)    e = s;                       // never invert; zero-width is allowed
+  auto si = m_buffer->get_iter_at_offset(s);
+  auto ei = m_buffer->get_iter_at_offset(e);
+  AnnMarks m;
+  m.start = m_buffer->create_mark(si, true  /* left gravity  */);
+  m.end   = m_buffer->create_mark(ei, false /* right gravity */);
+  m_ann_marks[ann.id] = m;
+}
+
+void Editor::install_annotation_marks() {
+  if (!m_buffer || !m_current_node || m_joined_active)
+    return;
+  clear_annotation_marks();                  // idempotent — start from clean slate
+  for (const auto &ann : m_current_node->annotations)
+    install_marks_for(ann);
+  LOG_DEBUG("ann §28: installed {} mark-pairs for node {}", m_ann_marks.size(),
+            m_current_node->iid);
+}
+
+void Editor::clear_annotation_marks() {
+  if (m_buffer) {
+    for (auto &kv : m_ann_marks) {
+      if (kv.second.start) m_buffer->delete_mark(kv.second.start);
+      if (kv.second.end)   m_buffer->delete_mark(kv.second.end);
+    }
+  }
+  m_ann_marks.clear();
+  m_ann_caret_inside.clear();
+}
+
+void Editor::resync_annotation_ranges() {
+  if (!m_buffer || !m_current_node || m_joined_active)
+    return;
+  if (m_ann_marks.empty())
+    return;                                  // initial-load path: nothing to pull
+  for (auto &ann : m_current_node->annotations) {
+    auto it = m_ann_marks.find(ann.id);
+    if (it == m_ann_marks.end() || !it->second.start || !it->second.end)
+      continue;
+    int s = m_buffer->get_iter_at_mark(it->second.start).get_offset();
+    int e = m_buffer->get_iter_at_mark(it->second.end).get_offset();
+    if (e < s) std::swap(s, e);              // defensive
+    if (e == s && ann.range_start != ann.range_end)
+      LOG_DEBUG("ann §28: note {} collapsed to caret @ {} (still listed)",
+                ann.id, s);
+    ann.range_start = s;
+    ann.range_end   = e;                     // e == s -> collapsed to a caret
+  }
+}
+
+// On a caret move: if the cursor just left a span it was inside, re-derive the
+// ranges eagerly and tell the panel/ledger so the note-list range/quote updates
+// without waiting for a full save. Cheap (a handful of marks); a discrete event,
+// not per-keystroke.
+void Editor::annotation_caret_leave_check() {
+  if (!m_buffer || !m_current_node || m_joined_active || m_loading)
+    return;
+  if (m_ann_marks.empty())
+    return;
+  const int caret =
+      m_buffer->get_iter_at_mark(m_buffer->get_insert()).get_offset();
+  std::unordered_set<int> now_inside;
+  for (const auto &ann : m_current_node->annotations) {
+    auto it = m_ann_marks.find(ann.id);
+    if (it == m_ann_marks.end() || !it->second.start || !it->second.end)
+      continue;
+    int s = m_buffer->get_iter_at_mark(it->second.start).get_offset();
+    int e = m_buffer->get_iter_at_mark(it->second.end).get_offset();
+    if (e > s && caret >= s && caret <= e)
+      now_inside.insert(ann.id);
+  }
+  bool left_one = false;
+  for (int id : m_ann_caret_inside)
+    if (!now_inside.count(id)) { left_one = true; break; }
+  m_ann_caret_inside.swap(now_inside);
+  if (left_one) {
+    // rebuild_annotation_tags() resyncs the ranges from the marks (its first
+    // step) AND re-stamps the highlights, so the visible span converges with the
+    // mark-derived data — eyes and data agree (RULES: convergent evidence).
+    rebuild_annotation_tags();
+    if (on_annotations_changed)
+      on_annotations_changed();
+  }
 }
 
 // refresh_annotation_visibility — show or hide annotation highlights without
@@ -1056,6 +1189,7 @@ void Editor::add_annotation(int range_start, int range_end,
 
   m_current_node->annotations.push_back(ann);
   apply_annotation_tag(ann);
+  install_marks_for(ann);   // s111 §28 — anchor the new note to live marks
   m_model.mark_modified();
   if (on_annotations_changed)
     on_annotations_changed();
@@ -1140,6 +1274,11 @@ void Editor::add_annotation_to_node(BinderNode *node,
   rebased.range_end   = buf_end;
   apply_annotation_tag(rebased);
 
+  // s111 §28 — if this landed on the live current node (single-node prose mode),
+  // anchor it to marks at the buffer offsets so it tracks edits like any other.
+  if (!m_joined_active && node == m_current_node)
+    install_marks_for(rebased);
+
   m_model.mark_modified();
   if (on_annotations_changed)
     on_annotations_changed();
@@ -1158,6 +1297,14 @@ void Editor::remove_annotation(int id) {
   auto tag = m_buffer->get_tag_table()->lookup(tn);
   if (tag)
     m_buffer->remove_tag(tag, m_buffer->begin(), m_buffer->end());
+
+  // s111 §28 — drop this note's live marks from the buffer + side-table.
+  if (auto it = m_ann_marks.find(id); it != m_ann_marks.end()) {
+    if (it->second.start) m_buffer->delete_mark(it->second.start);
+    if (it->second.end)   m_buffer->delete_mark(it->second.end);
+    m_ann_marks.erase(it);
+    m_ann_caret_inside.erase(id);
+  }
 
   m_model.mark_modified();
   if (on_annotations_changed)
@@ -1196,6 +1343,15 @@ void Editor::remove_annotation_from_node(BinderNode *node, int id) {
   auto tag = m_buffer->get_tag_table()->lookup(tn);
   if (tag)
     m_buffer->remove_tag(tag, m_buffer->begin(), m_buffer->end());
+  // s111 §28 — drop live marks if this note was anchored on the current node.
+  if (!m_joined_active && node == m_current_node) {
+    if (auto it = m_ann_marks.find(id); it != m_ann_marks.end()) {
+      if (it->second.start) m_buffer->delete_mark(it->second.start);
+      if (it->second.end)   m_buffer->delete_mark(it->second.end);
+      m_ann_marks.erase(it);
+      m_ann_caret_inside.erase(id);
+    }
+  }
   m_model.mark_modified();
   if (on_annotations_changed)
     on_annotations_changed();

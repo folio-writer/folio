@@ -840,6 +840,17 @@ void MainWindow::setup_layout() {
   // s107 — the Editorial Ledger's "Return verdicts…" button routes here.
   m_editor->on_return_verdicts =
       [this](const std::string &pass_id) { return_verdicts_for_pass(pass_id); };
+  // s111 §29 — the Ledger hub's front-door + acknowledge actions.
+  m_editor->on_ledger_export = [this]() { open_interchange_export(); };
+  m_editor->on_acknowledge_return =
+      [this](const std::string &pass_id) { acknowledge_return_for_pass(pass_id); };
+  m_editor->on_ledger_notes_provider =
+      [this](const std::string &pass_id) { return notes_for_pass(pass_id); };
+  m_editor->on_ledger_note_action =
+      [this](const std::string &pid, const std::string &sid, int nid,
+             Folio::NoteAction a) { apply_note_action(pid, sid, nid, a); };
+  m_editor->on_ledger_show_report =
+      [this](const std::string &pass_id) { show_report_for_pass(pass_id); };
   m_inspector = std::make_unique<Inspector>(m_model, m_prefs);
 
   m_center_box.append(*m_timeline);
@@ -2210,6 +2221,52 @@ void MainWindow::action_absorb_pass() {
   });
 }
 
+// s111 §29 — Acknowledge the return for a SPECIFIC Ledger card. Same chooser as
+// Absorb (we can't know where the author saved the editor's reply), but the
+// picked file is hard-bound to this pass by id inside absorb_pass_file: a return
+// belonging to a different pass is refused, not filed. Flips this card to
+// Returned and files its notes.
+void MainWindow::acknowledge_return_for_pass(const std::string &pass_id) {
+  const LedgerEntry *le = m_model.interchange_ledger().find(pass_id);
+  if (!le) return;
+  const std::string who = le->recipient.empty() ? "editor" : le->recipient;
+
+  auto dialog = Gtk::FileDialog::create();
+  dialog->set_title("Acknowledge return from " + who + "\xe2\x80\xa6");
+  if (!m_prefs.last_export_folder.empty())
+    dialog->set_initial_folder(
+        Gio::File::create_for_path(m_prefs.last_export_folder));
+
+  auto filter = Gtk::FileFilter::create();
+  filter->set_name("Folio Editorial Pass");
+  filter->add_pattern("*.folioedit");
+  auto filters = Gio::ListStore<Gtk::FileFilter>::create();
+  filters->append(filter);
+  dialog->set_filters(filters);
+
+  dialog->open(*this, [this, dialog, pass_id](Glib::RefPtr<Gio::AsyncResult> &res) {
+    Glib::RefPtr<Gio::File> file;
+    try { file = dialog->open_finish(res); } catch (...) { return; }
+    if (!file) return;
+    absorb_pass_file(file->get_path(), "", pass_id);   // bound to this card
+  });
+}
+
+// s111 §29 — the Ledger "Send to editor…" front door: open the export dialog
+// pre-set to the Folio Interchange carrier, and repaint the ledger on close so a
+// freshly sealed pass shows up as a Sent card without leaving the surface.
+void MainWindow::open_interchange_export() {
+  m_export_dialog = std::make_unique<ExportDialog>(*this, m_model, m_prefs);
+  m_export_dialog->select_interchange();
+  m_export_dialog->signal_hide().connect([this]() {
+    Glib::signal_idle().connect_once([this]() {
+      m_export_dialog.reset();
+      if (m_editor) m_editor->refresh_ledger();
+    });
+  });
+  m_export_dialog->present();
+}
+
 // The VISIBLE text of a scene: HTML tags removed, newlines -> spaces, the four
 // common entities decoded. This is the exact space the editor and the annotation
 // report count character offsets in (byte-for-byte the AnnotationReportDialog
@@ -2246,7 +2303,8 @@ static std::string scene_visible_text(const std::string &html) {
 }
 
 void MainWindow::absorb_pass_file(const std::string &path,
-                                  const std::string &extra_phrase) {
+                                  const std::string &extra_phrase,
+                                  const std::string &expected_pass_id) {
   folioedit::Document doc;
 
   // Content-sniff the carrier (s105). An unsealed pass (for a chat / AI) opens
@@ -2292,6 +2350,32 @@ void MainWindow::absorb_pass_file(const std::string &path,
   };
   Interchange::AbsorbResult r = Interchange::absorb(doc, resolver);
 
+  // s111 §29 — Acknowledge is bound to ONE ledger card. If the author picked the
+  // return of a DIFFERENT pass, refuse it here (before anything is filed) rather
+  // than silently absorbing the wrong file — this is the id/body_hash match that
+  // closes the old loose-import guess (§29.1). The free Absorb path passes an
+  // empty expected id and is unaffected.
+  if (!expected_pass_id.empty() && r.pass_id != expected_pass_id) {
+    const LedgerEntry *actual =
+        m_model.interchange_ledger().find(r.pass_id);
+    std::string detail =
+        "This file is the return of a different pass";
+    if (actual && !actual->recipient.empty())
+      detail += " (to " + actual->recipient + ")";
+    detail +=
+        ". Nothing was filed. Pick the .folioedit that came back for THIS pass, "
+        "or use Share \xe2\x96\xb8 Absorb Editorial Pass\xe2\x80\xa6 to file a "
+        "loose return.";
+    auto alert = Gtk::AlertDialog::create("That return is for another pass");
+    alert->set_detail(detail);
+    alert->set_modal(true);
+    alert->set_buttons({"OK"});
+    alert->choose(*this, [alert](Glib::RefPtr<Gio::AsyncResult> &rr) {
+      try { alert->choose_finish(rr); } catch (...) {}
+    });
+    return;
+  }
+
   // Colour each proposal by its hat (matches the in-app annotation palette).
   auto colour_for = [](const std::string &kind) -> std::string {
     if (kind == "Proofreader") return "#fca5a5";  // red
@@ -2329,6 +2413,9 @@ void MainWindow::absorb_pass_file(const std::string &path,
                     folioedit::to_json(doc).dump());
   }
   m_model.mark_modified();
+  // s111 §29 — if the ledger surface is open, repaint it so the acknowledged
+  // pass flips Sent -> Returned in place (harmless no-op on other views).
+  if (m_editor) m_editor->refresh_ledger();
 
   // Summary.
   std::ostringstream head;
@@ -2591,6 +2678,118 @@ void MainWindow::return_verdicts_for_pass(const std::string &pass_id) {
       });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// s111 §29 slice 2 — the Ledger note list host side
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Gather one pass's notes from the model. Scoped exactly like the return path:
+// the pass's scene inventory AND the editor's identity (source == recipient), so
+// two passes from the same editor — or the author's own notes — never bleed in.
+// The quote is sliced from the CURRENT visible prose at the note's live range, so
+// §28's mark-tracked ranges land it on the right words.
+std::vector<Folio::LedgerNote>
+MainWindow::notes_for_pass(const std::string &pass_id) {
+  std::vector<Folio::LedgerNote> out;
+  const LedgerEntry *le = m_model.interchange_ledger().find(pass_id);
+  if (!le) return out;
+
+  std::set<std::string> inv;
+  for (const auto &it : le->inventory) inv.insert(it.iid);
+  const std::string recipient = le->recipient;
+
+  std::function<void(const std::vector<BinderNode> &)> walk =
+      [&](const std::vector<BinderNode> &nodes) {
+        for (const auto &n : nodes) {
+          if (inv.empty() || inv.count(n.iid) > 0) {
+            const std::string vis = scene_visible_text(n.content);
+            for (const auto &a : n.annotations) {
+              if (!Folio::same_editor(a.source, recipient)) continue;
+              Folio::LedgerNote ln;
+              ln.note_id     = a.id;
+              ln.scene_iid   = n.iid;
+              ln.scene_title = n.title;
+              ln.kind        = a.kind;
+              ln.text        = a.text;
+              ln.quote       = cp_substr(vis, a.range_start, a.range_end);
+              ln.verdict     = a.verdict;                       // "" | proposed | accepted | declined
+              ln.receded     = Folio::author_resolved(a.resolution_log);
+              out.push_back(std::move(ln));
+            }
+          }
+          if (!n.children.empty()) walk(n.children);
+        }
+      };
+  walk(m_model.root(Section::Manuscript));
+  return out;
+}
+
+// Map the author's per-note move to a model mutation. Accept/Dismiss set the
+// verdict; clicking the active one un-decides (back to proposed). Resolve/Reopen
+// append an AUTHOR resolution event (§28.3 sovereignty; §28.4 — it rides back to
+// the editor on the next "Send back", no separate queue). GoTo leaves the ledger.
+void MainWindow::apply_note_action(const std::string &pass_id,
+                                   const std::string &scene_iid, int note_id,
+                                   Folio::NoteAction action) {
+  (void)pass_id;   // scene_iid + note_id locate the note; pass_id kept for context
+  if (action == Folio::NoteAction::GoTo) { goto_note(scene_iid, note_id); return; }
+
+  BinderNode *node = m_model.find_node_by_iid(scene_iid);
+  if (!node) return;
+  Annotation *ann = nullptr;
+  for (auto &a : node->annotations)
+    if (a.id == note_id) { ann = &a; break; }
+  if (!ann) return;
+
+  auto now_iso = []() -> std::string {
+    std::time_t t = std::time(nullptr);
+    std::tm tmv{};
+    gmtime_r(&t, &tmv);
+    char buf[32];
+    std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tmv);
+    return buf;
+  };
+
+  switch (action) {
+    case Folio::NoteAction::Accept:   ann->verdict = Verdicts::kAccepted; break;
+    case Folio::NoteAction::Dismiss:  ann->verdict = Verdicts::kDeclined; break;
+    case Folio::NoteAction::Undecide: ann->verdict = Verdicts::kProposed; break;
+    case Folio::NoteAction::Resolve:
+      ann->resolution_log.push_back({Resolvers::kAuthor, true,  now_iso()});
+      break;
+    case Folio::NoteAction::Reopen:
+      ann->resolution_log.push_back({Resolvers::kAuthor, false, now_iso()});
+      break;
+    case Folio::NoteAction::GoTo: break;   // handled above
+  }
+
+  m_model.mark_modified();
+  if (m_editor) {
+    m_editor->rebuild_annotation_tags();   // re-render the note's mark in the prose
+    m_editor->refresh_ledger();            // repaint the note list from the model
+  }
+}
+
+// Leave the ledger surface and jump to the note in the manuscript: restore the
+// write view, open + activate the scene, then scroll to the annotation once the
+// load settles.
+void MainWindow::goto_note(const std::string &scene_iid, int note_id) {
+  if (m_editor) m_editor->close_ledger();      // back to writing from the ledger page
+  navigate_to_link(scene_iid, "");             // open + set_active the scene (load_node)
+  Glib::signal_idle().connect_once([this, note_id]() {
+    if (m_editor) m_editor->scroll_to_annotation(note_id);
+  });
+}
+
+// Open the read-only annotation report scoped to this pass's editor — the
+// complete record of the interaction (every note, receded ones revealed), the
+// camera to the note list's driver's seat (§28.1). Editor-scoped by design;
+// the per-pass Work-notes list on the card is the envelope-exact working view.
+void MainWindow::show_report_for_pass(const std::string &pass_id) {
+  const LedgerEntry *le = m_model.interchange_ledger().find(pass_id);
+  if (!le || !m_inspector) return;
+  m_inspector->open_annotation_report(le->recipient);
+}
+
 // s108 (test only) — wipe the editorial-interchange state to a clean slate. Clears
 // every imported note (proposals + their verdicts/resolves), empties the pass
 // ledger, and deletes the bundle's stored carriers + the absorbed/ folder beside
@@ -2824,7 +3023,8 @@ void MainWindow::action_search() {
 
     // Open node in editor when user clicks a result
     m_search_dialog->set_open_node_callback(
-        [this](Section section, std::vector<int> path) {
+        [this](Section section, std::vector<int> path,
+               const std::string &query, const SearchOptions &opts) {
           m_model.set_active(section, path);
           BinderNode *node = m_model.node_at(section, path);
           if (m_sidebar && node)
@@ -2833,6 +3033,11 @@ void MainWindow::action_search() {
             m_editor->load_node(node);
           if (m_inspector && node)
             m_inspector->load_node(node);
+          // Highlight the found term(s) in the scene so the user can evaluate
+          // the hits (reuses the in-editor Find bar: all matches lit, first
+          // scrolled into view, Next/Prev + count available).
+          if (m_editor && node)
+            m_editor->find_with_query(query, opts);
         });
 
     // Notify editor when a node's content changes via Replace All

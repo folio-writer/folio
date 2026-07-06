@@ -15,10 +15,12 @@
 #include <ImagePool.hpp>      // s70 — ImageFragment lookup for thumb path + caption
 #include <ObjectImage.hpp>    // s79 — image_display_path (dual-read resolve for the Image-field preview)
 #include <ProjectBundle.hpp>  // s70 — thumb_path resolution
+#include <ResearchCapture.hpp> // s113 — research_capture + CaptureResult (the pure engine)
 #include <StoryGraph.hpp>     // s70 — edges_from_backlinks (the typed edge list)
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>         // s113 — create assets/ dir before a capture write
 #include <pango/pango.h>
 #include <pango/pangocairo.h>
 #include <regex>
@@ -188,6 +190,11 @@ void Editor::build_font_controls() {
               !(m_format_popover && m_format_popover->get_visible())) {
             queue_scroll_to_center();
           }
+          // s111 §28 — eager range refresh when the caret leaves an annotated
+          // span (durable half is save_current). Gated off drag so it never
+          // rebuilds the panel mid-selection.
+          if (!m_mouse_btn_held && !m_loading)
+            annotation_caret_leave_check();
           // Redraw gutter on cursor/scroll changes
           m_line_number_gutter.queue_draw();
           m_backtrace_gutter.queue_draw();
@@ -2876,6 +2883,28 @@ void Editor::build_editor_area() {
   m_ledger_view.set_return_callback([this](const std::string &id) {
     if (on_return_verdicts) on_return_verdicts(id);
   });
+  // s111 §29 — Ledger hub: front-door export + per-card Acknowledge. The surface
+  // fires ids/void; MainWindow owns the dialogs + model work (same split as above).
+  m_ledger_view.set_export_callback([this]() {
+    if (on_ledger_export) on_ledger_export();
+  });
+  m_ledger_view.set_acknowledge_callback([this](const std::string &id) {
+    if (on_acknowledge_return) on_acknowledge_return(id);
+  });
+  // s111 §29 slice 2 — note list: provider (host -> notes) + action (author's move).
+  m_ledger_view.set_notes_provider(
+      [this](const std::string &id) -> std::vector<LedgerNote> {
+        if (on_ledger_notes_provider) return on_ledger_notes_provider(id);
+        return {};
+      });
+  m_ledger_view.set_note_action_callback(
+      [this](const std::string &pid, const std::string &sid, int nid,
+             NoteAction a) {
+        if (on_ledger_note_action) on_ledger_note_action(pid, sid, nid, a);
+      });
+  m_ledger_view.set_show_report_callback([this](const std::string &id) {
+    if (on_ledger_show_report) on_ledger_show_report(id);
+  });
   // Persist the shared data-view zoom when the user nudges it here.
   m_ledger_view.set_scale_changed_callback([this](double f) {
     m_prefs.data_view_zoom_pct = static_cast<int>(f * 100.0 + 0.5);
@@ -2986,6 +3015,42 @@ void Editor::build_editor_area() {
         if (m_on_map_open) m_on_map_open(iid);
       });
   m_view_stack.add(m_gallery_surface, "gallery");
+
+  // ── s113 — the Research capture card ───────────────────────────────────────
+  // A research Reference shows this card in Write mode. The editable summary
+  // persists back to the host node's synopsis (the field Board cards render).
+  m_research_card.set_persist_callback(
+      [this](const std::string &iid, const std::string &summary) {
+        if (BinderNode *n = m_model.find_node_by_iid(iid)) {
+          n->synopsis = summary;
+          m_model.mark_modified();
+        }
+      });
+  // Open-in-browser: the card is bundle-layout-ignorant, so it hands us the iid
+  // and we resolve assets/<iid>.html off the live bundle root, launching it with
+  // the default handler (Brave, via xdg) — the same idiom node URLs use. A
+  // never-saved project has no assets/ dir on disk, so guard on current_path.
+  m_research_card.set_open_callback([this](const std::string &iid) {
+    if (m_model.current_path.empty())
+      return;
+    auto p = Folio::asset_path(m_model.current_path, iid, Folio::kResearchAssetExt);
+    auto file = Gio::File::create_for_path(p.string());
+    Gio::AppInfo::launch_default_for_uri(file->get_uri());
+  });
+  // Capture: the card hands us the iid + typed URL; we resolve assets/<iid>.html
+  // off the bundle root, run the (currently blocking) engine, then update the
+  // node and flip the card into its captured state. A never-saved project has no
+  // assets/ dir, so require a saved bundle first.
+  // Capture: the card hands us the iid + typed URL. The actual monolith run is
+  // network-bound and can take many seconds (rate-limited assets), so it runs on
+  // a worker thread (begin_capture) with a modal spinner -- never blocking the UI.
+  m_research_card.set_capture_callback(
+      [this](const std::string &iid, const std::string &url) {
+        begin_capture(iid, url);
+      });
+  // Worker -> UI: when the capture thread finishes, finalize on the UI thread.
+  m_capture_done.connect(sigc::mem_fun(*this, &Editor::on_capture_done));
+  m_view_stack.add(m_research_card, "research");
 
   // Extra menu is rebuilt on each right-click via rebuild_extra_menu().
 
@@ -3629,6 +3694,125 @@ void Editor::rebuild_style_dropdown() {
   m_style_dropdown->set_model(model);
   m_style_dropdown->set_selected(0);
   m_inhibit_style_dd = false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// s113 — async Research capture. begin_capture launches the monolith run on a
+// worker thread behind a modal spinner; on_capture_done finalizes on the UI
+// thread once the dispatcher fires. The UI never blocks.
+// ─────────────────────────────────────────────────────────────────────────────
+void Editor::begin_capture(const std::string &iid, const std::string &url) {
+  if (m_capture_in_flight)
+    return;   // one capture at a time (the modal enforces this for the user too)
+  BinderNode *n = m_model.find_node_by_iid(iid);
+  if (!n)
+    return;
+  if (m_model.current_path.empty()) {
+    m_research_card.capture_failed(
+        "Save the project first -- captures live inside the .folio bundle.");
+    return;
+  }
+  // Resolve the asset path + ensure assets/ exists on the UI thread (touches the
+  // model); the worker only does the network-bound monolith run.
+  auto path =
+      Folio::asset_path(m_model.current_path, iid, Folio::kResearchAssetExt);
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+
+  m_capture_iid = iid;
+  m_capture_url = url;
+  m_capture_in_flight = true;
+  show_capture_dialog(url);
+
+  const std::string p = path.string();
+  const std::string u = url;
+  if (m_capture_thread.joinable())
+    m_capture_thread.join();
+  m_capture_thread = std::thread([this, u, p]() {
+    // OFF the UI thread. Write the result, then signal the UI thread. The
+    // dispatcher is a synchronization point, so the write is visible in
+    // on_capture_done.
+    m_capture_result = Folio::research_capture(u, p);
+    m_capture_done.emit();
+  });
+}
+
+void Editor::on_capture_done() {
+  if (m_capture_thread.joinable())
+    m_capture_thread.join();
+  m_capture_in_flight = false;
+  close_capture_dialog();
+
+  Folio::CaptureResult res = m_capture_result;   // worker no longer running
+  BinderNode *n = m_model.find_node_by_iid(m_capture_iid);
+  if (!n)
+    return;
+  if (!res.ok) {
+    m_research_card.capture_failed(res.error);
+    return;
+  }
+  n->url = m_capture_url;
+  if (!res.meta.title.empty())
+    n->title = res.meta.title;
+  n->synopsis = res.meta.summary;
+  m_model.mark_modified();
+  // Flip the card only if it is still showing the node we captured.
+  if (m_current_node && m_current_node->iid == m_capture_iid)
+    m_research_card.load(m_capture_iid, n->title, n->url, n->synopsis);
+  update_open_title();
+  if (m_on_meta_changed)
+    m_on_meta_changed(n);
+}
+
+void Editor::show_capture_dialog(const std::string &url) {
+  if (!m_capture_dialog) {
+    // Built once, reused every capture (the codebase's hide_on_close idiom):
+    // make_managed so gtkmm owns it, hide_on_close so neither the user's X nor
+    // our close destroys it -- we just hide it and re-present next time.
+    m_capture_dialog = Gtk::make_managed<Gtk::Window>();
+    m_capture_dialog->set_name("research-capture-progress");
+    m_capture_dialog->set_title("Capturing page");
+    m_capture_dialog->set_modal(true);
+    m_capture_dialog->set_resizable(false);
+    m_capture_dialog->set_default_size(380, -1);
+    m_capture_dialog->set_hide_on_close(true);
+    m_capture_dialog->add_css_class("folio-dialog");
+
+    auto *box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 14);
+    box->set_margin_top(24);
+    box->set_margin_bottom(24);
+    box->set_margin_start(28);
+    box->set_margin_end(28);
+
+    m_capture_dialog_spinner = Gtk::make_managed<Gtk::Spinner>();
+    m_capture_dialog_spinner->set_halign(Gtk::Align::CENTER);
+    m_capture_dialog_spinner->set_size_request(36, 36);
+    box->append(*m_capture_dialog_spinner);
+
+    m_capture_dialog_label = Gtk::make_managed<Gtk::Label>();
+    m_capture_dialog_label->set_wrap(true);
+    m_capture_dialog_label->set_justify(Gtk::Justification::CENTER);
+    m_capture_dialog_label->set_max_width_chars(46);
+    box->append(*m_capture_dialog_label);
+
+    m_capture_dialog->set_child(*box);
+  }
+  if (auto *root = dynamic_cast<Gtk::Window *>(get_root()))
+    m_capture_dialog->set_transient_for(*root);
+  if (m_capture_dialog_label)
+    m_capture_dialog_label->set_text(
+        "Capturing " + url + "\nEmbedding every asset into a single file.");
+  if (m_capture_dialog_spinner)
+    m_capture_dialog_spinner->start();
+  m_capture_dialog->present();
+}
+
+void Editor::close_capture_dialog() {
+  if (!m_capture_dialog)
+    return;
+  if (m_capture_dialog_spinner)
+    m_capture_dialog_spinner->stop();
+  m_capture_dialog->set_visible(false);
 }
 
 }  // namespace Folio

@@ -17,6 +17,10 @@ public:
     ExportDialog(Gtk::Window& parent, DocumentModel& model, FolioPrefs& prefs);
     ~ExportDialog();   // defined in .cpp (unique_ptr to incomplete CompileFormatDialog)
 
+    // s111 §29 — open pre-set to the Folio Interchange carrier (the Ledger's
+    // "Send to editor…" front door lands here instead of the default format).
+    void select_interchange();
+
 private:
     DocumentModel& m_model;
     FolioPrefs&    m_prefs;

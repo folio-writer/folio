@@ -24,6 +24,10 @@ namespace Folio {
 // ─────────────────────────────────────────────────────────────────────────────
 
 Editor::~Editor() {
+  // s113 — a capture thread still running at teardown would std::terminate on the
+  // thread's destructor; join it first.
+  if (m_capture_thread.joinable())
+    m_capture_thread.join();
   // Unparent the character picker before the widget tree is torn down.
   if (m_char_picker) {
     m_char_picker->popdown();
@@ -309,7 +313,8 @@ void Editor::load_node(BinderNode *node) {
     LOG_DEBUG("load_node: suppressed — exiting joined mode");
     return;
   }
-  save_current();
+  save_current();   // s111 §28 — resyncs the OUTGOING node's ranges from its marks
+  clear_annotation_marks();  // drop the outgoing node's marks before the buffer reloads
   m_current_node = node;
   // s19: name the editing surface by the node it's bound to (editor ↔ iid ↔ log).
   m_text_view.set_name(Folio::widget_name("editor-textview",
@@ -420,6 +425,13 @@ void Editor::load_node(BinderNode *node) {
       m_chapter_tag.set_text("Gallery");
       m_gallery_iid = node->iid;
       m_gallery_surface.load(node->iid, node->title, node->content);
+    } else if (node_is_research_form(node)) {
+      // s113 — a Research capture: the card reads title / source url / summary
+      // from the node (the captured HTML lives at assets/<iid>.html, opened via
+      // the card's open callback — NOT loaded into any buffer here).
+      m_chapter_tag.set_text("Research");
+      m_research_iid = node->iid;
+      m_research_card.load(node->iid, node->title, node->url, node->synopsis);
     } else {
       html_to_buffer(node->content);   // hidden; the form owns the description field
     }
@@ -476,6 +488,7 @@ void Editor::load_node(BinderNode *node) {
   }
   m_loading = false;
   rebuild_annotation_tags(); // re-stamp annotation highlights
+  install_annotation_marks(); // s111 §28 — anchor each note to live marks from the stored ranges
   // Respect show/hide toolbar state after every node load
   if (!m_prefs.show_annotations)
     refresh_annotation_visibility();
@@ -658,6 +671,8 @@ void Editor::update_open_title() {
     m_journal_surface.set_title(t);
   if (node_is_gallery_form(m_current_node))
     m_gallery_surface.set_title(t);
+  if (node_is_research_form(m_current_node))
+    m_research_card.set_title(t);
 }
 
 
@@ -667,7 +682,8 @@ void Editor::set_editor_mode(EditorMode mode) {
       (mode == EditorMode::Character || mode == EditorMode::Place ||
        mode == EditorMode::Reference) &&   // s42 — all three draw forms
       !node_is_journal_form(m_current_node) && // …except a journal, which is prose
-      !node_is_gallery_form(m_current_node);   // …and a gallery, an owned lens
+      !node_is_gallery_form(m_current_node) && // …and a gallery, an owned lens
+      !node_is_research_form(m_current_node);  // …and a research capture card
   m_avatar_strip.set_visible(is_form_mode);
   m_btn_snapshot.set_visible(m_current_node != nullptr);
   bool is_empty = (mode == EditorMode::Empty);
@@ -682,6 +698,8 @@ void Editor::set_editor_mode(EditorMode mode) {
       m_view_stack.set_visible_child(m_journal_surface); // s54 — owned journal
     else if (node_is_gallery_form(m_current_node))
       m_view_stack.set_visible_child(m_gallery_surface); // s61 — owned gallery
+    else if (node_is_research_form(m_current_node))
+      m_view_stack.set_visible_child(m_research_card);    // s113 — research card
     else if (is_form_mode)
       m_view_stack.set_visible_child(m_form_scroll);
     else
@@ -782,6 +800,10 @@ void Editor::save_current() {
     // journal) so a stale hidden buffer can't clobber the owned surface's edits.
     if (node_is_form_kind(m_current_node))
       return;
+    // s111 §28 — pull annotation ranges from their live marks before we freeze
+    // the buffer to HTML, so the stored range/quote reflect the author's edits
+    // (the folioedit quote is sliced from this range at return time).
+    resync_annotation_ranges();
     m_current_node->content = buffer_to_html();
     // Persist cursor position
     m_current_node->cursor_offset =
@@ -996,7 +1018,8 @@ void Editor::set_view_mode(ViewMode mode) {
   // indents/tabs) is meaningless there, so suppress it whenever a journal is open.
   m_ruler.set_visible(is_write && m_prefs.show_ruler &&
                       !node_is_journal_form(m_current_node) &&
-                      !node_is_gallery_form(m_current_node));
+                      !node_is_gallery_form(m_current_node) &&
+                      !node_is_research_form(m_current_node));
   switch (mode) {
   case ViewMode::Write:
   case ViewMode::Joined:
@@ -1008,6 +1031,8 @@ void Editor::set_view_mode(ViewMode mode) {
       m_view_stack.set_visible_child(m_journal_surface); // s54 — owned journal
     else if (node_is_gallery_form(m_current_node))
       m_view_stack.set_visible_child(m_gallery_surface); // s61 — owned gallery
+    else if (node_is_research_form(m_current_node))
+      m_view_stack.set_visible_child(m_research_card);    // s113 — research card
     else if (node_is_form_kind(m_current_node))
       m_view_stack.set_visible_child(m_form_scroll);
     else

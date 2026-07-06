@@ -67,7 +67,7 @@ public:
     void notify_annotations_changed();
 
     // Tools-menu entry points — open dialogs from outside the inspector
-    void open_annotation_report();
+    void open_annotation_report(const std::string& focus_source = "");
     void open_barcode();
     void open_project_goals();
 
@@ -166,6 +166,17 @@ private:
     Gtk::LevelBar     m_target_bar;
     Gtk::Label        m_target_progress_lbl;
     Gtk::Box          m_progress_footer;  // fixed bottom panel: progress label + bar
+
+    // ── Batch (multi-select) metadata ─────────────────────────────────────────
+    // Shown in the Metadata tab when >1 node is selected ("batch-meta" section).
+    // Each control writes to EVERY node in m_jv_nodes; a "—" sentinel row / hint
+    // means the selection disagrees, and no write happens until the user picks.
+    Gtk::Box          m_batch_box;                    // the "batch-meta" section
+    Gtk::Label        m_batch_header;                 // "Editing N selected"
+    Gtk::DropDown*    m_batch_color_dropdown  = nullptr; // model: [—, None, colors…]
+    Gtk::DropDown*    m_batch_status_dropdown = nullptr; // model: [—, None, statuses…]
+    Gtk::Switch       m_batch_include_switch;
+    Gtk::Label        m_batch_include_hint;           // "Mixed" when values differ
     Gtk::Revealer     m_progress_revealer;
     Gtk::Label        m_progress_arrow;
     bool              m_progress_expanded = true;
@@ -247,6 +258,14 @@ private:
     void build_character_meta_section(Gtk::Box& parent);
     void build_place_meta_section(Gtk::Box& parent);
     void show_meta_section(const std::string& name);
+
+    // ── Batch (multi-select) metadata ─────────────────────────────────────────
+    void           build_batch_section(Gtk::Box& parent);   // build the "batch-meta" rows
+    void           populate_batch_section();                // sync controls from m_jv_nodes (mixed-aware)
+    Gtk::DropDown* build_batch_color_dropdown();            // like build_color_dropdown, +leading "—"
+    void           batch_apply_color(int idx);              // color_idx (+ KP coupling) to all in S
+    void           batch_apply_status(NodeStatus s);        // status to all node-meta kinds in S
+    void           batch_apply_include(bool inc);           // include_in_export to all in S
     Gtk::DropDown* build_color_dropdown(std::function<void(int)> setter);
     static void    sync_color_dropdown(Gtk::DropDown* dd, int color_idx);
     void           rebuild_status_dropdown();

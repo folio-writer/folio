@@ -25,6 +25,27 @@
 
 namespace Folio {
 
+// s111 §29 — one editor note shown in a Returned card's note list. The surface
+// holds NO model reference: the host fills these via the notes-provider callback
+// and the surface fires note actions back by (pass, scene, note id). `verdict` is
+// the author's decision so far ("" / "proposed" both read as undecided); `receded`
+// == author_resolved (the author set it aside -> dim, still reachable, §28.5).
+struct LedgerNote {
+    int         note_id = 0;      // annotation id (unique within its scene node)
+    std::string scene_iid;        // for "Go to text"
+    std::string scene_title;
+    std::string kind;             // Proofreader / Editor / Writer
+    std::string text;             // the comment
+    std::string quote;            // the anchored prose ("" if floating / collapsed)
+    std::string verdict;          // "" | proposed (undecided) | accepted | declined
+    bool        receded = false;  // author_resolved -> dim + set aside
+};
+
+// The author's move on one note. The surface derives the intent from the row's
+// current state (clicking the active verdict un-decides it); the host maps each to
+// a model mutation. Accept/Dismiss sit at EQUAL weight (§28.2) — no good/bad.
+enum class NoteAction { Accept, Dismiss, Undecide, Resolve, Reopen, GoTo };
+
 class LedgerSurface : public Gtk::Box {
 public:
     LedgerSurface();
@@ -60,6 +81,39 @@ public:
         m_on_return = std::move(cb);
     }
 
+    // s111 §29 — the Ledger becomes the loop's driver's seat. Two new host hooks,
+    // fired the same id-callback way as Send back (the surface stays view-only;
+    // MainWindow owns the dialogs + model work):
+    //   export      — the "Send to editor…" front door (opens interchange export).
+    //   acknowledge — an action on a Sent card: absorb the return, hard-bound to
+    //                 that pass by id (a different pass's return is refused).
+    void set_export_callback(std::function<void()> cb) {
+        m_on_export = std::move(cb);
+    }
+    void set_acknowledge_callback(std::function<void(const std::string& id)> cb) {
+        m_on_acknowledge = std::move(cb);
+    }
+
+    // s111 §29 slice 2 — the per-pass note list. The surface asks the host for a
+    // pass's notes (provider) and fires the author's per-note action back; the host
+    // owns the model mutation + repaint. The surface still holds no model (§29.3).
+    void set_notes_provider(
+        std::function<std::vector<LedgerNote>(const std::string& pass_id)> cb) {
+        m_notes_provider = std::move(cb);
+    }
+    void set_note_action_callback(
+        std::function<void(const std::string& pass_id, const std::string& scene_iid,
+                           int note_id, NoteAction action)> cb) {
+        m_on_note_action = std::move(cb);
+    }
+
+    // s111 §29 — "Show report" on a Returned card: opens the read-only annotation
+    // report scoped to that pass's editor (the complete record of the interaction;
+    // the camera to the note list's driver's seat).
+    void set_show_report_callback(std::function<void(const std::string& id)> cb) {
+        m_on_show_report = std::move(cb);
+    }
+
     // Text zoom for the card list (the "data"), driven by the header +/- control.
     // 1.0 = 100%. Clamped; multiplies on top of the CSS-resolved font sizes via a
     // Pango scale attribute (CSS font-size is pinned per class, so a scale attr is
@@ -79,18 +133,26 @@ private:
     void rebuild();       // repaint the card list from m_ledger honouring the status filter
     void apply_scale();   // (re)attribute the card-list labels + refresh the % readout
     void nudge_scale(double delta);   // +/- handler: change, apply, fire callback
+    Gtk::Widget* build_notes_section(const LedgerEntry& e);           // s111 §29 — "Work notes (N)"
+    Gtk::Widget* build_note_row(const std::string& pass_id, const LedgerNote& n);
 
     InterchangeLedger     m_ledger;
     std::function<void()> m_on_close;
     std::function<void(const std::string&)>       m_on_remove;
     std::function<void(const std::string&, bool)> m_on_hide;
     std::function<void(const std::string&)>       m_on_return;   // s107 — send verdicts back
+    std::function<void()>                         m_on_export;      // s111 §29 — front door
+    std::function<void(const std::string&)>       m_on_acknowledge; // s111 §29 — ack a Sent card
+    std::function<std::vector<LedgerNote>(const std::string&)>                 m_notes_provider;
+    std::function<void(const std::string&, const std::string&, int, NoteAction)> m_on_note_action;
+    std::function<void(const std::string&)>       m_on_show_report; // s111 §29 — read-only report
     std::function<void(double)>                   m_on_scale_changed;
 
     double m_scale = 1.0;
 
     Gtk::Box         m_header { Gtk::Orientation::HORIZONTAL, 8 };
     Gtk::Label       m_title;
+    Gtk::Button      m_export_btn;               // s111 §29 — "Send to editor…" front door
     Gtk::DropDown*   m_filter = nullptr;        // All / Sent / Returned
     Gtk::ToggleButton m_show_hidden;            // reveal hidden passes (default off)
     Gtk::Button      m_zoom_out;                // −

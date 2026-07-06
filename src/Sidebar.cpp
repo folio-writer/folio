@@ -7,6 +7,7 @@
 #include "CustomMindMap.hpp"   // s51 — seed an empty CMMDoc body for a new Mind Map form
 #include "Journal.hpp"         // journal front-door sentinel (kJournalTemplateId)
 #include "Gallery.hpp"         // gallery front-door sentinel (kGalleryTemplateId)
+#include "Research.hpp"        // s113 — research front-door sentinel (kResearchTemplateId)
 #include "FolioLog.hpp"
 #include "Iid.hpp"
 #include <algorithm>
@@ -1435,6 +1436,32 @@ void Sidebar::show_section_ctx_menu(Section section, double x, double y,
         n->title       = "Gallery";
         n->template_id = Folio::kGalleryTemplateId;
         n->content     = "";   // empty lens-def → lens over the whole pool
+        m_model.mark_modified();
+        m_model.set_active(Section::References, new_path);
+        rebuild_section(Section::References);
+        if (m_on_selected)
+          m_on_selected(Section::References, new_path);
+      });
+    });
+
+    // s113 — "New Research capture": the front door for a captured web page.
+    // Creates an empty Research Reference (no URL yet); selecting it opens the
+    // owned ResearchCard, which shows the URL field. The capture itself happens
+    // in the card (paste URL -> Capture), not here — so no monolith call on this
+    // tick. Mirrors New Gallery: a Reference leaf stamped with the reserved id.
+    sec->append_item(mi("New Research capture\xE2\x80\xA6", "ctx.new-research", ""));
+    ag->add_action("new-research", [this]() {
+      if (m_ctx_popover)
+        m_ctx_popover->popdown();
+      Glib::signal_idle().connect_once([this]() {
+        auto new_path = m_model.add_leaf(Section::References, {}, "",
+                                         &m_prefs.reference_defaults);
+        BinderNode *n = m_model.node_at(Section::References, new_path);
+        if (!n)
+          return;
+        n->title       = "Research capture";
+        n->template_id = Folio::kResearchTemplateId;
+        n->content     = "";   // the captured HTML lives at assets/<iid>.html
         m_model.mark_modified();
         m_model.set_active(Section::References, new_path);
         rebuild_section(Section::References);

@@ -900,8 +900,9 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
     }
     .inspector-tab:hover { color: @tx2; }
     .inspector-tab:checked, .inspector-tab.active {
-        background-color: @adw_surface; color: @accent;
-        border: 1px solid @border_strong; border-bottom-color: @adw_surface;
+        background-color: alpha(@accent, 0.18); color: @accent;
+        border: 1px solid alpha(@accent, 0.55); border-top: 2px solid @accent;
+        border-bottom-color: alpha(@accent, 0.18);
     }
     .annotation-card {
         background-color: @adw_surface;

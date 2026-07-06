@@ -27,6 +27,11 @@ public:
     AnnotationReportDialog(Gtk::Window& parent, DocumentModel& model, FolioPrefs& prefs);
     void refresh();  // rebuild after annotations change
 
+    // s111 §29 — open scoped to one editor's notes (the Ledger "Show report" front
+    // door). Narrows the source filter to `editor_label` and reveals receded notes
+    // (a report is the complete record). Empty label -> All sources.
+    void focus_source(const std::string& editor_label);
+
 private:
     void build();
     void rebuild_list();

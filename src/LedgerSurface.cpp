@@ -64,6 +64,18 @@ void LedgerSurface::build_header() {
     m_title.set_halign(Gtk::Align::START);
     m_header.append(m_title);
 
+    // s111 §29 — the front door. Sealing a pass now starts here, on the surface
+    // that drives the whole loop, instead of hunting Export ▸ Folio Interchange.
+    m_export_btn.set_label("Send to editor\u2026");
+    m_export_btn.add_css_class("suggested-action");
+    m_export_btn.add_css_class("pill-btn");
+    m_export_btn.set_margin_start(10);
+    m_export_btn.set_tooltip_text(
+        "Seal the selected scenes into a pass and record it here");
+    m_export_btn.signal_clicked().connect(
+        [this]() { if (m_on_export) m_on_export(); });
+    m_header.append(m_export_btn);
+
     auto* spacer = Gtk::make_managed<Gtk::Box>();
     spacer->set_hexpand(true);
     m_header.append(*spacer);
@@ -297,6 +309,15 @@ void LedgerSurface::rebuild() {
             card->append(*ilbl);
         }
 
+        // ── s111 §29 — the per-pass note list (Returned passes only) ──────────
+        // The driver's-seat piece: Accept / Dismiss / Resolve each note in place
+        // instead of hunting them across the manuscript margins. Notes come from
+        // the host via the provider; the surface still holds no model (§29.3).
+        if (returned) {
+            if (auto* notes = build_notes_section(*e))
+                card->append(*notes);
+        }
+
         // ── passphrase + copy (unsealed passes have none: show "—") ────────────
         {
             const bool sealed = !e->phrase.empty();
@@ -330,9 +351,36 @@ void LedgerSurface::rebuild() {
                 prow->append(*copy);
             }
 
+            // s111 §29 — on a Sent pass, Acknowledge the editor's return here.
+            // Opens a chooser and hard-binds the picked file to THIS card by id
+            // (a return of another pass is refused by the host). Hidden passes are
+            // set aside, so they carry no action.
+            if (e->status == PassStatus::Sent && !e->hidden) {
+                auto* ack = Gtk::make_managed<Gtk::Button>("Acknowledge return\u2026");
+                ack->add_css_class("flat");
+                ack->set_tooltip_text(
+                    "File the .folioedit that came back for this pass "
+                    "\u2014 bound to this card");
+                const std::string aid = e->id;
+                ack->signal_clicked().connect(
+                    [this, aid]() { if (m_on_acknowledge) m_on_acknowledge(aid); });
+                prow->append(*ack);
+            }
+
             // s107 — on a returned pass, offer to seal the author's verdicts and
             // send them back to the editor (the host does the work via m_on_return).
             if (e->status == PassStatus::Returned) {
+                // s111 §29 — the read-only record of this interaction (all notes,
+                // including set-aside ones), scoped to this pass's editor.
+                auto* rep = Gtk::make_managed<Gtk::Button>("Show report");
+                rep->add_css_class("flat");
+                rep->set_tooltip_text(
+                    "Open the read-only report of every note in this interaction");
+                const std::string repid = e->id;
+                rep->signal_clicked().connect(
+                    [this, repid]() { if (m_on_show_report) m_on_show_report(repid); });
+                prow->append(*rep);
+
                 auto* ret = Gtk::make_managed<Gtk::Button>("Send back to editor\u2026");
                 ret->add_css_class("flat");
                 ret->set_tooltip_text(
@@ -351,6 +399,162 @@ void LedgerSurface::rebuild() {
     }
 
     apply_scale();
+}
+
+// ── s111 §29 — per-pass note list ────────────────────────────────────────────
+// build_notes_section: the "Work notes (N)" expander on a Returned card. Notes
+// come from the host (m_notes_provider); nullptr if there's no provider or the
+// pass has no notes. Opens by default when there is live (non-receded) work.
+Gtk::Widget* LedgerSurface::build_notes_section(const LedgerEntry& e) {
+    if (!m_notes_provider) return nullptr;
+    std::vector<LedgerNote> notes = m_notes_provider(e.id);
+    if (notes.empty()) return nullptr;
+
+    std::size_t live = 0;
+    for (const auto& n : notes) if (!n.receded) ++live;
+
+    auto* exp = Gtk::make_managed<Gtk::Expander>();
+    exp->set_label("Work notes (" + std::to_string(notes.size()) + ")");
+    exp->set_margin_start(10);
+    exp->set_margin_end(10);
+    exp->set_margin_top(4);
+    exp->set_margin_bottom(4);
+    exp->set_expanded(live > 0);   // live work shows; a fully-set-aside pass stays tidy
+
+    auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+    col->set_margin_top(6);
+    const std::string pid = e.id;
+    for (const auto& n : notes)
+        col->append(*build_note_row(pid, n));
+    exp->set_child(*col);
+    return exp;
+}
+
+// build_note_row: one note. Accept/Dismiss are equal-weight toggles (clicking the
+// active one un-decides); ✓/✗ are neutral state marks (no good/bad colour, no
+// nag). Resolve sets the note aside (recede, still reachable); a receded note is
+// dimmed and offers Reopen (no penalty, verdict preserved). Go to text jumps to
+// the prose. Every action fires an id-callback; the host owns the model + repaint.
+Gtk::Widget* LedgerSurface::build_note_row(const std::string& pass_id,
+                                           const LedgerNote& n) {
+    auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 3);
+    row->add_css_class("annotation-card");
+    row->set_margin_bottom(6);
+
+    // header: kind + neutral state badge (+ "set aside" when receded)
+    auto* head = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+    head->set_margin_top(6);
+    head->set_margin_start(8);
+    head->set_margin_end(8);
+    auto* kind = Gtk::make_managed<Gtk::Label>(n.kind.empty() ? "Note" : n.kind);
+    kind->add_css_class("annotation-kind");
+    kind->set_halign(Gtk::Align::START);
+    head->append(*kind);
+
+    std::string badge;
+    if (n.verdict == "accepted")      badge = "\u2713 accepted";
+    else if (n.verdict == "declined") badge = "\u2717 dismissed";
+    if (!badge.empty()) {
+        auto* b = Gtk::make_managed<Gtk::Label>(badge);
+        b->add_css_class("dim-label");   // neutral — state, not judgment
+        head->append(*b);
+    }
+    auto* sp = Gtk::make_managed<Gtk::Box>();
+    sp->set_hexpand(true);
+    head->append(*sp);
+    if (n.receded) {
+        auto* aside = Gtk::make_managed<Gtk::Label>("set aside");
+        aside->add_css_class("dim-label");
+        head->append(*aside);
+    }
+    row->append(*head);
+
+    // quote (the anchored prose)
+    if (!n.quote.empty()) {
+        std::string q = n.quote;
+        if (q.size() > 140) q = q.substr(0, 140) + "\u2026";
+        auto* ql = Gtk::make_managed<Gtk::Label>("\u201c" + q + "\u201d");
+        ql->add_css_class("dim-label");
+        ql->set_wrap(true);
+        ql->set_xalign(0.0f);
+        ql->set_margin_start(8);
+        ql->set_margin_end(8);
+        row->append(*ql);
+    }
+
+    // the comment
+    if (!n.text.empty()) {
+        auto* tl = Gtk::make_managed<Gtk::Label>(n.text);
+        tl->set_wrap(true);
+        tl->set_xalign(0.0f);
+        tl->set_margin_start(8);
+        tl->set_margin_end(8);
+        row->append(*tl);
+    }
+
+    // actions
+    auto* acts = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    acts->set_margin_start(8);
+    acts->set_margin_end(8);
+    acts->set_margin_top(2);
+    acts->set_margin_bottom(8);
+
+    const std::string sid = n.scene_iid;
+    const int         nid = n.note_id;
+
+    if (!n.receded) {
+        // set_active BEFORE connecting so the programmatic state doesn't fire.
+        auto* accept = Gtk::make_managed<Gtk::ToggleButton>("Accept");
+        accept->add_css_class("flat");
+        accept->set_active(n.verdict == "accepted");
+        accept->set_tooltip_text("Take this suggestion");
+        accept->signal_toggled().connect([this, pass_id, sid, nid, accept]() {
+            if (!m_on_note_action) return;
+            m_on_note_action(pass_id, sid, nid,
+                accept->get_active() ? NoteAction::Accept : NoteAction::Undecide);
+        });
+        acts->append(*accept);
+
+        auto* dismiss = Gtk::make_managed<Gtk::ToggleButton>("Dismiss");
+        dismiss->add_css_class("flat");
+        dismiss->set_active(n.verdict == "declined");
+        dismiss->set_tooltip_text("Keep your version");
+        dismiss->signal_toggled().connect([this, pass_id, sid, nid, dismiss]() {
+            if (!m_on_note_action) return;
+            m_on_note_action(pass_id, sid, nid,
+                dismiss->get_active() ? NoteAction::Dismiss : NoteAction::Undecide);
+        });
+        acts->append(*dismiss);
+
+        auto* resolve = Gtk::make_managed<Gtk::Button>("Resolve");
+        resolve->add_css_class("flat");
+        resolve->set_tooltip_text(
+            "Set this note aside \u2014 keeps the record, recedes it from the list");
+        resolve->signal_clicked().connect([this, pass_id, sid, nid]() {
+            if (m_on_note_action) m_on_note_action(pass_id, sid, nid, NoteAction::Resolve);
+        });
+        acts->append(*resolve);
+    } else {
+        auto* reopen = Gtk::make_managed<Gtk::Button>("Reopen");
+        reopen->add_css_class("flat");
+        reopen->set_tooltip_text("Bring this note back to the active list");
+        reopen->signal_clicked().connect([this, pass_id, sid, nid]() {
+            if (m_on_note_action) m_on_note_action(pass_id, sid, nid, NoteAction::Reopen);
+        });
+        acts->append(*reopen);
+    }
+
+    auto* go = Gtk::make_managed<Gtk::Button>("Go to text");
+    go->add_css_class("flat");
+    go->set_tooltip_text("Jump to this note in the manuscript");
+    go->signal_clicked().connect([this, pass_id, sid, nid]() {
+        if (m_on_note_action) m_on_note_action(pass_id, sid, nid, NoteAction::GoTo);
+    });
+    acts->append(*go);
+
+    row->append(*acts);
+    if (n.receded) row->set_opacity(0.6);
+    return row;
 }
 
 // ── text zoom ────────────────────────────────────────────────────────────────

@@ -160,6 +160,7 @@ const std::vector<ShortcutSpec>& shortcut_registry() {
 
       // ── Keyboard · Tools ───────────────────────────────────────────────
       {T::Keyboard, C::Main, "Tools", "win.search", {"<Ctrl><Shift>g"}, "", "Search\u2026"},
+      {T::Keyboard, C::Main, "Tools", "win.editorial-ledger", {"<Ctrl><Shift>l"}, "", "Editorial ledger\u2026"},
       {T::Keyboard, C::Main, "Tools", "win.pomodoro", {"<Ctrl><Shift>p"}, "", "Pomodoro timer"},
       {T::Keyboard, C::Main, "Tools", "win.batch-snapshot", {"<Ctrl><Shift>t"}, "", "Batch snapshot"},
       {T::Keyboard, C::Main, "Tools", "win.preferences", {"<Ctrl>comma"}, "", "Preferences\u2026"},

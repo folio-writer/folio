@@ -11,7 +11,9 @@ namespace Folio {
 
 class SearchDialog : public Gtk::Window {
 public:
-    using OpenNodeCallback    = std::function<void(Section, std::vector<int>)>;
+    using OpenNodeCallback    = std::function<void(Section, std::vector<int>,
+                                                   const std::string& query,
+                                                   const SearchOptions& opts)>;
     using NodeChangedCallback = std::function<void(Section, std::vector<int>, std::string)>;
 
     SearchDialog(Gtk::Window& parent, DocumentModel& model);

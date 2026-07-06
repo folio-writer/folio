@@ -684,7 +684,8 @@ Gtk::Widget* SearchDialog::make_result_group(const SearchResult& r, int idx) {
         auto gc2 = Gtk::GestureClick::create();
         gc2->signal_pressed().connect([this, idx](int, double, double){
             if (idx < (int)m_results.size() && m_on_open)
-                m_on_open(m_results[idx].section, m_results[idx].path);
+                m_on_open(m_results[idx].section, m_results[idx].path,
+                          std::string(m_query_entry ? m_query_entry->get_text() : Glib::ustring()), current_opts());
         });
         row->add_controller(gc2);
 
@@ -707,7 +708,8 @@ Gtk::Widget* SearchDialog::make_result_group(const SearchResult& r, int idx) {
     auto gc = Gtk::GestureClick::create();
     gc->signal_pressed().connect([this, idx](int, double, double){
         if (idx < (int)m_results.size() && m_on_open)
-            m_on_open(m_results[idx].section, m_results[idx].path);
+            m_on_open(m_results[idx].section, m_results[idx].path,
+                          std::string(m_query_entry ? m_query_entry->get_text() : Glib::ustring()), current_opts());
     });
     title_lbl->add_controller(gc);
 
