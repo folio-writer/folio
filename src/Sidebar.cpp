@@ -1214,6 +1214,17 @@ void Sidebar::show_template_picker(
   if (entries.empty())
     return; // nothing to show
 
+  // s114 — lead with the category default (is_default) so the default is the
+  // first, obvious pick, matching how it heads the list for every category.
+  std::stable_sort(entries.begin(), entries.end(),
+                   [](const Entry &a, const Entry &b) {
+                     auto is_def = [](const Entry &e) {
+                       return e.node.form_schema.is_object() &&
+                              e.node.form_schema.value("is_default", false);
+                     };
+                     return is_def(a) && !is_def(b);
+                   });
+
   // Build a popover with a scrollable ListBox
   auto *pop = Gtk::make_managed<Gtk::Popover>();
   pop->set_has_arrow(true);
@@ -1472,58 +1483,104 @@ void Sidebar::show_section_ctx_menu(Section section, double x, double y,
   }
   gm->append_section({}, sec);
 
-  // "New from Template…" — only shown when templates exist
-  bool has_templates =
-      !m_model.root(Section::Templates).empty() || !m_prefs.global_templates_json.empty();
-  if (has_templates) {
-    auto tpl_sec = Gio::Menu::create();
-    tpl_sec->append_item(
-        mi("New from Template\xE2\x80\xA6", "ctx.new-from-template", ""));
-    ag->add_action("new-from-template", [this, section, anchor]() {
-      // Dismiss the ctx popover first, then show picker
-      if (m_ctx_popover)
-        m_ctx_popover->popdown();
-      Glib::signal_idle().connect_once([this, section, anchor]() {
-        const std::string cat =
-            section == Section::Characters ? "character"
-          : section == Section::Places     ? "place"
-          : section == Section::References ? "reference"
-                                           : std::string{};   // Manuscript etc → legacy
-        show_template_picker(anchor, [this, section](const BinderNode &tpl) {
-          auto new_path = m_model.add_leaf(section, {}, "");
-          BinderNode *n = m_model.node_at(section, new_path);
-          if (n) {
-            if (tpl.form_schema.is_object() && !tpl.form_schema.empty()) {
-              // slice3 — a FORM template: the new leaf adopts it by id (the
-              // template node's iid). rebuild_object_store instantiates the
-              // object against it; the author titles the instance.
-              n->template_id = tpl.iid;
-            } else {
-              // schema-less BOILERPLATE template: copy the starting content (the
-              // buffer-only case, preserved from the legacy "New from Template").
-              n->content = tpl.content;
-              n->title = tpl.title;
-              n->color_idx = tpl.color_idx;
-              n->status = tpl.status;
-              if (tpl.word_target > 0)
-                n->word_target = tpl.word_target;
-            }
-            m_model.mark_modified();
-          }
-          m_model.set_active(section, new_path);
-          rebuild_section(section);
-          m_board_selection = {SelPath::make(section, new_path)};
-          refresh_all_highlights();
-          fire_board_selection();
-          if (m_on_selected)
-            m_on_selected(section, new_path);
-        }, cat);
-      });
-    });
-    gm->append_section({}, tpl_sec);
-  }
+  // s114 — "New from Template" submenu (section's type templates, default first),
+  // creating at the section root.
+  append_template_submenu(gm, ag, section, {});
 
   popup_menu(gm, ag, anchor, x, y);
+}
+
+// s114 — build the "New from Template" submenu of the section's category
+// templates (default first) into `into`; each item creates a leaf under
+// `parent_path`. A SCENE template copies its body + metadata; an object template
+// instantiates against its schema by id. Shared by the section + group menus.
+void Sidebar::append_template_submenu(
+    const Glib::RefPtr<Gio::Menu>& into,
+    const Glib::RefPtr<Gio::SimpleActionGroup>& ag, Section section,
+    std::vector<int> parent_path) {
+  const std::string cat =
+      section == Section::Characters ? "character"
+    : section == Section::Places     ? "place"
+    : section == Section::References ? "reference"
+    : section == Section::Manuscript ? "scene"
+                                     : std::string{};
+  struct TplEntry {
+    std::string label;
+    BinderNode node;
+    bool def;
+  };
+  std::vector<TplEntry> tpls;
+  auto node_cat = [](const BinderNode &n) -> std::string {
+    return n.form_schema.is_object()
+               ? n.form_schema.value("category", std::string{})
+               : std::string{};
+  };
+  std::function<void(const std::vector<BinderNode> &)> gather;
+  gather = [&](const std::vector<BinderNode> &nodes) {
+    for (const auto &n : nodes) {
+      if (n.kind == BinderKind::Template && (cat.empty() || node_cat(n) == cat)) {
+        bool def = n.form_schema.is_object() &&
+                   n.form_schema.value("is_default", false);
+        tpls.push_back({ n.title.empty() ? "Untitled" : n.title, n, def });
+      }
+      if (!n.children.empty())
+        gather(n.children);
+    }
+  };
+  gather(m_model.root(Section::Templates));
+  std::stable_sort(tpls.begin(), tpls.end(),
+                   [](const TplEntry &a, const TplEntry &b) {
+                     return a.def && !b.def;
+                   });
+  if (tpls.empty())
+    return;
+
+  auto submenu = Gio::Menu::create();
+  for (int i = 0; i < (int)tpls.size(); ++i) {
+    const std::string act = "new-from-tpl-" + std::to_string(i);
+    const std::string lbl =
+        tpls[i].def ? (tpls[i].label + "  \xE2\x9C\x93") : tpls[i].label;
+    submenu->append_item(Gio::MenuItem::create(lbl, "ctx." + act));
+    BinderNode tpl = tpls[i].node;   // capture by value
+    ag->add_action(act, [this, section, parent_path, tpl]() {
+      if (m_ctx_popover)
+        m_ctx_popover->popdown();
+      Glib::signal_idle().connect_once([this, section, parent_path, tpl]() {
+        auto new_path = m_model.add_leaf(section, parent_path, "");
+        BinderNode *n = m_model.node_at(section, new_path);
+        if (n) {
+          const std::string tcat =
+              tpl.form_schema.is_object()
+                  ? tpl.form_schema.value("category", std::string{})
+                  : std::string{};
+          const bool object_tpl = tpl.form_schema.is_object() &&
+                                  !tpl.form_schema.empty() && tcat != "scene";
+          if (object_tpl) {
+            n->template_id = tpl.iid;
+          } else {
+            n->content = tpl.content;
+            if (tcat != "scene" && !tpl.title.empty())
+              n->title = tpl.title;
+            n->color_idx = tpl.color_idx;
+            n->status = tpl.status;
+            if (tpl.word_target > 0)
+              n->word_target = tpl.word_target;
+          }
+          m_model.mark_modified();
+        }
+        m_model.set_active(section, new_path);
+        rebuild_section(section);
+        m_board_selection = {SelPath::make(section, new_path)};
+        refresh_all_highlights();
+        fire_board_selection();
+        if (m_on_selected)
+          m_on_selected(section, new_path);
+      });
+    });
+  }
+  auto tpl_sec = Gio::Menu::create();
+  tpl_sec->append_submenu("New from Template", submenu);
+  into->append_section({}, tpl_sec);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1634,6 +1691,11 @@ void Sidebar::show_node_ctx_menu(Section section, const std::vector<int> &path,
     }
     gm->append_section({}, open_sec);
 
+    // s114 — a group also offers "New from Template", creating the new leaf INSIDE
+    // the group (parent_path = path), matching "Add Scene Inside".
+    if (is_group)
+      append_template_submenu(gm, ag, section, path);
+
     // Section 2 (Templates only): Edit Form + Make Global
     if (section == Section::Templates && !is_group) {
       auto tpl_sec = Gio::Menu::create();
@@ -1652,7 +1714,19 @@ void Sidebar::show_node_ctx_menu(Section section, const std::vector<int> &path,
         copy.trash_origin_section.clear();
         copy.trash_origin_path_str.clear();
         auto globals = m_prefs.global_templates_get();
-        globals.push_back(std::move(copy));
+        // s114 — upsert by title: re-promoting an edited copy REPLACES the
+        // app-wide template of the same name instead of appending a duplicate, so
+        // "Edit... -> Make Global" is a clean round-trip on the same template.
+        bool replaced = false;
+        for (auto &g : globals) {
+          if (g.kind == BinderKind::Template && g.title == copy.title) {
+            g = copy;
+            replaced = true;
+            break;
+          }
+        }
+        if (!replaced)
+          globals.push_back(std::move(copy));
         m_prefs.global_templates_set(globals);
         try {
           m_prefs.save();
@@ -1957,6 +2031,18 @@ void Sidebar::rebuild_section(Section section) {
 // Global template rows (app-wide templates in Templates section)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// s114 — mint fresh iids for a node subtree brought in from the app-wide store
+// (prefs). Global templates round-trip through JSON and may carry no iid / a
+// stale one; a document node needs a live, unique iid per descendant, exactly as
+// add_leaf mints for new nodes. Without this, ProjectBundle::explode aborts the
+// next save with "node missing iid" -- which is why an edited app-wide template
+// would not save or stay.
+static void restamp_subtree_iids(BinderNode &n) {
+  n.iid = make_iid(iid_kind_for(n.kind));
+  for (auto &c : n.children)
+    restamp_subtree_iids(c);
+}
+
 void Sidebar::add_global_template_row(int global_idx, Gtk::Box *parent_box) {
   auto globals = m_prefs.global_templates_get();
   if (global_idx < 0 || global_idx >= (int)globals.size())
@@ -2001,6 +2087,40 @@ void Sidebar::add_global_template_row(int global_idx, Gtk::Box *parent_box) {
         auto gm = Gio::Menu::create();
         auto ag = Gio::SimpleActionGroup::create();
 
+        // s114 — Edit: the editor only edits MODEL nodes, but an app-wide template
+        // lives in prefs. Bring a copy into the document Templates section and OPEN
+        // it so its body loads in the editor (set a paragraph style on the body
+        // here); "Make Global" then pushes it back app-wide, upserting by title so
+        // there's no duplicate. This is the missing command the app-wide row lacked.
+        auto edit_sec = Gio::Menu::create();
+        edit_sec->append_item(
+            Gio::MenuItem::create("Edit\u2026", "ctx.edit-global"));
+        ag->add_action("edit-global", [this, global_idx]() {
+          auto globals = m_prefs.global_templates_get();
+          if (global_idx >= (int)globals.size())
+            return;
+          BinderNode copy = globals[global_idx];
+          restamp_subtree_iids(copy);   // s114 — avoid "node missing iid" on save
+          auto &tpl_root = m_model.root(Section::Templates);
+          tpl_root.push_back(std::move(copy));
+          int new_idx = (int)tpl_root.size() - 1;
+          m_model.mark_modified();
+          rebuild_section(Section::Templates);
+          // Load the copy's BODY in the prose editor by SELECTING it (deferred to
+          // idle so it lands after the context popover tears down). Opening a
+          // Template node routes to the form-schema Builder -- wrong for a body
+          // template; a SELECTION runs apply_selection -> load_node -> the body as
+          // prose, where a paragraph style can be applied. Make Global then pushes
+          // the styled body back app-wide (upsert by title).
+          Glib::signal_idle().connect_once([this, new_idx]() {
+            std::vector<int> p{new_idx};
+            m_model.set_active(Section::Templates, p);
+            m_board_selection = {SelPath::make(Section::Templates, p)};
+            fire_board_selection();
+          });
+        });
+        gm->append_section({}, edit_sec);
+
         auto sec = Gio::Menu::create();
         sec->append_item(
             Gio::MenuItem::create("Copy to Document", "ctx.copy-to-doc"));
@@ -2009,6 +2129,7 @@ void Sidebar::add_global_template_row(int global_idx, Gtk::Box *parent_box) {
           if (global_idx >= (int)globals.size())
             return;
           BinderNode copy = globals[global_idx];
+          restamp_subtree_iids(copy);   // s114 — avoid "node missing iid" on save
           m_model.root(Section::Templates).push_back(std::move(copy));
           m_model.mark_modified();
           rebuild_section(Section::Templates);
@@ -2537,6 +2658,23 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
               ? "Pinned hinge — a turn the story rests on. Write this one first."
               : "Key Point — a story beat on the timeline's arc.");
       row->append(*kp_img);
+    }
+    // s114 — default-template star: a Template that is its category's default
+    // (is_default in form_schema) shows a star in the binder, echoing the key/pin
+    // markers, so the default is visible at a glance.
+    if (node->kind == BinderKind::Template && node->form_schema.is_object() &&
+        node->form_schema.value("is_default", false)) {
+      auto *star = Gtk::make_managed<Gtk::Image>();
+      star->set_from_icon_name("starred-symbolic");
+      star->set_pixel_size(9);   // s114 — ~2/3 of the 14px key/pin markers
+      star->set_size_request(9, 9);
+      star->set_valign(Gtk::Align::CENTER);
+      star->set_margin_end(2);
+      star->set_opacity(0.55);   // less glaring than a full-brightness marker
+      star->add_css_class("tpl-default-star");
+      star->set_tooltip_text(
+          "Default template — new items of this type are born on it.");
+      row->append(*star);
     }
     if (swatch)
       row->append(*swatch);

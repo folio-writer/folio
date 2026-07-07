@@ -172,6 +172,16 @@ void Editor::build_font_controls() {
                 update_font_controls_from_selection();
                 update_writing_mode_dd();
                 sync_ruler();
+                // s114 — a caret move to a DIFFERENT line clears a pending typing
+                // style (the armed empty paragraph was abandoned without typing).
+                // Armed only after apply_style's 60ms restore, so this never fires
+                // during the apply's own focus dance (caret returns to the line).
+                if (m_pending_style_index >= 0 && m_buffer &&
+                    m_buffer->get_insert()->get_iter().get_line() !=
+                        m_pending_style_line) {
+                  m_pending_style_index = -1;
+                  m_pending_style_line = -1;
+                }
               }
             });
           }
@@ -3718,7 +3728,10 @@ void Editor::rebuild_style_dropdown() {
   model->append("Style…"); // index 0 — placeholder
 
   for (const auto &ts : m_prefs.text_styles) {
-    std::string label = (ts.kind == "paragraph" ? "¶ " : "T ") + ts.name;
+    // s114 — the "No Style" reset reads cleaner without the ¶/T scope prefix.
+    std::string label = (ts.name == "No Style")
+                            ? ts.name
+                            : (ts.kind == "paragraph" ? "¶ " : "T ") + ts.name;
     model->append(label);
   }
 

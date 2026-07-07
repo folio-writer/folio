@@ -1089,6 +1089,12 @@ void Inspector::open_template_builder_for_template_node(const std::string& node_
     draft = Folio::built_in_character_template();   // floor fallback for a new node
   draft.id      = node_iid;   // identity from the node
   draft.builtin = false;      // node-backed templates are editable
+  // s114 — the binder title is the authoritative name the user sees/edits, so seed
+  // the builder's Type name from it (the floor fallback / stale form_schema would
+  // otherwise show a different name than the node). Save writes title <- type_name,
+  // keeping them in sync thereafter.
+  if (!node->title.empty())
+    draft.type_name = node->title;
 
   auto* root = dynamic_cast<Gtk::Window*>(get_root());
   if (!root) return;
@@ -1100,6 +1106,15 @@ void Inspector::open_template_builder_for_template_node(const std::string& node_
       out.push_back({ t.id, t.type_name });
     return out;
   });
+  // s114 — supply paragraph style names for the builder's Text style picker (the
+  // builder holds no prefs; the opener does). Must precede open_for.
+  {
+    std::vector<std::string> styles;
+    for (const auto& ts : m_prefs.text_styles)
+      if (ts.kind == "paragraph")
+        styles.push_back(ts.name);
+    m_template_builder->set_style_list(std::move(styles));
+  }
   m_template_builder->set_apply_callback([this, node_iid](const Folio::Template& edited) {
     Folio::Template t = edited;   // capture by value — survives the dialog teardown
     t.id      = node_iid;         // keep identity pinned to the node
@@ -1113,6 +1128,26 @@ void Inspector::open_template_builder_for_template_node(const std::string& node_
       // marked default, clear the flag on its category siblings.
       if (t.is_default)
         m_model.clear_default_template_for_category(t.category, node_iid);
+      // s114 — keep the Prefs per-category default pointer in sync with the
+      // is_default toggle (Prefs stays the store the automatic born-on paths read;
+      // is_default is the control). Saving a template as default points its
+      // category's NodeDefaults at it; turning it off clears the pointer when it
+      // named this template, falling back to the baked-in default.
+      {
+        NodeDefaults* nd =
+            t.category == "character" ? &m_prefs.character_defaults
+          : t.category == "place"     ? &m_prefs.place_defaults
+          : t.category == "reference" ? &m_prefs.reference_defaults
+          : t.category == "scene"     ? &m_prefs.scene_defaults
+                                      : nullptr;
+        if (nd) {
+          if (t.is_default)
+            nd->template_name = n->title;
+          else if (nd->template_name == n->title)
+            nd->template_name.clear();   // was the default -> revert to baked-in
+          try { m_prefs.save(); } catch (...) {}
+        }
+      }
       m_model.mark_modified();
       m_model.rebuild_object_store();   // re-project so the registry reflects the edit
       notify_meta_changed();            // refresh the binder/sidebar

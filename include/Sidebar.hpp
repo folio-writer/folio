@@ -182,6 +182,14 @@ public:
                               std::function<void(const BinderNode&)> on_chosen,
                               const std::string& category = "");
 
+    // s114 — append a "New from Template" SUBMENU (the section's category
+    // templates, default first) to `into`, creating the new leaf under
+    // `parent_path`. Shared by the section and group context menus.
+    void append_template_submenu(const Glib::RefPtr<Gio::Menu>& into,
+                                 const Glib::RefPtr<Gio::SimpleActionGroup>& ag,
+                                 Section section,
+                                 std::vector<int> parent_path);
+
 private:
     // ── Build / rebuild ───────────────────────────────────────────────────────
     void build_ui();

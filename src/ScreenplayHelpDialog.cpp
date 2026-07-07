@@ -17,6 +17,13 @@ ScreenplayHelpDialog::ScreenplayHelpDialog(Gtk::Window& parent)
 {
     set_transient_for(parent);
     set_modal(false);         // floating — stays open while writing
+    // s114 — built-once-reused (Editor holds one m_sp_help_dialog unique_ptr and
+    // re-present()s it). A GTK4 Gtk::Window WITHOUT hide-on-close is DESTROYED on
+    // close() (Esc / the X), leaving the unique_ptr pointing at a dead window; the
+    // next present() then warns "A window is shown after it has been destroyed."
+    // Hide instead of destroy so the same live window re-shows (the Research
+    // spinner idiom).
+    set_hide_on_close(true);
     set_title("Screenplay Format Reference");
     set_default_size(400, 680);
     set_resizable(true);

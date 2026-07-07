@@ -377,6 +377,9 @@ void FolioPrefs::load() {
         text_styles = default_styles();
         try { save(); } catch (...) {}
     }
+    // s114 — guarantee the built-in "No Style" reset exists for prefs that
+    // predate it. Idempotent; fresh installs already have it via default_styles().
+    ensure_builtin_styles();
 
     // Custom compile formats (s18) — each in its own group "CompileFormat-N".
     // The IO seam owns the key vocabulary; we just read every key in the group
@@ -855,12 +858,32 @@ std::vector<CompileFormat> FolioPrefs::all_compile_formats() const {
 // Built-in default style set
 // ─────────────────────────────────────────────────────────────────────────────
 
+// s114 — idempotently guarantee the built-in "No Style" reset entry is present,
+// prepended so it heads the Styles list and the dropdown. Called after load() so
+// prefs that predate No Style pick it up on upgrade; a no-op once present.
+void FolioPrefs::ensure_builtin_styles() {
+    for (const auto& t : text_styles)
+        if (t.name == "No Style")
+            return;   // already present
+    text_styles.insert(text_styles.begin(),
+                       {"paragraph", "No Style", "", 0, false, false, false,
+                        "", "", "", 0.0});
+}
+
 std::vector<TextStyle> FolioPrefs::default_styles() const {
     const std::string& S = serif_font;   // e.g. "JansonText"
     const std::string& A = sans_font;    // e.g. "Cantarell"
     const std::string& M = mono_font;    // e.g. "Courier New"
 
     std::vector<TextStyle> v;
+
+    // ── Reset ─────────────────────────────────────────────────────────────────
+    // No Style — a first-class "reset" style: every field inherits, so applying
+    // it strips all character/paragraph overrides and drops the paragraph back to
+    // pure body copy (base font, default indent). apply_style removes all tags
+    // then finds nothing to stamp. Kept FIRST so it heads both the Styles list
+    // and the toolbar dropdown.
+    v.push_back({"paragraph", "No Style",         "", 0, false, false, false, "",       "", "", 0.0});
 
     // ── Paragraph styles ─────────────────────────────────────────────────────
 

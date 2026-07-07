@@ -364,6 +364,10 @@ public:
     // Returns the built-in starter set seeded from serif/sans/mono font prefs.
     // Called automatically after load() if text_styles is empty.
     std::vector<TextStyle> default_styles() const;
+    // s114 — guarantee the built-in "No Style" reset entry exists (idempotent).
+    // Prefs saved before No Style shipped won't have it; call after load() so
+    // upgraders get it too. Fresh installs already carry it via default_styles().
+    void ensure_builtin_styles();
 
     // ── Custom PDF compile formats (s18 — user-editable, persisted) ──────────
     // The three code-seeded presets (builtin_compile_formats()) are NOT stored

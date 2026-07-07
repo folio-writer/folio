@@ -98,13 +98,15 @@ void TemplateBuilderDialog::build_chrome() {
         l->set_halign(Gtk::Align::START);
         l->set_hexpand(true);
         auto model = Gtk::StringList::create(
-            std::vector<Glib::ustring>{ "Character", "Place", "Reference" });
+            std::vector<Glib::ustring>{ "Character", "Place", "Reference", "Scene" });
         m_category_dd = Gtk::make_managed<Gtk::DropDown>(model);
         m_category_dd->set_halign(Gtk::Align::END);
         m_category_dd->property_selected().signal_changed().connect([this]() {
-            static const char* cats[] = { "character", "place", "reference" };
+            static const char* cats[] = { "character", "place", "reference", "scene" };
             guint i = m_category_dd->get_selected();
-            if (i < 3) m_draft.category = cats[i];
+            if (i < 4) m_draft.category = cats[i];
+            // s114 — a Scene template has no object fields; hide the Fields UI.
+            m_fields_section.set_visible(m_draft.category != "scene");
         });
         row->append(*l);
         row->append(*m_category_dd);
@@ -132,13 +134,39 @@ void TemplateBuilderDialog::build_chrome() {
         m_root.append(*row);
     }
 
-    // ── Fields heading ─────────────────────────────────────────────────────────
+    // ── Text style (s114) ──────────────────────────────────────────────────────
+    // The named paragraph style applied to this template's rich-text body, so an
+    // instance born from it starts in that style. Present for EVERY category (all
+    // templates have a text area). Model is (re)populated in open_for.
+    {
+        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+        auto* l = Gtk::make_managed<Gtk::Label>("Text style");
+        l->add_css_class("pref-row-label");
+        l->set_halign(Gtk::Align::START);
+        l->set_hexpand(true);
+        m_style_dd = Gtk::make_managed<Gtk::DropDown>(
+            Gtk::StringList::create(std::vector<Glib::ustring>{ "(none)" }));
+        m_style_dd->set_halign(Gtk::Align::END);
+        m_style_dd->property_selected().signal_changed().connect([this]() {
+            if (!m_style_dd) return;
+            guint i = m_style_dd->get_selected();
+            m_draft.style_name = (i == 0 || i > m_style_names.size())
+                                     ? std::string{}
+                                     : m_style_names[i - 1];
+        });
+        row->append(*l);
+        row->append(*m_style_dd);
+        m_root.append(*row);
+    }
+
+    // ── Fields section (heading + list + add bar) — hidden for Scene templates ──
+    m_fields_section.set_vexpand(true);
     {
         auto* hdr = Gtk::make_managed<Gtk::Label>("Fields");
         hdr->add_css_class("inspector-section-label");
         hdr->set_halign(Gtk::Align::START);
         hdr->set_margin_top(4);
-        m_root.append(*hdr);
+        m_fields_section.append(*hdr);
     }
 
     // ── Scrollable field list ───────────────────────────────────────────────────
@@ -147,7 +175,7 @@ void TemplateBuilderDialog::build_chrome() {
     m_scroll.set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
     m_scroll.set_vexpand(true);
     m_scroll.set_has_frame(true);
-    m_root.append(m_scroll);
+    m_fields_section.append(m_scroll);
 
     // ── Add field / Add section ────────────────────────────────────────────────
     {
@@ -160,8 +188,9 @@ void TemplateBuilderDialog::build_chrome() {
         sec->set_tooltip_text("A heading that groups the fields beneath it");
         sec->signal_clicked().connect(sigc::mem_fun(*this, &TemplateBuilderDialog::on_add_section));
         bar->append(*sec);
-        m_root.append(*bar);
+        m_fields_section.append(*bar);
     }
+    m_root.append(m_fields_section);
 
     // ── Error line ───────────────────────────────────────────────────────────────
     m_error_label.add_css_class("dim-label");
@@ -194,8 +223,29 @@ void TemplateBuilderDialog::open_for(const Folio::Template& tmpl) {
     if (m_category_dd) {
         guint idx = m_draft.category == "place"     ? 1
                   : m_draft.category == "reference" ? 2
+                  : m_draft.category == "scene"     ? 3
                                                     : 0;   // default → character
         m_category_dd->set_selected(idx);
+    }
+    // s114 — a Scene template shows no Fields UI (scenes have no object fields).
+    m_fields_section.set_visible(m_draft.category != "scene");
+    // s114 — (re)populate the Text style picker and select the draft's style.
+    if (m_style_dd) {
+        // set_model() below resets the selection to 0, which fires the change
+        // handler and clobbers m_draft.style_name -- capture the wanted style FIRST.
+        const std::string want = m_draft.style_name;
+        std::vector<Glib::ustring> labels{ "(none)" };
+        for (const auto& n : m_style_names)
+            labels.push_back(n);
+        m_style_dd->set_model(Gtk::StringList::create(labels));
+        guint sel = 0;
+        for (guint i = 0; i < m_style_names.size(); ++i)
+            if (m_style_names[i] == want) {
+                sel = i + 1;
+                break;
+            }
+        m_style_dd->set_selected(sel);
+        m_draft.style_name = want;   // restore (set_model's spurious fire cleared it)
     }
     if (m_default_sw) m_default_sw->set_active(m_draft.is_default);   // s44
     rebuild_field_rows();

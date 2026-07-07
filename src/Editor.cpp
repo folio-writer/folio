@@ -74,6 +74,36 @@ Editor::Editor(DocumentModel &model, FolioPrefs &prefs)
         if (text.empty())
           return;
 
+        // s114 — PENDING STYLE: the first character typed into an armed EMPTY
+        // paragraph (a style was set on it, but there was nothing to tag). Re-apply
+        // the whole style to the now non-empty paragraph -- this covers character
+        // AND paragraph attributes, unlike the preceding-char extension below --
+        // then disarm; further typing rides the normal extension. Deferred to idle
+        // so the insert has completed; apply_named_style_range is focus-dance-free
+        // but selects the range, so the caret is restored to the typing point.
+        if (m_pending_style_index >= 0 && pos.get_line() == m_pending_style_line) {
+          const int idx = m_pending_style_index;
+          const int line = m_pending_style_line;
+          m_pending_style_index = -1;
+          m_pending_style_line = -1;
+          Glib::signal_idle().connect_once([this, idx, line]() {
+            if (!m_buffer)
+              return;
+            const int caret = m_buffer->get_insert()->get_iter().get_offset();
+            auto ls = m_buffer->get_iter_at_line(line);
+            auto le = ls;
+            if (!le.ends_line())
+              le.forward_to_line_end();
+            apply_named_style_range(idx, ls.get_offset(), le.get_offset());
+            auto ci = m_buffer->get_iter_at_offset(
+                std::min(caret, m_buffer->get_char_count()));
+            m_loading = true;
+            m_buffer->place_cursor(ci);
+            m_loading = false;
+          });
+          return;   // skip normal extension for this insert
+        }
+
         // Look at the character just before the insertion point for active
         // tags. If pos is at offset 0 there's nothing before it — no extension
         // needed.
@@ -362,6 +392,11 @@ void Editor::load_node(BinderNode *node) {
   }
 
   m_loading = true;
+
+  // s114 — a fresh node load invalidates any pending typing style (it was armed
+  // for a line in the previous node's content).
+  m_pending_style_index = -1;
+  m_pending_style_line = -1;
 
   // Apply label colour to the chapter-tag pill. Uses a dedicated CSS provider
   // that is swapped on every load so no providers accumulate.

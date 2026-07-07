@@ -91,9 +91,15 @@ static Gdk::RGBA hex_to_rgba(const std::string& hex) {
 }
 
 // ─── Constructor ─────────────────────────────────────────────────────────────
-PreferencesDialog::PreferencesDialog(Gtk::Window& parent, FolioPrefs& prefs)
+PreferencesDialog::PreferencesDialog(Gtk::Window& parent, FolioPrefs& prefs,
+                                     std::vector<std::string> template_names)
     : m_prefs(prefs), m_parent_win(parent)
 {
+    // s114 — seed the template list BEFORE the page loop below builds
+    // build_page_defaults(), whose "Default Template" picker is gated on this
+    // being non-empty. It used to be filled by a post-construction setter, which
+    // ran too late (the page was already built empty), so the picker never showed.
+    m_template_names = std::move(template_names);
     ensure_prefs_css();
     set_transient_for(parent);
     set_modal(true);

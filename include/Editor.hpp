@@ -380,6 +380,16 @@ private:
   int                                        m_extend_len  = 0;   // length of inserted text
   std::vector<Glib::RefPtr<Gtk::TextTag>>    m_extend_tags;       // tags to re-apply
 
+  // s114 — pending typing style. A paragraph style applied to an EMPTY paragraph
+  // has no characters to tag, so it is armed here (the style's index into
+  // m_prefs.text_styles + the paragraph line) and re-applied to the whole
+  // paragraph on the FIRST character typed into that line -- giving "set the
+  // style, then type, and it's already in that style." Armed after apply_style's
+  // caret restore (so the focus-in caret shuffle can't clear it); cleared on that
+  // first insert, on a caret move to another line, on a new style, or on load.
+  int                                        m_pending_style_index = -1;
+  int                                        m_pending_style_line  = -1;
+
   // ── View / focus state ────────────────────────────────────────────────────
   ViewMode    m_view_mode    = ViewMode::Write;
   WritingMode m_writing_mode = WritingMode::Novel;

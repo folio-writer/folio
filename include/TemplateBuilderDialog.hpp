@@ -46,6 +46,13 @@ public:
     using TypeProvider = std::function<std::vector<Folio::FieldChoice>()>;
     void set_type_provider(TypeProvider cb) { m_type_provider = std::move(cb); }
 
+    // s114 — the paragraph style names for the "Text style" picker (the style
+    // applied to a template's rich-text body). The builder holds no prefs, so the
+    // opener (Inspector) supplies them. Call BEFORE open_for so the row populates.
+    void set_style_list(std::vector<std::string> names) {
+        m_style_names = std::move(names);
+    }
+
     // Load `tmpl` as the editable draft and (re)build the rows. Safe to call
     // repeatedly on the one owned instance (persistent-window rule).
     void open_for(const Folio::Template& tmpl);
@@ -61,8 +68,13 @@ private:
     Gtk::Entry          m_type_name_entry;
     Gtk::DropDown*      m_category_dd = nullptr;   // s39 — character/place/reference
     Gtk::Switch*        m_default_sw  = nullptr;   // s44 — default-for-category
+    Gtk::DropDown*      m_style_dd    = nullptr;   // s114 — rich-text body style
+    std::vector<std::string> m_style_names;        // s114 — paragraph style names
     Gtk::ScrolledWindow m_scroll;
     Gtk::Box            m_field_list{Gtk::Orientation::VERTICAL, 0};
+    // s114 — the whole Fields UI (heading + list + add bar) lives in this box so
+    // it can be hidden for a Scene template, which has no object fields.
+    Gtk::Box            m_fields_section{Gtk::Orientation::VERTICAL, 0};
     Gtk::Label          m_error_label;
 
     void build_chrome();

@@ -10,7 +10,8 @@ namespace Folio {
 
 class PreferencesDialog : public Gtk::Window {
 public:
-    PreferencesDialog(Gtk::Window& parent, FolioPrefs& prefs);
+    PreferencesDialog(Gtk::Window& parent, FolioPrefs& prefs,
+                      std::vector<std::string> template_names = {});
     ~PreferencesDialog();  // unparents m_ac_pair_picker before window closes
 
     // Call after construction to provide the document template names

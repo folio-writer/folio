@@ -2978,6 +2978,39 @@ void MainWindow::action_import() {
     // last group that was added at depth 0.
     std::vector<int> last_group_path;
 
+    // s114 — resolve the manuscript default template (document Templates first,
+    // then the app-wide/global store, matching Sidebar::on_add_leaf) so imported
+    // scenes can be born on it like manually-created ones. Returns nullptr when
+    // none is configured or found.
+    auto find_default_tpl =
+        [this](const std::string &name) -> const BinderNode * {
+      if (name.empty())
+        return nullptr;
+      std::function<const BinderNode *(const std::vector<BinderNode> &)> find_tpl;
+      find_tpl =
+          [&](const std::vector<BinderNode> &nodes) -> const BinderNode * {
+        for (const auto &n : nodes) {
+          if (n.kind == BinderKind::Template && n.title == name)
+            return &n;
+          if (auto *f = find_tpl(n.children))
+            return f;
+        }
+        return nullptr;
+      };
+      if (auto *d = find_tpl(m_model.root(Section::Templates)))
+        return d;
+      std::string bare = name;
+      const std::string prefix = "[Global] ";
+      if (bare.size() >= prefix.size() && bare.substr(0, prefix.size()) == prefix)
+        bare = bare.substr(prefix.size());
+      static thread_local std::vector<BinderNode> s_globals;
+      s_globals = m_prefs.global_templates_get();
+      for (const auto &g : s_globals)
+        if (g.kind == BinderKind::Template && g.title == bare)
+          return &g;
+      return nullptr;
+    };
+
     for (auto &nd : nodes) {
       if (nd.is_group) {
         // Add a Group at top level (or at depth, if nested — currently max 1
@@ -2998,6 +3031,40 @@ void MainWindow::action_import() {
         if (node) {
           node->content = nd.html;
           node->content_modified = true;
+
+          // s114 — imported scenes are now born on the manuscript defaults + the
+          // default template, like manually-created ones (previously an import got
+          // NEITHER). Non-destructive: the imported TITLE and CONTENT are always
+          // preserved; only metadata (label / status / word target / include) is
+          // stamped. (Applying the template's body STYLE to imported prose is a
+          // separate, editor-level step, deferred with the template redesign.)
+          const NodeDefaults &sd = m_prefs.scene_defaults;
+          node->color_idx = sd.color_idx;
+          node->include_in_export = sd.include_in_export;
+          if (sd.word_target > 0)
+            node->word_target = sd.word_target;
+          auto status_from = [](const std::string &name, NodeStatus &out) {
+            if (name.empty())
+              return;
+            std::string lo = name;
+            std::transform(lo.begin(), lo.end(), lo.begin(), ::tolower);
+            if (lo == "rough draft")      out = NodeStatus::RoughDraft;
+            else if (lo == "in progress") out = NodeStatus::InProgress;
+            else if (lo == "polished")    out = NodeStatus::Polished;
+            else if (lo == "skip")        out = NodeStatus::Skip;
+          };
+          status_from(sd.status_name, node->status);
+
+          // Default-template metadata overrides (per the copy toggles). Title and
+          // content are deliberately NOT copied -- the import owns those.
+          if (const BinderNode *tpl = find_default_tpl(sd.template_name)) {
+            if (sd.template_copy_color)
+              node->color_idx = tpl->color_idx;
+            if (sd.template_copy_status)
+              node->status = tpl->status;
+            if (sd.template_copy_word_target && tpl->word_target > 0)
+              node->word_target = tpl->word_target;
+          }
         }
       }
     }
@@ -3369,10 +3436,12 @@ void MainWindow::action_preferences() {
     m_tag_ids_before_prefs.clear();
     for (const auto& tc : m_prefs.tag_colors)
       m_tag_ids_before_prefs.push_back(tc.id);
-    m_prefs_dialog = std::make_unique<PreferencesDialog>(*this, m_prefs);
-    // Provide document + global template names for the default-template picker
+    // Build document + global template names FIRST, then pass them into the
+    // constructor: the New Item Defaults page (with its "Default Template" picker)
+    // is built DURING construction, so a post-construction setter would run too
+    // late and the picker would never appear.
+    std::vector<std::string> tpl_names;
     {
-      std::vector<std::string> tpl_names;
       std::function<void(const std::vector<BinderNode> &)> collect;
       collect = [&](const std::vector<BinderNode> &nodes) {
         for (const auto &n : nodes) {
@@ -3383,12 +3452,13 @@ void MainWindow::action_preferences() {
         }
       };
       collect(m_model.root(Section::Templates));
-      // Also include global templates (prefixed so user can distinguish)
+      // Also include global templates (prefixed so the user can distinguish)
       for (const auto &n : m_prefs.global_templates_get())
         if (!n.title.empty())
           tpl_names.push_back("[Global] " + n.title);
-      m_prefs_dialog->set_template_list(std::move(tpl_names));
     }
+    m_prefs_dialog =
+        std::make_unique<PreferencesDialog>(*this, m_prefs, std::move(tpl_names));
     m_prefs_dialog->signal_hide().connect([this]() {
       bool changed = m_prefs_dialog && m_prefs_dialog->was_changed();
       m_prefs_dialog.reset(); // Rebuild fresh next open so working copies

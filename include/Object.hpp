@@ -224,6 +224,12 @@ struct Template {
     // on the node's form_schema (node-is-truth, §4).
     bool                     is_default = false;
 
+    // s114 — the named paragraph text style applied to this template's rich-text /
+    // body area, so instances born from the template start in that style. Empty =
+    // no style (inherit body default). Applies to every category (all templates
+    // have a text area). Serialized on form_schema; consumed at instance creation.
+    std::string              style_name;
+
     const FieldSchema* find_field(const std::string& field_id) const {
         for (const auto& f : fields)
             if (f.id == field_id) return &f;

@@ -1156,6 +1156,17 @@ void Editor::apply_style(const TextStyle &style) {
       return;
   }
 
+  // s114 — a paragraph style applied to an EMPTY paragraph has no characters to
+  // tag; note it here so the caret-restore tail can ARM a pending typing style
+  // (re-applied on the first key). A direct application (not the pending re-apply
+  // itself, which runs with m_suppress_style_refocus) supersedes any prior arm.
+  const bool empty_para =
+      (style.kind == "paragraph" && s.get_offset() == e.get_offset());
+  if (!m_suppress_style_refocus) {
+    m_pending_style_index = -1;
+    m_pending_style_line = -1;
+  }
+
   m_buffer->begin_user_action();
 
   // ── Step 1: Remove all tags from the range ────────────────────────────
@@ -1368,11 +1379,31 @@ void Editor::apply_style(const TextStyle &style) {
     m_buffer->select_range(ia, ib); // ia = insert, ib = selection_bound
     m_loading = false;
   };
+  // s114 — arm the pending typing style AFTER the caret restore settles, so the
+  // focus-in caret shuffle (which fires mark_set) can't clear it first. pend_idx
+  // is resolved now (the style ref can't be captured into the delayed timeout).
+  int pend_idx = -1;
+  if (empty_para) {
+    for (int i = 0; i < (int)m_prefs.text_styles.size(); ++i)
+      if (m_prefs.text_styles[(std::size_t)i].name == style.name) {
+        pend_idx = i;
+        break;
+      }
+  }
+  const int arm_line =
+      m_buffer
+          ->get_iter_at_offset(
+              std::min(std::max(0, orig_ins), m_buffer->get_char_count()))
+          .get_line();
   m_text_view.grab_focus();
   restore_sel(orig_ins, orig_bound);
   Glib::signal_timeout().connect_once(
-      [orig_ins, orig_bound, restore_sel]() {
+      [this, orig_ins, orig_bound, restore_sel, pend_idx, arm_line]() {
         restore_sel(orig_ins, orig_bound);
+        if (pend_idx >= 0) {
+          m_pending_style_index = pend_idx;
+          m_pending_style_line = arm_line;
+        }
       },
       60);
 }
@@ -1427,6 +1458,10 @@ void Editor::apply_outline_level(int level) {
 void Editor::update_writing_mode_dd() {
   if (m_updating_wm_dd || !m_writing_mode_dd)
     return;
+  // s114 — prose-only, same rule as detect_writing_mode_from_buffer: never let a
+  // form-kind node's hidden buffer drive the global writing mode / dropdown.
+  if (node_is_form_kind(m_current_node))
+    return;
 
   WritingMode desired;
   if (current_sp_element() >= 0)
@@ -1464,9 +1499,20 @@ void Editor::set_writing_mode(WritingMode mode) {
     m_updating_wm_dd = false;
   }
 
+  // s114 — writing mode (Novel/Outline/Screenplay) is a PROSE concept: it applies
+  // only to nodes that draw the prose "write" child (Scene / Node). A form-kind
+  // node (Character / Place / Reference, incl. the Reference sub-type owned
+  // surfaces -- mind map / journal / gallery / research) shows its OWN stack child
+  // (m_form_scroll / m_cmm_canvas / ...). Forcing the stack to "write" here stomped
+  // that surface with a flat prose view, and toggling back re-ran the same stomp,
+  // so the form never returned. Gate every view-stack switch below on the node
+  // actually being prose; the font / screenplay buffer work is left intact (it
+  // operates on the hidden m_buffer and is harmless when a form is up).
+  const bool draws_prose = !node_is_form_kind(m_current_node);
+
   switch (mode) {
   case WritingMode::Novel:
-    m_view_stack.set_visible_child("write");
+    if (draws_prose) m_view_stack.set_visible_child("write");
     // Restore font if we're coming back from Screenplay mode
     if (!m_pre_sp_font.empty()) {
       m_current_font = m_pre_sp_font;
@@ -1495,7 +1541,7 @@ void Editor::set_writing_mode(WritingMode mode) {
     }
     break;
   case WritingMode::Outline:
-    m_view_stack.set_visible_child("write");
+    if (draws_prose) m_view_stack.set_visible_child("write");
     // Restore font if coming from Screenplay mode
     if (!m_pre_sp_font.empty()) {
       m_current_font = m_pre_sp_font;
@@ -1523,7 +1569,7 @@ void Editor::set_writing_mode(WritingMode mode) {
     break;
   case WritingMode::Screenplay:
     LOG_INFO("set_writing_mode: Screenplay");
-    m_view_stack.set_visible_child("write");
+    if (draws_prose) m_view_stack.set_visible_child("write");
     // Save current font and switch to Courier 12pt (industry standard).
     // Only save once — guard against re-entry if mode is set multiple times.
     if (m_pre_sp_font.empty()) {
@@ -1974,6 +2020,14 @@ void Editor::replace_line_indicator(int new_level) {
 // Detect whether the loaded buffer contains outline items and set dropdown
 void Editor::detect_writing_mode_from_buffer() {
   if (!m_buffer || !m_writing_mode_dd)
+    return;
+  // s114 — writing mode is a PROSE concept. A form-kind node (Character / Place /
+  // Reference + the owned sub-types) loads its description into the HIDDEN
+  // m_buffer; stale sp-/outline- tags in that description would otherwise flip the
+  // GLOBAL m_writing_mode to Screenplay/Outline and leak that onto the NEXT real
+  // scene selected. Skip detection for forms -- the next prose node's own detect
+  // sets the mode correctly from its own content tags.
+  if (node_is_form_kind(m_current_node))
     return;
   int nlines = m_buffer->get_line_count();
   LOG_DEBUG("detect_writing_mode: scanning {} lines", nlines);
