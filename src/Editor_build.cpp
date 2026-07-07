@@ -692,17 +692,49 @@ void Editor::build_toolbar() {
     // Section filter toggle buttons
     struct SFilter {
       const char *label;
-      bool *flag;
+      bool *flag;               // live runtime flag (drives rebuild_outline filter)
+      bool *pref;               // persisted mirror in FolioPrefs
+      Gtk::ToggleButton **slot; // member the button is stored in (for later sync)
     };
-    for (auto &f : std::vector<SFilter>{{"Manuscript", &m_grid_show_manuscript},
-                                        {"Characters", &m_grid_show_characters},
-                                        {"Places", &m_grid_show_places}}) {
+    for (auto &f : std::vector<SFilter>{
+             {"Manuscript", &m_grid_show_manuscript, &m_prefs.grid_show_manuscript,
+              &m_grid_sec_manuscript},
+             {"Characters", &m_grid_show_characters, &m_prefs.grid_show_characters,
+              &m_grid_sec_characters},
+             {"Places", &m_grid_show_places, &m_prefs.grid_show_places,
+              &m_grid_sec_places}}) {
+      // Seed the runtime flag from the saved preference so the grid opens in the
+      // last explicitly-chosen state.
+      *f.flag = *f.pref;
+
+      // Ungrouped toggles: this GTK build doesn't reliably drive :checked on
+      // standalone GtkToggleButtons (see the .pin-toggle note in css.hpp), so
+      // the "on" look rides a code-set .section-on class. Highlight mirrors the
+      // Inspector tabs (accent tint + accent text + accent border).
       auto *btn = Gtk::make_managed<Gtk::ToggleButton>(f.label);
+      *f.slot = btn;
+      // Seed active state under the sync guard: at this point in build() the
+      // outline grid doesn't exist yet, so the toggled handler must NOT rebuild.
+      m_grid_sec_syncing = true;
       btn->set_active(*f.flag);
-      btn->add_css_class("flat");
+      m_grid_sec_syncing = false;
+      btn->add_css_class("section-filter");
+      if (*f.flag)
+        btn->add_css_class("section-on");
       bool *flag = f.flag;
-      btn->signal_toggled().connect([this, btn, flag]() {
+      bool *pref = f.pref;
+      btn->signal_toggled().connect([this, btn, flag, pref]() {
         *flag = btn->get_active();
+        if (btn->get_active())
+          btn->add_css_class("section-on");
+        else
+          btn->remove_css_class("section-on");
+        // Programmatic sync (auto-enable): reflect the highlight only; don't
+        // persist or rebuild — that path owns its own rebuild.
+        if (m_grid_sec_syncing)
+          return;
+        *pref = *flag;
+        m_prefs.save();
         rebuild_outline();
       });
       m_grid_toolbar.append(*btn);

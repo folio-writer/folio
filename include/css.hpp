@@ -454,6 +454,23 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
     .folio-viewbar dropdown { padding: 0px 2px; min-height: 0; font-size: 11px; }
     .folio-viewbar dropdown button { padding: 0px 4px; min-height: 0; }
     .folio-viewbar label { font-size: 11px; padding: 0; margin: 0; }
+    /* Grid section filters (Manuscript / Characters / Places). Independent
+       (ungrouped) toggles, so the "on" state can't ride :checked reliably on
+       this GTK build — it's driven by a code-set .section-on class. The lit
+       look deliberately matches the Inspector tabs: accent tint, accent text,
+       accent border. A transparent 1px border in the base state reserves the
+       space so nothing shifts when the border appears. */
+    .section-filter {
+        border-radius: 6px; background: transparent;
+        border: 1px solid transparent; box-shadow: none;
+        font-size: 11px; font-weight: 700; color: @tx3;
+        padding: 2px 10px; min-height: 0;
+    }
+    .section-filter:hover { color: @tx1; background-color: alpha(@tx1, 0.08); }
+    .section-filter.section-on {
+        background-color: alpha(@accent, 0.18); color: @accent;
+        border: 1px solid alpha(@accent, 0.55);
+    }
     /* Page-width percentage scrollbar + entry */
     .page-width-box {
         border: 1px solid @border_subtle;

@@ -2515,19 +2515,28 @@ void Sidebar::add_node_recursive(Section section, const std::vector<int> &path,
     row->append(*ic);
     row->append(*tbox);
 
-    // Pin marker (scenes only) — a pinned hinge surfaced next to the colour
-    // swatch as a write-first milestone (BinderNode.pin, stamped at materialize).
-    if (node->kind == BinderKind::Scene && node->pin) {
-      auto *pin_img = Gtk::make_managed<Gtk::Image>();
-      pin_img->set_from_icon_name("folio-pin-symbolic");
-      pin_img->set_icon_size(Gtk::IconSize::NORMAL);
-      pin_img->set_size_request(14, 14);
-      pin_img->set_valign(Gtk::Align::CENTER);
-      pin_img->set_margin_end(2);
-      pin_img->add_css_class("scene-pin");
-      pin_img->set_tooltip_text(
-          "Pinned hinge — a turn the story rests on. Write this one first.");
-      row->append(*pin_img);
+    // KP marker (scenes only) — the Binder echo of the Inspector's key/pin cycle
+    // and the timeline's KP lane, so all three surfaces agree on a scene's beat
+    // status. Pin PRECEDES key (pin implies is_key_point), so exactly one marker
+    // shows: a pin for a promoted write-first target, else a key for a plain beat
+    // (is_key_point, the state that lands the scene on the timeline's KP lane but
+    // was previously silent in the Binder). Precedence mirrors
+    // Inspector::sync_kp_cycle by construction.
+    if (node->kind == BinderKind::Scene && (node->pin || node->is_key_point)) {
+      const bool target = node->pin;   // pin wins; is_key_point is implied by it
+      auto *kp_img = Gtk::make_managed<Gtk::Image>();
+      kp_img->set_from_icon_name(target ? "folio-pin-symbolic"
+                                        : "folio-key-symbolic");
+      kp_img->set_icon_size(Gtk::IconSize::NORMAL);
+      kp_img->set_size_request(14, 14);
+      kp_img->set_valign(Gtk::Align::CENTER);
+      kp_img->set_margin_end(2);
+      kp_img->add_css_class(target ? "scene-pin" : "scene-key");
+      kp_img->set_tooltip_text(
+          target
+              ? "Pinned hinge — a turn the story rests on. Write this one first."
+              : "Key Point — a story beat on the timeline's arc.");
+      row->append(*kp_img);
     }
     if (swatch)
       row->append(*swatch);

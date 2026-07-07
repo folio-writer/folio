@@ -7,6 +7,7 @@
 // Object value-map, which is preserved VERBATIM so orphan values survive).
 // ─────────────────────────────────────────────────────────────────────────────
 #include "ObjectIO.hpp"
+#include "FormPlan.hpp"   // richtext_to_display — store clean text at the migration seam
 
 namespace Folio {
 namespace ObjectIO {
@@ -122,8 +123,12 @@ Object migrate_legacy_leaf(const std::string& iid,
     instantiate_against(o, tmpl);       // seeds name/image/description defaults
 
     // §8 mapping: title → name, buffer → description, image_path → image.
+    // The description floor field is shown/edited as plain text (no rich buffer),
+    // so flatten the body HTML here — otherwise the raw <p>…</p> markup lands in
+    // the field. (s114. Existing already-migrated values are also cleaned on
+    // display via field_display_string, and heal at rest on next save.)
     o.set_value("name",        title);
-    o.set_value("description", buffer_html);
+    o.set_value("description", richtext_to_display(buffer_html));
     o.set_value("image",       image_path);
 
     // Nothing lost: preserve the legacy one-liner and role as ORPHAN values so a

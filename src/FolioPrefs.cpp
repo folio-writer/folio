@@ -152,6 +152,9 @@ void FolioPrefs::load() {
     if (gallery_import_max_mb  < 1)   gallery_import_max_mb  = 1;
 
     show_ruler             = boolv(GROUP_EDITOR, "show-ruler",             show_ruler);
+    grid_show_manuscript   = boolv(GROUP_EDITOR, "grid-show-manuscript",   grid_show_manuscript);
+    grid_show_characters   = boolv(GROUP_EDITOR, "grid-show-characters",   grid_show_characters);
+    grid_show_places       = boolv(GROUP_EDITOR, "grid-show-places",       grid_show_places);
     ruler_unit             = str  (GROUP_EDITOR, "ruler-unit",             ruler_unit);
     ruler_tab_type         = str  (GROUP_EDITOR, "ruler-tab-type",         ruler_tab_type);
 
@@ -566,6 +569,9 @@ void FolioPrefs::save() const {
     g_key_file_set_integer(kf, GROUP_EDITOR, "right-margin-px",          editor_right_margin_px);
     g_key_file_set_boolean(kf, GROUP_EDITOR, "margins-linked",           editor_margins_linked);
     g_key_file_set_boolean(kf, GROUP_EDITOR, "show-ruler",               show_ruler);
+    g_key_file_set_boolean(kf, GROUP_EDITOR, "grid-show-manuscript",     grid_show_manuscript);
+    g_key_file_set_boolean(kf, GROUP_EDITOR, "grid-show-characters",     grid_show_characters);
+    g_key_file_set_boolean(kf, GROUP_EDITOR, "grid-show-places",         grid_show_places);
     g_key_file_set_string (kf, GROUP_EDITOR, "ruler-unit",               ruler_unit.c_str());
     g_key_file_set_string (kf, GROUP_EDITOR, "ruler-tab-type",           ruler_tab_type.c_str());
     {

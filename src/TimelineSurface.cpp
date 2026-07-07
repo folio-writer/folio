@@ -309,6 +309,14 @@ TimelineSurface::TimelineSurface(DocumentModel& model, FolioPrefs& prefs)
                           : focus_toggle_primary(m_focus, key);
           recompute_focus_positions();
           m_area.queue_draw();
+        } else if (!shift && focus_active(m_focus)) {
+          // s114 — a plain click on TRUE dead area (no scene, no relief row) is
+          // the intuitive "click away to show all": lift persistent focus so the
+          // dim clears. The clear existed only via Esc / re-click the same row —
+          // both invisible; this gives the dim a discoverable off-switch. Mirrors
+          // clear_focus(); gated on a non-sweep, non-shift plain click so it never
+          // touches the spotlight (shift) workflow or a sweep release.
+          clear_focus();
         }
       }
       return;

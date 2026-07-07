@@ -217,6 +217,14 @@ public:
     int  editor_zoom_pct           = 100;    // zoom level (50–300%)
     bool editor_header_visible     = true;   // show title/path header in editor
 
+    // ── Grid (outline) view section filters ───────────────────────────────────
+    // Which sections the Grid view shows. Persisted so the last explicit choice
+    // survives restart; default off (a cold launch relies on the binder
+    // auto-enable to light up the section you first cross-select).
+    bool grid_show_manuscript      = false;
+    bool grid_show_characters      = false;
+    bool grid_show_places          = false;
+
     // ── Gallery / images (DESIGN_gallery §6 — import normalization) ───────────
     // Import-time levers; baked at import (lowering a cap later does NOT shrink
     // existing assets). New fields read older prefs JSON gracefully via the

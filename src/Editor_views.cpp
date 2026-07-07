@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <gtkmm/eventcontrollermotion.h>
+#include <gtkmm/gestureclick.h>
 #include <set>
 #include <string>
 
@@ -364,24 +365,78 @@ void Editor::rebuild_outline() {
       m_outline_grid.attach(*bg, 0, grid_row, NUM_COLS, 1);
     }
 
-    // ── C_SEL ────────────────────────────────────────────────────────────
+    // ── C_SEL — selection handle ─────────────────────────────────────────
+    // The checkbox is a passive INDICATOR (can_target=false); the whole gutter
+    // cell is the click surface so modifier-clicks land here without fighting
+    // the editable cells to the right. Semantics (additive, checkbox-native):
+    //   • click / ctrl+click : toggle this row, move the shift-anchor here
+    //   • shift+click        : fill the range from the anchor to here (on)
+    // Marquee-drag on empty area still REPLACES the whole selection (unchanged).
+    // The repaint the old per-row toggle was missing is the deferred
+    // rebuild_outline() below — that is what makes the checkbox visibly "take".
+    auto *sel_cell =
+        Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 0);
+    sel_cell->set_name(Folio::widget_name("grid-sel", node->iid));
+    sel_cell->set_hexpand(true);
+    sel_cell->set_halign(Gtk::Align::FILL);
+    sel_cell->set_valign(Gtk::Align::FILL);
+
     auto *cb = Gtk::make_managed<Gtk::CheckButton>();
+    cb->set_name(Folio::widget_name("grid-sel-check", node->iid));
     cb->set_halign(Gtk::Align::CENTER);
+    cb->set_valign(Gtk::Align::CENTER);
+    cb->set_hexpand(true);
     cb->set_margin_start(4);
     cb->set_margin_end(4);
+    cb->set_can_target(false); // indicator only — the cell handles the click
+    cb->set_active(sel);
+    sel_cell->append(*cb);
+
     {
       size_t row_idx = ri;
-      auto cb_init = std::make_shared<bool>(true);
-      cb->signal_toggled().connect([this, row_idx, cb, cb_init]() {
-        if (*cb_init)
-          return;
-        if (row_idx < m_grid_selected.size())
-          m_grid_selected[row_idx] = cb->get_active();
-      });
-      cb->set_active(sel);
-      *cb_init = false;
+      auto sel_click = Gtk::GestureClick::create();
+      sel_click->set_button(GDK_BUTTON_PRIMARY);
+      // Capture the gesture by RAW pointer, not the RefPtr: the widget owns the
+      // controller, so a captured RefPtr here would form a gesture->slot->RefPtr
+      // cycle that never frees (and rows are rebuilt constantly). The raw pointer
+      // is always valid inside the handler — the gesture is what's emitting it.
+      Gtk::GestureClick* sel_click_p = sel_click.get();
+      sel_click->signal_pressed().connect(
+          [this, row_idx, sel_click_p](int, double, double) {
+            if (row_idx >= m_grid_selected.size() || !m_grid_rows[row_idx])
+              return;
+            auto st = sel_click_p->get_current_event_state();
+            const bool shift = (st & Gdk::ModifierType::SHIFT_MASK) ==
+                               Gdk::ModifierType::SHIFT_MASK;
+
+            // Resolve the anchor (a node) to its current row index.
+            int anchor_idx = -1;
+            if (m_grid_anchor)
+              for (size_t i = 0; i < m_grid_rows.size(); ++i)
+                if (m_grid_rows[i] == m_grid_anchor) {
+                  anchor_idx = (int)i;
+                  break;
+                }
+
+            if (shift && anchor_idx >= 0) {
+              size_t a = std::min((size_t)anchor_idx, row_idx);
+              size_t b = std::max((size_t)anchor_idx, row_idx);
+              for (size_t i = a; i <= b && i < m_grid_selected.size(); ++i)
+                if (m_grid_rows[i])
+                  m_grid_selected[i] = true; // additive range fill
+              // anchor stays put so successive shift-clicks re-range from it
+            } else {
+              m_grid_selected[row_idx] = !m_grid_selected[row_idx];
+              m_grid_anchor = m_grid_rows[row_idx];
+            }
+            // Defer the repaint: this handler runs on a widget the rebuild
+            // destroys, so we can't rebuild synchronously from inside it.
+            Glib::signal_idle().connect_once(
+                [this]() { rebuild_outline(); });
+          });
+      sel_cell->add_controller(sel_click);
     }
-    m_outline_grid.attach(*cb, C_SEL, grid_row);
+    m_outline_grid.attach(*sel_cell, C_SEL, grid_row);
 
     if (is_group) {
       // Group row: editable title (bold via CSS), all metadata columns, no
@@ -823,6 +878,20 @@ void Editor::grid_batch_set_include(bool v) {
 // show_grid
 // ─────────────────────────────────────────────────────────────────────────────
 
+void Editor::sync_grid_section_buttons() {
+  // Reflect the runtime flags onto the buttons. Guarded so the toggled handler
+  // updates the highlight but doesn't persist the change or rebuild — the caller
+  // owns the rebuild, and an auto-enabled section isn't a saved preference.
+  m_grid_sec_syncing = true;
+  if (m_grid_sec_manuscript)
+    m_grid_sec_manuscript->set_active(m_grid_show_manuscript);
+  if (m_grid_sec_characters)
+    m_grid_sec_characters->set_active(m_grid_show_characters);
+  if (m_grid_sec_places)
+    m_grid_sec_places->set_active(m_grid_show_places);
+  m_grid_sec_syncing = false;
+}
+
 void Editor::show_grid(const std::vector<BoardItem> &items) {
   m_grid_items = items;
   // Auto-enable the section filter matching the incoming selection
@@ -836,6 +905,8 @@ void Editor::show_grid(const std::vector<BoardItem> &items) {
     if (sec == Section::Places)
       m_grid_show_places = true;
   }
+  // Light up the buttons to match (reflect only — see helper).
+  sync_grid_section_buttons();
   if (m_view_mode == ViewMode::Outline)
     rebuild_outline();
 }

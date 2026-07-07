@@ -671,8 +671,21 @@ private:
   bool m_grid_show_manuscript  = false;
   bool m_grid_show_characters  = false;
   bool m_grid_show_places      = false;
+  // Section-filter toggle buttons (grid toolbar). Held as members so show_grid's
+  // auto-enable can push flag state onto the button (highlight). Managed by the
+  // toolbar; these are non-owning views.
+  Gtk::ToggleButton* m_grid_sec_manuscript = nullptr;
+  Gtk::ToggleButton* m_grid_sec_characters = nullptr;
+  Gtk::ToggleButton* m_grid_sec_places     = nullptr;
+  // True while sync_grid_section_buttons() drives set_active() programmatically,
+  // so the toggled handler reflects the highlight but skips persist + rebuild
+  // (an auto-enabled section is shown, not a saved preference).
+  bool m_grid_sec_syncing = false;
   std::vector<BinderNode*> m_grid_rows;
   std::vector<bool>        m_grid_selected;
+  // Shift-range anchor. Stored as the node (not an index) so it survives sorts
+  // and rebuilds; resolved back to a row index at shift-click time.
+  BinderNode* m_grid_anchor = nullptr;
   int  m_grid_row_count   = 0;
   int  m_grid_sort_col  = -1;             // -1 = unsorted
   bool m_grid_sort_asc  = true;
@@ -684,6 +697,9 @@ private:
   std::vector<int> m_grid_row_y;          // top y of each data row in grid coords
   int              m_grid_row_h = 32;     // nominal row height
   void rebuild_outline();
+  // Push m_grid_show_* flag state onto the section-filter buttons (highlight),
+  // without persisting or rebuilding (guarded by m_grid_sec_syncing).
+  void sync_grid_section_buttons();
   void grid_batch_set_status(NodeStatus s);
   void grid_batch_set_pov(const std::string& pov);
   void grid_batch_set_label(int color_idx);

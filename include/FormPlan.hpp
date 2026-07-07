@@ -25,6 +25,7 @@
 
 #include "Object.hpp"
 #include <nlohmann/json.hpp>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -217,6 +218,69 @@ inline std::string relation_summary(const std::vector<FieldChoice>& candidates,
 // is near-trivial label-setting. Number/Slider/Color → trimmed number; Toggle →
 // Yes/No; List/MultiSelect → " · "-joined; everything else → the string (empty
 // when unset, so the renderer can show a placeholder).
+// Render a stored RichText value (HTML from the editor serializer) as
+// human-readable plain text. The object form edits/shows RichText through a
+// plain TextView with no rich buffer, so without this the raw <p>…</p> markup
+// leaks into the field (s114 — the "Description shows HTML tags" bug). Block
+// closers (</p>, <br>, </div>, </li>, </h1..6>) become newlines so paragraphs
+// survive; every other tag is dropped; the three entities the serializer emits
+// (&amp; &lt; &gt;) are decoded; intra-line whitespace collapses; leading/
+// trailing blank lines are trimmed. A '<' that isn't followed by a letter or
+// '/' is treated as literal text, so a plain "x < y" description is preserved.
+// STL-only (lives in the pure layer; sandbox-tested).
+inline std::string richtext_to_display(const std::string& html) {
+    if (html.find('<') == std::string::npos) return html;  // no markup, nothing to do
+    auto ci_starts = [&](std::size_t p, const char* lit) {
+        for (std::size_t k = 0; lit[k]; ++k) {
+            if (p + k >= html.size()) return false;
+            char c = html[p + k];
+            if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+            if (c != lit[k]) return false;
+        }
+        return true;
+    };
+    std::string t;
+    t.reserve(html.size());
+    for (std::size_t i = 0; i < html.size();) {
+        if (html[i] == '<') {
+            char nx = (i + 1 < html.size()) ? html[i + 1] : '\0';
+            bool is_tag = (nx == '/' || (nx >= 'a' && nx <= 'z') || (nx >= 'A' && nx <= 'Z'));
+            if (!is_tag) { t.push_back(html[i++]); continue; }   // literal '<'
+            bool nl = ci_starts(i, "</p") || ci_starts(i, "<br") ||
+                      ci_starts(i, "</div") || ci_starts(i, "</li") ||
+                      ci_starts(i, "</h");
+            std::size_t gt = html.find('>', i);
+            if (gt == std::string::npos) break;                 // malformed tail: drop it
+            if (nl) t.push_back('\n');
+            i = gt + 1;
+            continue;
+        }
+        t.push_back(html[i++]);
+    }
+    auto replace_all = [](std::string& s, const std::string& from, const std::string& to) {
+        std::size_t p = 0;
+        while ((p = s.find(from, p)) != std::string::npos) { s.replace(p, from.size(), to); p += to.size(); }
+    };
+    replace_all(t, "&lt;", "<");
+    replace_all(t, "&gt;", ">");
+    replace_all(t, "&amp;", "&");
+    std::string out;
+    out.reserve(t.size());
+    bool prev_space = false;
+    for (char c : t) {
+        if (c == ' ' || c == '\t' || c == '\r') {
+            if (!prev_space) out.push_back(' ');
+            prev_space = true;
+        } else {
+            out.push_back(c);
+            prev_space = (c == '\n');
+        }
+    }
+    std::size_t s = out.find_first_not_of(" \n");
+    std::size_t e = out.find_last_not_of(" \n");
+    return (s == std::string::npos) ? std::string{} : out.substr(s, e - s + 1);
+}
+
 inline std::string field_display_string(FieldType t, const json& v) {
     switch (t) {
         case FieldType::Toggle:
@@ -245,8 +309,10 @@ inline std::string field_display_string(FieldType t, const json& v) {
             }
             return s;
         }
-        case FieldType::Text:
         case FieldType::RichText:
+            return v.is_string() ? richtext_to_display(v.get<std::string>())
+                                 : std::string{};
+        case FieldType::Text:
         case FieldType::Dropdown:
         case FieldType::Image:
         case FieldType::Date:
