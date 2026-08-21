@@ -348,6 +348,10 @@ void FocusWindow::build_view_chrome() {
         // The text column starts at m_view's left margin (authoritative — buffer
         // x=0 → window x came back near zero here, which floated the numbers to the
         // screen edge). Anchor off the margin so the numbers hug the text column.
+        // s115: this stays correct after the margin split. The draw context is
+        // already translated by the VIEW WIDGET's origin (vb.origin.x), which now
+        // carries `side`; get_left_margin() returns `inset`, which is exactly the
+        // remaining distance from that origin to the first glyph.
         const double col_left = (double)m_view.get_left_margin();
 
         Gdk::Rectangle vis;
@@ -1377,8 +1381,26 @@ void FocusWindow::apply_focus_geometry() {
     // s45 — inset the text inside the card so glyphs sit with breathing room and
     // clear the feathered edge band (≈48px). Clamp so a narrow column keeps text.
     int inset = std::clamp((col - 220) / 2, 0, 56);
-    m_view.set_left_margin(side + inset);
-    m_view.set_right_margin(side + inset);
+    // s115 — the centring offset lives on the WIDGET, not the text view.
+    //
+    // A GtkTextTag's left-margin/right-margin REPLACES the view's margin for the
+    // paragraphs it covers — it does not add to it. Imported HTML carrying
+    // `margin-left:` becomes an `li:<px>` tag (EditorHtmlSerializer), so any such
+    // paragraph discarded `side + inset` and snapped back to its own small value.
+    // In the editor that is invisible (the view margin is ~0 anyway); in focus
+    // mode `side` is hundreds of pixels, so those paragraphs escaped the column
+    // entirely and landed at the window edge. Found in the WEB Bible's poetry
+    // lines (Mark 1:2-3) once a backdrop made the column visible.
+    //
+    // Widget margins sit OUTSIDE the text layout, so no tag can override them.
+    // `side` (large, structural) therefore moves to set_margin_start/end, while
+    // `inset` (small, cosmetic breathing room) stays as a text-view margin: a
+    // tag can still override that one, but the worst case is a few pixels
+    // instead of the whole column.
+    m_view.set_margin_start(side);
+    m_view.set_margin_end(side);
+    m_view.set_left_margin(inset);
+    m_view.set_right_margin(inset);
 
     // The backdrop card backs the whole column (text breathes inside it).
     if (m_bg_panel && col > 0) m_bg_panel->set_size_request(col, -1);
