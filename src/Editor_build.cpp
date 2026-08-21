@@ -2311,6 +2311,8 @@ void Editor::build_editor_area() {
   m_text_view.set_gutter(Gtk::TextWindowType::LEFT, m_backtrace_gutter);
 
   m_paper_inner.append(m_text_area_row);
+  build_jv_governor_bar();
+  m_paper_inner.append(m_jv_more_revealer);
   m_paper_card.append(m_paper_inner);
 
   m_write_scroll.set_child(m_paper_card);
@@ -3103,6 +3105,44 @@ void Editor::build_editor_area() {
 // ─────────────────────────────────────────────────────────────────────────────
 // build_footer
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// build_jv_governor_bar (s115) — the "Showing N of M" strip shown at the foot
+// of the paper when Joined View has withheld documents. Built once, revealed
+// only when the governor actually bites; ordinary joined selections never see
+// it. Wording is deliberately positional ("Showing 12 of 1,189") rather than
+// an error ("too much content") — it tells the reader WHERE THEY ARE, which is
+// the whole difference between a limit and a failure.
+// ─────────────────────────────────────────────────────────────────────────────
+void Editor::build_jv_governor_bar() {
+  m_jv_more_revealer.set_name("jv-governor-revealer");
+  m_jv_more_bar.set_name("jv-governor-bar");
+  m_jv_more_label.set_name("jv-governor-label");
+  m_jv_more_btn.set_name("jv-governor-more-btn");
+
+  m_jv_more_label.add_css_class("dim-label");
+  m_jv_more_label.set_wrap(true);
+  m_jv_more_label.set_xalign(0.0f);
+  m_jv_more_label.set_hexpand(true);
+  m_jv_more_label.set_valign(Gtk::Align::CENTER);
+
+  m_jv_more_btn.set_valign(Gtk::Align::CENTER);
+  m_jv_more_btn.set_tooltip_text(
+      "Load the next batch of documents into this joined view");
+  m_jv_more_btn.signal_clicked().connect(
+      sigc::mem_fun(*this, &Editor::load_more_joined));
+
+  m_jv_more_bar.set_margin_top(18);
+  m_jv_more_bar.append(m_jv_more_label);
+  m_jv_more_bar.append(m_jv_more_btn);
+
+  m_jv_more_revealer.set_child(m_jv_more_bar);
+  m_jv_more_revealer.set_transition_type(
+      Gtk::RevealerTransitionType::SLIDE_DOWN);
+  m_jv_more_revealer.set_transition_duration(160);
+  m_jv_more_revealer.set_reveal_child(false);
+  m_jv_more_revealer.set_visible(false);
+}
 
 void Editor::build_footer() {
   m_footer.add_css_class("folio-editor-footer");

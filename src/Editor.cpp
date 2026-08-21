@@ -343,6 +343,12 @@ void Editor::load_node(BinderNode *node) {
     LOG_DEBUG("load_node: suppressed — exiting joined mode");
     return;
   }
+  // s115 — a single-node load is never governed. MainWindow exits joined mode
+  // before getting here, so this is belt-and-braces against any other caller
+  // leaving the strip on screen over a one-document view.
+  m_jv_more_revealer.set_reveal_child(false);
+  m_jv_more_revealer.set_visible(false);
+
   save_current();   // s111 §28 — resyncs the OUTGOING node's ranges from its marks
   clear_annotation_marks();  // drop the outgoing node's marks before the buffer reloads
   m_current_node = node;

@@ -934,8 +934,87 @@ void Editor::load_joined(std::vector<BinderNode *> nodes) {
 
   m_buffer->set_text("");
   m_joined_segments.clear();
+  m_joined_all    = std::move(nodes);
+  // Drop nulls ONCE, here. The governor's whole invariant is that
+  // m_joined_all[i] is the node of segment i — index IS the segment index —
+  // so a skipped entry mid-loop would desync the batch cursor and re-load
+  // nodes on the next "Show more". Filtering up front keeps it exact.
+  m_joined_all.erase(
+      std::remove(m_joined_all.begin(), m_joined_all.end(), nullptr),
+      m_joined_all.end());
+  if (m_joined_all.empty()) {
+    m_loading = false;
+    m_loading_joined = false;
+    exit_joined();
+    return;
+  }
   m_joined_active = true;
   m_current_node = nullptr;
+
+  LOG_DEBUG("load_joined: {} node(s) requested", m_joined_all.size());
+
+  // append_joined_batch saves/restores m_loading around its own inserts, so
+  // clear the load guard HERE — it was raised before the batch ran and the
+  // batch will have restored it to the raised value.
+  append_joined_batch();
+  m_loading = false;
+
+  m_buffer->place_cursor(m_buffer->begin());
+  m_text_view.scroll_to(m_buffer->get_insert(), 0.0);
+
+  m_loading_joined = false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// append_joined_batch — load the next budgeted run of m_joined_all into the
+// buffer, APPENDING to whatever is already there. Used for both the initial
+// load and every "Show more" press, so there is exactly one assembly path.
+//
+// The budget is measured BEFORE any insertion (summing node->content sizes),
+// because once we're mid-assembly the memory and the layout cost are already
+// spent — the whole point of the governor is to decide in advance.
+// ─────────────────────────────────────────────────────────────────────────────
+// How many nodes the NEXT batch will take, measured from the current shown
+// count. Shared by the loader and the "Show N more" label so the button can
+// never promise a number the loader won't deliver — the button IS the
+// governor's contract with the reader, so it has to be exact.
+//
+// Always returns at least 1 while anything is pending: a single oversized
+// document must still open (it did before the governor and still does), and a
+// zero-sized batch would leave "Show more" pressable forever doing nothing.
+int Editor::next_joined_batch_size() const {
+  const int first_new = (int)m_joined_segments.size();
+  const int total     = (int)m_joined_all.size();
+  int    take  = 0;
+  size_t chars = 0;
+  for (int i = first_new; i < total; ++i) {
+    size_t sz = m_joined_all[i] ? m_joined_all[i]->content.size() : 0;
+    if (take > 0 && (take >= JV_BUDGET_SEGMENTS || chars + sz > JV_BUDGET_CHARS))
+      break;
+    chars += sz;
+    ++take;
+  }
+  return take;
+}
+
+void Editor::append_joined_batch() {
+  const int first_new = (int)m_joined_segments.size();
+  const int total     = (int)m_joined_all.size();
+  if (first_new >= total)
+    return;
+
+  const int batch_end = first_new + next_joined_batch_size();
+  LOG_DEBUG("append_joined_batch: segs [{}, {}) of {}", first_new, batch_end,
+            total);
+
+  const bool was_loading = m_loading;
+  m_loading = true;
+
+  // Offset the batch starts at — the range-limited tag passes below stamp
+  // ONLY from here to the end, so "Show more" costs the size of the batch and
+  // not the size of the whole buffer. (Re-stamping begin()→end() on every
+  // press is what makes an append-based governor quietly quadratic.)
+  const int batch_start_off = m_buffer->end().get_offset();
 
   EditorHtmlSerializer::Tags tags;
   tags.bold = m_tag_bold;
@@ -953,8 +1032,8 @@ void Editor::load_joined(std::vector<BinderNode *> nodes) {
   for (int d = 0; d < 6; ++d)
     dash_prefix += "\xe2\x80\x94";
 
-  for (size_t i = 0; i < nodes.size(); ++i) {
-    BinderNode *node = nodes[i];
+  for (int i = first_new; i < batch_end; ++i) {
+    BinderNode *node = m_joined_all[i];  // never null — filtered in load_joined
 
     // Plain-text title divider — no child anchor, always renders
     // Record start offset before inserting (iterators are invalidated by insert)
@@ -1022,14 +1101,19 @@ void Editor::load_joined(std::vector<BinderNode *> nodes) {
   }
 
   m_chapter_tag.set_text("\xe2\x8a\x97  Joined View");
-  m_title_label.set_text(std::to_string(nodes.size()) + " scenes");
+  m_title_label.set_text(
+      (batch_end < total)
+          ? std::to_string(batch_end) + " of " + std::to_string(total) + " scenes"
+          : std::to_string(total) + " scenes");
 
-  apply_indent();
-  apply_base_font_tag();
-  apply_zoom_to_font_tags();
+  apply_load_tags_from(batch_start_off);
+  apply_zoom_to_font_tags();  // walks the TAG TABLE, not the buffer — cheap
 
-  // Rebase and apply annotation tags for all segments
-  for (const auto &seg : m_joined_segments) {
+  // Rebase and apply annotation tags — for the NEW segments only. Earlier
+  // segments were stamped when their own batch landed; re-walking them here
+  // would re-apply every annotation in the buffer on every "Show more".
+  for (int i = first_new; i < (int)m_joined_segments.size(); ++i) {
+    const auto &seg = m_joined_segments[i];
     if (!seg.node || seg.node->annotations.empty())
       continue;
     int base = m_buffer->get_iter_at_mark(seg.start).get_offset();
@@ -1044,12 +1128,76 @@ void Editor::load_joined(std::vector<BinderNode *> nodes) {
   }
 
   // All programmatic buffer changes done — re-enable text-change handling
-  m_loading = false;
+  m_loading = was_loading;
 
-  m_buffer->place_cursor(m_buffer->begin());
-  m_text_view.scroll_to(m_buffer->get_insert(), 0.0);
+  update_jv_governor_bar();
+}
 
-  m_loading_joined = false;
+// ─────────────────────────────────────────────────────────────────────────────
+// apply_load_tags_from — the load-time tag passes (first-line indent + base
+// font), stamped over [start_off, end) instead of the whole buffer.
+//
+// Mirrors apply_indent() / apply_base_font_tag() exactly, minus the remove_tag
+// sweep: a freshly appended range carries neither tag yet, so there is nothing
+// to clear. A full reload still goes through the same path with start_off 0.
+// ─────────────────────────────────────────────────────────────────────────────
+void Editor::apply_load_tags_from(int start_off) {
+  const bool was_loading = m_loading;
+  m_loading = true;
+
+  auto start = m_buffer->get_iter_at_offset(start_off);
+  auto end   = m_buffer->end();
+
+  if (m_first_line_indent) {
+    m_tag_indent->property_indent() = m_first_line_indent_px;
+    m_buffer->apply_tag(m_tag_indent, start, end);
+    start = m_buffer->get_iter_at_offset(start_off);  // re-fetch: apply may invalidate
+    end   = m_buffer->end();
+  }
+
+  m_tag_base_font->property_family()      = m_current_font;
+  m_tag_base_font->property_size_points() = m_current_font_size * m_zoom_factor;
+  m_buffer->apply_tag(m_tag_base_font, start, end);
+
+  m_loading = was_loading;
+  m_line_number_gutter.queue_draw();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// load_more_joined — "Show more". Appends the next batch and parks the cursor
+// at the join so the reader lands where the new content starts rather than
+// being thrown back to the top of a now-longer document.
+// ─────────────────────────────────────────────────────────────────────────────
+void Editor::load_more_joined() {
+  if (!m_joined_active || !joined_has_more())
+    return;
+
+  const int join_off = m_buffer->end().get_offset();
+  append_joined_batch();
+
+  auto it = m_buffer->get_iter_at_offset(join_off);
+  m_buffer->place_cursor(it);
+  m_text_view.scroll_to(m_buffer->get_insert(), 0.15);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// update_jv_governor_bar — the strip is visible ONLY when content is being
+// withheld. In every ordinary joined selection it never appears at all.
+// ─────────────────────────────────────────────────────────────────────────────
+void Editor::update_jv_governor_bar() {
+  const bool more = m_joined_active && joined_has_more();
+  if (more) {
+    const int shown = (int)m_joined_segments.size();
+    const int total = (int)m_joined_all.size();
+    const int rest  = total - shown;
+    m_jv_more_label.set_text("Showing " + std::to_string(shown) + " of " +
+                             std::to_string(total) + " documents \xe2\x80\x94 " +
+                             std::to_string(rest) + " not loaded");
+    m_jv_more_btn.set_label("Show " +
+                            std::to_string(next_joined_batch_size()) + " more");
+  }
+  m_jv_more_revealer.set_reveal_child(more);
+  m_jv_more_revealer.set_visible(more);
 }
 
 void Editor::save_joined() {
@@ -1076,7 +1224,7 @@ void Editor::save_joined() {
 
 void Editor::reload_joined(std::vector<BinderNode *> nodes) {
   save_joined();
-  load_joined(nodes);
+  load_joined(std::move(nodes));  // load_joined takes ownership (m_joined_all)
 }
 
 void Editor::exit_joined() {
@@ -1087,6 +1235,8 @@ void Editor::exit_joined() {
   m_joined_save_conn.disconnect();
   m_joined_active = false;
   m_joined_segments.clear();
+  m_joined_all.clear();
+  update_jv_governor_bar();  // segments and all are both empty → hides
   m_loading = true;
   m_buffer->set_text("");
   m_loading = false;

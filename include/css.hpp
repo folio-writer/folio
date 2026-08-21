@@ -1296,6 +1296,17 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
         background-color: @adw_overlay2; border-radius: 9999px; min-width: 6px; min-height: 6px;
     }
     scrollbar slider:hover { background-color: @adw_overlay; }
+    /* s115 — minimum THUMB LENGTH. The rule above floors the slider's
+       THICKNESS (6px both axes); on a vertical scrollbar its min-height is
+       also the length, so a long document collapses the thumb to a sliver
+       that's hard to find and harder to grab. GTK sizes the thumb
+       viewport/content, so this gets worse the more content there is —
+       exactly the case the scrivenings governor now lets you reach. These
+       floor the LENGTH per orientation; they must stay AFTER the base rule.
+       Note this only makes the thumb findable — at several hundred documents
+       a scrollbar is still a coarse instrument (~8 documents per pixel). */
+    scrollbar.vertical   slider { min-height: 48px; }
+    scrollbar.horizontal slider { min-width:  48px; }
     separator { background-color: @border_subtle; min-height: 1px; min-width: 1px; }
     paned > separator { background-color: @border_strong; min-width: 1px; min-height: 1px; }
     

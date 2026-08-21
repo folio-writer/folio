@@ -162,6 +162,27 @@ public:
   int  segment_index_at_iter(const Gtk::TextBuffer::iterator& it) const;
   int  joined_segment_count() const { return (int)m_joined_segments.size(); }
 
+  // ── Scrivenings governor (s115) ───────────────────────────────────────────
+  // Joined View assembles every selected node into ONE Gtk::TextBuffer, and
+  // GtkTextView does not virtualize — cost scales with total buffer size, not
+  // with what's on screen. A binder-scale selection (Scott's Bible import:
+  // 1,189 chapters) therefore stalls or dies. The governor loads a BUDGETED
+  // batch, keeps the rest pending, and offers "Show more" — predictable
+  // degradation instead of a hard failure.
+  //
+  // Budgets are deliberately generous: a full novel (~1 MB of HTML across a
+  // few hundred scenes) must pass through UNGOVERNED, so the bar only ever
+  // appears on genuinely outsized selections. Tune here — these were chosen
+  // by judgement, not measurement (see s115 notes).
+  static constexpr int    JV_BUDGET_SEGMENTS = 500;      // nodes per batch
+  static constexpr size_t JV_BUDGET_CHARS    = 1500000;  // HTML chars per batch
+
+  void load_more_joined();  // append the next budgeted batch
+  int  joined_total_count() const { return (int)m_joined_all.size(); }
+  bool joined_has_more() const {
+    return m_joined_segments.size() < m_joined_all.size();
+  }
+
   // ── View / content modes ──────────────────────────────────────────────────
   enum class ViewMode    { Write, Outline, Board, Joined, Map, Timeline };
   enum class EditorMode  { Node, Character, Place, Reference, Empty };
@@ -360,6 +381,18 @@ private:
   bool                       m_joined_active  = false;
   bool                       m_exiting_joined = false; // blocks load_node during exit
   sigc::connection           m_joined_save_conn;
+
+  // s115 governor: every node the selection asked for. m_joined_segments holds
+  // only the ones actually LOADED into the buffer, so segments.size() is the
+  // shown count and all.size() the requested count. Save/slice iterate
+  // SEGMENTS, so pending nodes are never touched — correct by construction:
+  // an unloaded node was never in the buffer and cannot have been edited.
+  std::vector<BinderNode *>  m_joined_all;
+
+  int  next_joined_batch_size() const; // how many nodes the next batch takes
+  void append_joined_batch();          // load the next budgeted run of m_joined_all
+  void apply_load_tags_from(int start_off);  // load-time tag passes, range-limited
+  void update_jv_governor_bar();       // sync the "Showing N of M" strip
 
   // ── Current item ──────────────────────────────────────────────────────────
   EditorMode m_editor_mode = EditorMode::Empty;
@@ -592,6 +625,15 @@ private:
   Gtk::Label m_title_label;
   Glib::RefPtr<Gtk::CssProvider> m_chapter_tag_css;  // reused for label-colour tinting
   Gtk::Separator m_divider;
+
+  // s115 — scrivenings governor strip, lives at the FOOT of the paper (after
+  // the text), which is where a reader arrives when they run out of content.
+  Gtk::Revealer m_jv_more_revealer;
+  Gtk::Box      m_jv_more_bar{Gtk::Orientation::HORIZONTAL, 10};
+  Gtk::Label    m_jv_more_label;
+  Gtk::Button   m_jv_more_btn;
+  void          build_jv_governor_bar();
+
   Gtk::Revealer  m_header_revealer;
   Gtk::Button    m_header_toggle;
   void           update_header_toggle_icon();
