@@ -113,6 +113,33 @@ std::string excerpt_of(const std::string &text) {
   return out;
 }
 
+// s116 — the body past the Title, VERBATIM (paragraph breaks intact): the text
+// the expand control opens. Deliberately NOT excerpt_of() with the ellipsis
+// removed — that one collapses every run of whitespace to a single space, which
+// is right for a one-glance card and wrong for reading the entry back, since it
+// destroys exactly the structure the writer put in. Drops the same first
+// non-empty (Title) line excerpt_of drops, then trims the surrounding blank
+// space. Empty when the record is title-only — which is what suppresses the
+// expand control on cards that have nothing more to show.
+std::string body_after_title(const std::string &text) {
+  std::size_t i = 0;
+  while (i < text.size()) {
+    const std::size_t nl = text.find('\n', i);
+    const std::size_t line_end = (nl == std::string::npos) ? text.size() : nl;
+    const bool has_text =
+        text.substr(i, line_end - i).find_first_not_of(" \t\r") != std::string::npos;
+    i = (nl == std::string::npos) ? text.size() : nl + 1;
+    if (has_text)
+      break; // that line was the Title; the body starts at i
+  }
+  const std::string rest = text.substr(std::min(i, text.size()));
+  const std::size_t a = rest.find_first_not_of(" \t\r\n");
+  if (a == std::string::npos)
+    return {};
+  const std::size_t b = rest.find_last_not_of(" \t\r\n");
+  return rest.substr(a, b - a + 1);
+}
+
 } // namespace
 
 JournalSurface::JournalSurface() : Gtk::Box(Gtk::Orientation::VERTICAL, 0) {
@@ -262,6 +289,7 @@ void JournalSurface::load(const std::string &iid, const std::string &title,
   m_iid = iid;
   set_title(title);
   m_log = JournalLog::from_json(body);
+  m_expanded.clear(); // all()-indices belong to ONE journal
   m_draft_buf->set_text(m_log.draft().text); // restores an in-progress draft
   m_loading = false;
 
@@ -276,6 +304,7 @@ void JournalSurface::clear() {
   m_loading = true;
   m_iid.clear();
   m_log = JournalLog{};
+  m_expanded.clear();
   m_draft_buf->set_text("");
   m_loading = false;
   rebuild_accepted();
@@ -366,7 +395,7 @@ Gtk::Widget *JournalSurface::make_accepted_card(std::size_t index) {
   auto *card = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
   card->add_css_class("journal-card");
 
-  // header row: DT label + a hover-revealed delete
+  // header row: DT label + the s116 expand toggle + a hover-revealed delete
   auto *head = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
   auto *dt = Gtk::make_managed<Gtk::Label>(fmt_stamp(e.iso_dt));
   dt->add_css_class("journal-dt");
@@ -380,11 +409,13 @@ Gtk::Widget *JournalSurface::make_accepted_card(std::size_t index) {
   del->set_tooltip_text("Delete this entry");
   del->signal_clicked().connect([this, index]() {
     m_log.soft_delete(index); // indices are stable (soft delete / append only)
+    m_expanded.erase(index);
     rebuild_accepted();
     persist();
   });
   head->append(*dt);
-  head->append(*del);
+  // the expand control is appended between dt and del further down, once the
+  // widgets it toggles exist — delete stays rightmost (destructive at the edge).
   card->append(*head);
 
   // Title (bold, first line; a leading ★ marks a favourite)
@@ -400,10 +431,12 @@ Gtk::Widget *JournalSurface::make_accepted_card(std::size_t index) {
   title_lbl->set_xalign(0.0f);
   card->append(*title_lbl);
 
-  // Excerpt (muted, the body past the Title)
+  // Excerpt (muted, the body past the Title) — the COLLAPSED view. Hidden while
+  // the card is expanded so its opening lines don't appear twice.
+  Gtk::Label *ex_lbl = nullptr;
   const std::string ex = excerpt_of(e.text);
   if (!ex.empty()) {
-    auto *ex_lbl = Gtk::make_managed<Gtk::Label>(ex);
+    ex_lbl = Gtk::make_managed<Gtk::Label>(ex);
     ex_lbl->add_css_class("journal-excerpt");
     ex_lbl->set_halign(Gtk::Align::START);
     ex_lbl->set_wrap(true);
@@ -412,6 +445,57 @@ Gtk::Widget *JournalSurface::make_accepted_card(std::size_t index) {
     ex_lbl->set_ellipsize(Pango::EllipsizeMode::END);
     card->append(*ex_lbl);
   }
+
+  // s116 — the EXPANDED view: the full body in a revealer, plus the ▸/▾ toggle
+  // that opens it. Built only when there IS a body past the Title; a title-only
+  // record has nothing to open, and a permanently-insensitive control that never
+  // explains itself is worse than an absent one.
+  const std::string body = body_after_title(e.text);
+  if (!body.empty()) {
+    auto *full = Gtk::make_managed<Gtk::Label>(body);
+    full->add_css_class("journal-full");
+    full->set_halign(Gtk::Align::START);
+    full->set_wrap(true);
+    full->set_wrap_mode(Pango::WrapMode::WORD_CHAR);
+    full->set_xalign(0.0f);
+    full->set_selectable(true); // reading a record back includes copying from it
+    full->set_margin_top(2);
+
+    auto *rev = Gtk::make_managed<Gtk::Revealer>();
+    rev->set_transition_type(Gtk::RevealerTransitionType::SLIDE_DOWN);
+    rev->set_transition_duration(120); // matches the calendar disclosure
+    rev->set_child(*full);
+    card->append(*rev);
+
+    // Restore the open/closed state this record was left in (see m_expanded).
+    const bool open = m_expanded.count(index) > 0;
+    rev->set_reveal_child(open);
+    if (ex_lbl)
+      ex_lbl->set_visible(!open);
+
+    auto *exp = Gtk::make_managed<Gtk::Button>();
+    exp->add_css_class("flat");
+    exp->add_css_class("journal-card-expand");
+    // NOT hover-revealed like the delete — this is the only way to read an
+    // accepted record, so it has to be visible without hunting for it.
+    exp->set_icon_name(open ? "pan-down-symbolic" : "pan-end-symbolic");
+    exp->set_tooltip_text(open ? "Collapse this entry" : "Read the full entry");
+    exp->signal_clicked().connect([this, index, exp, rev, ex_lbl]() {
+      const bool now_open = m_expanded.count(index) == 0;
+      if (now_open)
+        m_expanded.insert(index);
+      else
+        m_expanded.erase(index);
+      rev->set_reveal_child(now_open);
+      if (ex_lbl)
+        ex_lbl->set_visible(!now_open);
+      exp->set_icon_name(now_open ? "pan-down-symbolic" : "pan-end-symbolic");
+      exp->set_tooltip_text(now_open ? "Collapse this entry" : "Read the full entry");
+    });
+    head->append(*exp);
+  }
+
+  head->append(*del); // last, so delete stays at the card's edge
   return card;
 }
 

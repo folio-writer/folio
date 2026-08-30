@@ -10,8 +10,11 @@
 //   │   editable text area, and ✓ accept / ✕ delete. First keystroke stamps   │
 //   │   the start time (frozen forever); ✓ locks it as record.                │
 //   ├ scrolling ACCEPTED cards below, NEWEST-FIRST: DT label + Title + excerpt │
-//   │   + ✕ delete. Accepted records are read-only — corrections are new      │
-//   │   linked entries, never edits.                                          │
+//   │   + ▸ expand + ✕ delete. Accepted records are read-only — corrections    │
+//   │   are new linked entries, never edits. Expand (s116) opens the card to   │
+//   │   the record's FULL body, verbatim and selectable: the 2-line excerpt is │
+//   │   a card, not the entry, and before s116 an accepted record could not be │
+//   │   read back in the app at all.                                          │
 //   └─────────────────────────────────────────────────────────────────────────┘
 //
 // It owns a JournalLog and persists it (JSON) into the host node's body via the
@@ -103,6 +106,11 @@ private:
   // and (later) the calendar can scroll a specific record into view.
   std::vector<std::pair<std::size_t, Gtk::Widget *>> m_cards;
   int m_match = -1; // cursor into m_cards for the current search hit
+  // s116 — which accepted records are opened to their full body, keyed by
+  // all()-INDEX (stable: the log is append-only and delete is soft), so an
+  // opened entry survives rebuild_accepted() on an accept or a delete. Cleared
+  // on load/clear — the indices belong to one journal.
+  std::set<std::size_t> m_expanded;
 
   sigc::connection m_tick; // 1-second clock pulse
   PersistCallback m_on_persist;

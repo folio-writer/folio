@@ -1692,6 +1692,14 @@ static const char *FOLIO_CSS_SHARED = R"CSS(
     .journal-card-del { opacity: 0; min-height: 0; min-width: 0; padding: 2px; }
     .journal-card:hover .journal-card-del { opacity: 0.85; }
     .journal-card-del:hover { opacity: 1; color: @col_red; }
+    /* s116 expand: NOT hover-revealed like the delete -- it is the only way to
+       read an accepted record back, so it stays visible (dimmed) at rest. */
+    .journal-card-expand { opacity: 0.55; min-height: 0; min-width: 0; padding: 2px; }
+    .journal-card:hover .journal-card-expand { opacity: 0.9; }
+    .journal-card-expand:hover { opacity: 1; color: @col_peach; }
+    /* the opened record: reading text, brighter than the excerpt's card-glance grey */
+    .journal-full { color: @tx2; font-size: 14px; }
+    .journal-full selection { background-color: alpha(@col_peach, 0.35); color: @tx1; }
     .journal-draft .flat { min-height: 0; min-width: 0; padding: 2px; }
     /* search scroll-to-match: flag the hit card, never hide the others */
     .journal-card.journal-match {
